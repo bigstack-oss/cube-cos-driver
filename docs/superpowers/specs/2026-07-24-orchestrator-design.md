@@ -19,7 +19,7 @@ This repo now builds **two** static Go binaries:
 
 1. `cmd/cube-cos-snapshot` — the existing server (SPA + snapshot generator +
    inventory + orchestrator API), runs on the pxeserver.
-2. `cmd/cube-cos-agent` — a tiny agent that ships inside the CubeCOS image and
+2. `cmd/phone-home-agent` — a tiny agent that ships inside the CubeCOS image and
    runs on first boot of an **unconfigured** node. It phones home to the
    snapshot server, learns which snapshot it's been appointed, applies it, and
    self-disables once configured. (A cubecos packaging change installs the
@@ -34,7 +34,7 @@ BMC-reachability **preflight**.
 | Decision | Choice |
 | --- | --- |
 | Scope this iteration | Job engine + **real IPMI** power/bootdev; **phone-home agent binary** in this repo; agent-facing API is real. |
-| Node consume | `cube-cos-agent` binary (built here) phones home, pulls + applies its snapshot, reports back. |
+| Node consume | `phone-home-agent` binary (built here) phones home, pulls + applies its snapshot, reports back. |
 | Safety | Plan → explicit confirm → per-node; preflight before power. |
 | Progress transport | Polling (consistent with the app's existing polling). |
 | Placement | Same Go binary, `internal/orchestrator`; runs on the pxeserver. |
@@ -116,7 +116,7 @@ type Executor interface {
 - Cancel stops stepping (does not forcibly power off — a running install is
   left alone; documented).
 
-## The agent (`cmd/cube-cos-agent`)
+## The agent (`cmd/phone-home-agent`)
 
 A tiny static binary. On first boot of an unconfigured node (systemd unit,
 gated on `/etc/appliance/state/configured` being absent):
@@ -173,7 +173,7 @@ clusterDetail.
 ## Build
 
 `make all` builds the SPA, then both binaries: `bin/cube-cos-snapshot`
-(embeds SPA) and `bin/cube-cos-agent`. Both static, vendored, air-gapped.
+(embeds SPA) and `bin/phone-home-agent`. Both static, vendored, air-gapped.
 
 ## Testing
 
