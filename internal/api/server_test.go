@@ -7,7 +7,11 @@ import (
 )
 
 func TestHealthz(t *testing.T) {
-	srv := httptest.NewServer(New(Config{DataDir: t.TempDir()}))
+	handler, err := New(Config{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(handler)
 	defer srv.Close()
 	resp, err := http.Get(srv.URL + "/healthz")
 	if err != nil {
