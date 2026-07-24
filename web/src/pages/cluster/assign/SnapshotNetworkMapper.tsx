@@ -14,10 +14,52 @@ export type SnapshotNetworkMapperProps = {
   node: NodeConfig
   ports: NIC[]
   onChange: (node: NodeConfig) => void
-  onReorderPort: (index: number, dir: -1 | 1) => void
 }
 
-type Line = { x1: number; y1: number; x2: number; y2: number; label?: string }
+type Endpoints = {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  cx: number // vertical channel x for this line's elbow
+  label?: string
+}
+type Path = { d: string; label?: string; lx: number; ly: number }
+
+const HOP = 6 // hump radius where a horizontal crosses another line's vertical
+
+// buildPath routes an orthogonal elbow (H → V at the line's own channel → H)
+// and draws a small upward arc "hump" wherever a horizontal segment crosses a
+// vertical channel belonging to another line.
+const buildPath = (e: Endpoints, verticals: { x: number; y0: number; y1: number }[]): Path => {
+  const cx = e.cx
+  const horiz = (y: number, xa: number, xb: number): string => {
+    const crosses = verticals
+      .filter(
+        (v) =>
+          Math.abs(v.x - cx) > 0.5 &&
+          v.x > xa + HOP &&
+          v.x < xb - HOP &&
+          y > Math.min(v.y0, v.y1) &&
+          y < Math.max(v.y0, v.y1),
+      )
+      .map((v) => v.x)
+      .sort((a, b) => a - b)
+    let d = ''
+    for (const c of crosses) {
+      // sweep-flag 0 => upward semicircle for a left-to-right segment.
+      d += ` L ${c - HOP} ${y} A ${HOP} ${HOP} 0 0 0 ${c + HOP} ${y}`
+    }
+    d += ` L ${xb} ${y}`
+    return d
+  }
+  const d =
+    `M ${e.x1} ${e.y1}` +
+    horiz(e.y1, e.x1, cx) +
+    ` L ${cx} ${e.y2}` +
+    horiz(e.y2, cx, e.x2)
+  return { d, label: e.label, lx: cx + 4, ly: (e.y1 + e.y2) / 2 - 4 }
+}
 
 const portIndexOf = (f: IF): number => {
   const m = /^IF\.(\d+)$/.exec(f.name)
@@ -25,10 +67,10 @@ const portIndexOf = (f: IF): number => {
 }
 
 export const SnapshotNetworkMapper = (props: SnapshotNetworkMapperProps) => {
-  const { node, ports, onChange, onReorderPort } = props
+  const { node, ports, onChange } = props
   const containerRef = useRef<HTMLDivElement>(null)
   const anchors = useRef<Map<string, HTMLElement>>(new Map())
-  const [lines, setLines] = useState<Line[]>([])
+  const [paths, setPaths] = useState<Path[]>([])
   const [dragIndex, setDragIndex] = useState<number | null>(null)
 
   const chains = buildChains(node)
@@ -53,23 +95,37 @@ export const SnapshotNetworkMapper = (props: SnapshotNetworkMapperProps) => {
           y: r.top + r.height / 2 - o.top,
         }
       }
-      const out: Line[] = []
-      // Real port -> base interface (existing binding, derived from label).
+      const ends: Endpoints[] = []
+      // Real port -> base interface: short elbow, channel at the midpoint.
       bases.forEach((b) => {
         const idx = portIndexOf(b)
         if (idx < 0 || idx >= ports.length) return
         const a = point(`port-${idx}`, 'r')
         const bb = point(`base-${b.id}`, 'l')
-        if (a && bb) out.push({ x1: a.x, y1: a.y, x2: bb.x, y2: bb.y })
+        if (a && bb) ends.push({ x1: a.x, y1: a.y, x2: bb.x, y2: bb.y, cx: (a.x + bb.x) / 2 })
       })
-      // Base -> role (VLAN name shown at the midpoint when tagged).
+      // Base -> role: each gets its OWN staggered vertical channel so lines
+      // are distinct and their crossings show hops.
+      const roleEnds: Endpoints[] = []
       chains.forEach((ch) => {
         if (!ch.baseIf) return
         const a = point(`base-${ch.baseIf.id}`, 'r')
         const rr = point(`role-${ch.role}`, 'l')
-        if (a && rr) out.push({ x1: a.x, y1: a.y, x2: rr.x, y2: rr.y, label: ch.vlan?.name })
+        if (a && rr) roleEnds.push({ x1: a.x, y1: a.y, x2: rr.x, y2: rr.y, cx: 0, label: ch.vlan?.name })
       })
-      setLines((prev) =>
+      if (roleEnds.length) {
+        const baseRight = Math.max(...roleEnds.map((e) => e.x1))
+        const roleLeft = Math.min(...roleEnds.map((e) => e.x2))
+        const span = Math.max(40, roleLeft - baseRight)
+        const step = span / (roleEnds.length + 1)
+        roleEnds.forEach((e, i) => {
+          e.cx = baseRight + step * (i + 1)
+        })
+      }
+      ends.push(...roleEnds)
+      const verticals = ends.map((e) => ({ x: e.cx, y0: e.y1, y1: e.y2 }))
+      const out = ends.map((e) => buildPath(e, verticals))
+      setPaths((prev) =>
         JSON.stringify(prev) === JSON.stringify(out) ? prev : out,
       )
     }
@@ -82,25 +138,22 @@ export const SnapshotNetworkMapper = (props: SnapshotNetworkMapperProps) => {
   return (
     <div ref={containerRef} className="relative flex justify-between gap-x-4">
       <svg className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">
-        {lines.map((l, i) => (
+        {paths.map((p, i) => (
           <g key={i}>
-            <line
-              x1={l.x1}
-              y1={l.y1}
-              x2={l.x2}
-              y2={l.y2}
+            <path
+              d={p.d}
               className="stroke-primary"
               strokeWidth={1.5}
+              fill="none"
             />
-            {l.label && (
+            {p.label && (
               <text
-                x={(l.x1 + l.x2) / 2}
-                y={(l.y1 + l.y2) / 2 - 4}
+                x={p.lx}
+                y={p.ly}
                 className="fill-functional-text-light"
                 fontSize={10}
-                textAnchor="middle"
               >
-                {l.label}
+                {p.label}
               </text>
             )}
           </g>
@@ -111,8 +164,8 @@ export const SnapshotNetworkMapper = (props: SnapshotNetworkMapperProps) => {
       <div className="z-10 flex w-64 flex-col gap-y-2">
         <span className="primary-body3 font-semibold">From BMC — IF Table</span>
         <p className="secondary-body5 text-functional-text-light">
-          Ordered as CubeCOS enumerates ethX (PCI order). Reorder if the box
-          differs.
+          Real NICs in CubeCOS ethX (PCI) order. Drag one onto a snapshot
+          interface to bind/correct its IF.N.
         </p>
         {ports.map((p, k) => (
           <div
@@ -131,24 +184,6 @@ export const SnapshotNetworkMapper = (props: SnapshotNetworkMapperProps) => {
               {[p.name, p.mac, p.speedMbps ? `${p.speedMbps}Mbps` : '']
                 .filter(Boolean)
                 .join(' · ') || '(no data)'}
-            </span>
-            <span className="flex flex-col">
-              <button
-                className="leading-none disabled:opacity-30"
-                disabled={k === 0}
-                onClick={() => onReorderPort(k, -1)}
-                aria-label={`move IF.${k + 1} up`}
-              >
-                ↑
-              </button>
-              <button
-                className="leading-none disabled:opacity-30"
-                disabled={k === ports.length - 1}
-                onClick={() => onReorderPort(k, 1)}
-                aria-label={`move IF.${k + 1} down`}
-              >
-                ↓
-              </button>
             </span>
           </div>
         ))}
