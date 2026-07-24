@@ -2,9 +2,9 @@
   "extends": "../external/cube-cos-ui/tsconfig.json",
   "compilerOptions": {
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
-    "target": "ES2020",
+    "target": "ES2021",
     "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": ["ES2021", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
     "types": ["vite/client", "vite-plugin-svgr/client"]
   },

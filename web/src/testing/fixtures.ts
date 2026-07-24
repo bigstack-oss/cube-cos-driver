@@ -1,0 +1,91 @@
+// TS copy of internal/model/testdata/ha3.json (keep in sync).
+import { ClusterDetail } from '../model/types'
+
+export const ha3: ClusterDetail = {
+    "clusterInfo": {
+        "id": "8f0d3a2e-5b1c-4e7a-9d2f-aabbccddee01",
+        "name": "sky-lab"
+    },
+    "clusterConfig": {
+        "DNS": ["8.8.8.8", "1.1.1.1"],
+        "timezone": { "name": "Asia/Taipei", "offset": 480 },
+        "roleSettings": {
+            "extIP": "10.32.140.100",
+            "region": "RegionOne",
+            "secretSeed": "xzpfwk",
+            "mgmtCIDR": "10.254.0.0/16"
+        },
+        "HA": true,
+        "HASettings": {
+            "virtualIP": "10.254.0.100",
+            "virtualHostname": "sky-vip"
+        }
+    },
+    "nodeData": [
+        {
+            "id": "11111111-0000-0000-0000-000000000001",
+            "hostname": "cube-1",
+            "initIFs": [
+                { "id": "aaaa0001-0000-0000-0000-000000000001", "type": "init", "name": "IF.1", "enabled": true, "IPAddr": "10.254.0.1", "IPMask": "255.255.0.0" },
+                { "id": "aaaa0001-0000-0000-0000-000000000002", "type": "init", "name": "IF.2", "enabled": false }
+            ],
+            "bondIFs": [],
+            "vlanIFs": [],
+            "defaultIF": { "id": "aaaa0001-0000-0000-0000-000000000001", "type": "init" },
+            "defaultGateway": "10.254.0.254",
+            "role": "control-converged",
+            "roleSettings": {
+                "mgmtIF": { "id": "aaaa0001-0000-0000-0000-000000000001", "type": "init" },
+                "providerIF": { "id": "aaaa0001-0000-0000-0000-000000000002", "type": "init" },
+                "overlayIF": { "id": "aaaa0001-0000-0000-0000-000000000001", "type": "init" },
+                "storIF": { "id": "aaaa0001-0000-0000-0000-000000000001", "type": "init" },
+                "storIFBackend": {}
+            }
+        },
+        {
+            "id": "11111111-0000-0000-0000-000000000002",
+            "hostname": "cube-2",
+            "initIFs": [
+                { "id": "aaaa0002-0000-0000-0000-000000000001", "type": "init", "name": "IF.1", "enabled": true, "IPAddr": "10.254.0.2", "IPMask": "255.255.0.0" },
+                { "id": "aaaa0002-0000-0000-0000-000000000002", "type": "init", "name": "IF.2", "enabled": false, "master": "aaaa0002-0000-0000-0000-000000000010" },
+                { "id": "aaaa0002-0000-0000-0000-000000000003", "type": "init", "name": "IF.3", "enabled": false, "master": "aaaa0002-0000-0000-0000-000000000010" }
+            ],
+            "bondIFs": [
+                { "id": "aaaa0002-0000-0000-0000-000000000010", "type": "bond", "name": "bond0", "enabled": true, "IPAddr": "10.253.0.2", "IPMask": "255.255.0.0", "slaves": ["aaaa0002-0000-0000-0000-000000000002", "aaaa0002-0000-0000-0000-000000000003"] }
+            ],
+            "vlanIFs": [
+                { "id": "aaaa0002-0000-0000-0000-000000000020", "type": "vlan", "name": "bond0.101", "enabled": true, "IPAddr": "10.252.0.2", "IPMask": "255.255.0.0", "master": "aaaa0002-0000-0000-0000-000000000010" }
+            ],
+            "defaultIF": { "id": "aaaa0002-0000-0000-0000-000000000001", "type": "init" },
+            "defaultGateway": "10.254.0.254",
+            "role": "control-converged",
+            "roleSettings": {
+                "mgmtIF": { "id": "aaaa0002-0000-0000-0000-000000000001", "type": "init" },
+                "providerIF": { "id": "aaaa0002-0000-0000-0000-000000000010", "type": "bond" },
+                "overlayIF": { "id": "aaaa0002-0000-0000-0000-000000000020", "type": "vlan" },
+                "storIF": { "id": "aaaa0002-0000-0000-0000-000000000001", "type": "init" },
+                "storIFBackend": { "id": "aaaa0002-0000-0000-0000-000000000010", "type": "bond" }
+            }
+        },
+        {
+            "id": "11111111-0000-0000-0000-000000000003",
+            "hostname": "cube-3",
+            "initIFs": [
+                { "id": "aaaa0003-0000-0000-0000-000000000001", "type": "init", "name": "IF.1", "enabled": true, "IPAddr": "10.254.0.3", "IPMask": "255.255.0.0" },
+                { "id": "aaaa0003-0000-0000-0000-000000000002", "type": "init", "name": "IF.2", "enabled": false }
+            ],
+            "bondIFs": [],
+            "vlanIFs": [],
+            "defaultIF": { "id": "aaaa0003-0000-0000-0000-000000000001", "type": "init" },
+            "defaultGateway": "10.254.0.254",
+            "role": "control-converged",
+            "roleSettings": {
+                "mgmtIF": { "id": "aaaa0003-0000-0000-0000-000000000001", "type": "init" },
+                "providerIF": { "id": "aaaa0003-0000-0000-0000-000000000002", "type": "init" },
+                "overlayIF": { "id": "aaaa0003-0000-0000-0000-000000000001", "type": "init" },
+                "storIF": { "id": "aaaa0003-0000-0000-0000-000000000001", "type": "init" },
+                "storIFBackend": {}
+            }
+        }
+    ]
+}
