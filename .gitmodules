@@ -1,0 +1,3 @@
+[submodule "external/cube-cos-ui"]
+	path = external/cube-cos-ui
+	url = https://github.com/bigstack-oss/cube-cos-ui.git
