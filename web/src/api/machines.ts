@@ -51,3 +51,38 @@ export const fetchMachineHardware = async (id: string): Promise<void> => {
     }),
   )
 }
+
+export type ImportRowError = { row: number; message: string }
+export type ImportResult = { created: number; errors: ImportRowError[] }
+
+export const importMachines = async (file: File): Promise<ImportResult> => {
+  const form = new FormData()
+  form.append('file', file)
+  return (await jsonOrThrow(
+    await fetch('/api/v1/machines/import', { method: 'POST', body: form }),
+  )) as ImportResult
+}
+
+export const importTemplateUrl = '/api/v1/machines/import/template'
+
+export const assignMachine = async (
+  id: string,
+  clusterId: string,
+  hostname: string,
+): Promise<void> => {
+  await jsonOrThrow(
+    await fetch(`/api/v1/machines/${encodeURIComponent(id)}/assignment`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clusterId, hostname }),
+    }),
+  )
+}
+
+export const unassignMachine = async (id: string): Promise<void> => {
+  await jsonOrThrow(
+    await fetch(`/api/v1/machines/${encodeURIComponent(id)}/assignment`, {
+      method: 'DELETE',
+    }),
+  )
+}

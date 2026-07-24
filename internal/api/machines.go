@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +37,8 @@ func (m *machineHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/machines/{id}/fetch", m.fetch)
 	mux.HandleFunc("PUT /api/v1/machines/{id}/assignment", m.assign)
 	mux.HandleFunc("DELETE /api/v1/machines/{id}/assignment", m.unassign)
+	mux.HandleFunc("POST /api/v1/machines/import", m.importFile)
+	mux.HandleFunc("GET /api/v1/machines/import/template", m.importTemplate)
 }
 
 func (m *machineHandlers) list(w http.ResponseWriter, r *http.Request) {
@@ -205,6 +208,49 @@ func (m *machineHandlers) unassign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, machine)
+}
+
+// importFile accepts a multipart "file" (.xlsx or .csv) and bulk-creates
+// machines. Returns {created, errors:[{row,message}]}.
+func (m *machineHandlers) importFile(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid upload: %v", err)
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "missing file field")
+		return
+	}
+	defer file.Close()
+
+	name := strings.ToLower(header.Filename)
+	var res inventory.ImportResult
+	switch {
+	case strings.HasSuffix(name, ".xlsx"):
+		res, err = inventory.ParseXLSX(file)
+	case strings.HasSuffix(name, ".csv"):
+		res, err = inventory.ParseCSV(file)
+	default:
+		writeError(w, http.StatusBadRequest, "unsupported file type (use .xlsx or .csv)")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+
+	created, errs := m.store.ImportMany(res)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"created": created,
+		"errors":  errs,
+	})
+}
+
+func (m *machineHandlers) importTemplate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", `attachment; filename="machines-template.csv"`)
+	w.Write([]byte(inventory.CSVTemplate))
 }
 
 func (m *machineHandlers) runFetch(id string, target discovery.Target) {
