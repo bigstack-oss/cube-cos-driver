@@ -29,6 +29,7 @@ type Preflight struct {
 
 type CheckinResponse struct {
 	Appointed     bool      `json:"appointed"`
+	ClusterID     string    `json:"clusterId"`
 	Hostname      string    `json:"hostname"`
 	SnapshotURL   string    `json:"snapshotUrl"`
 	ServerTimeUTC string    `json:"serverTimeUTC"`
@@ -42,6 +43,7 @@ type PreflightResult struct {
 }
 
 type ReportRequest struct {
+	ClusterID string            `json:"clusterId"`
 	Hostname  string            `json:"hostname"`
 	State     string            `json:"state"`
 	Message   string            `json:"message,omitempty"`
@@ -108,18 +110,18 @@ func Run(ctx context.Context, server string, d Deps, poll time.Duration) error {
 			allOK = false
 		}
 	}
-	d.report(ctx, server, ReportRequest{Hostname: resp.Hostname, State: "net-preflight", Preflight: results})
+	d.report(ctx, server, ReportRequest{ClusterID: resp.ClusterID, Hostname: resp.Hostname, State: "net-preflight", Preflight: results})
 	if !allOK {
 		return ErrPreflightFailed
 	}
 
 	// Apply the appointed snapshot.
-	d.report(ctx, server, ReportRequest{Hostname: resp.Hostname, State: "applying"})
+	d.report(ctx, server, ReportRequest{ClusterID: resp.ClusterID, Hostname: resp.Hostname, State: "applying"})
 	if err := d.Apply(ctx, resp.SnapshotURL); err != nil {
-		d.report(ctx, server, ReportRequest{Hostname: resp.Hostname, State: "error", Message: err.Error()})
+		d.report(ctx, server, ReportRequest{ClusterID: resp.ClusterID, Hostname: resp.Hostname, State: "error", Message: err.Error()})
 		return err
 	}
-	d.report(ctx, server, ReportRequest{Hostname: resp.Hostname, State: "done", Message: "snapshot applied"})
+	d.report(ctx, server, ReportRequest{ClusterID: resp.ClusterID, Hostname: resp.Hostname, State: "done", Message: "snapshot applied"})
 	return nil
 }
 
