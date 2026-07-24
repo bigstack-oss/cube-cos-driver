@@ -88,14 +88,40 @@ export const SnapshotNetworkMapper = (props: SnapshotNetworkMapperProps) => {
           y: r.top + r.height / 2 - o.top,
         }
       }
+      const rectOf = (key: string) => {
+        const el = anchors.current.get(key)
+        if (!el) return null
+        const r = el.getBoundingClientRect()
+        return { left: r.left - o.left, right: r.right - o.left, top: r.top - o.top, bottom: r.bottom - o.top }
+      }
+
       // Collect base -> role connections (each drawn as its own bus route).
       type Conn = { x1: number; y1: number; x2: number; y2: number; label?: string }
       const conns: Conn[] = []
-      chains.forEach((ch) => {
-        if (!ch.baseIf) return
-        const a = point(`base-${ch.baseIf.id}`, 'r')
+      // Group connections by their base interface so multiple lines leaving
+      // the same box emit from staggered points along its right edge (no
+      // overlap at the emitter).
+      const withBase = chains.filter((ch) => ch.baseIf)
+      const groups = new Map<string, typeof withBase>()
+      withBase.forEach((ch) => {
+        const id = ch.baseIf!.id
+        if (!groups.has(id)) groups.set(id, [])
+        groups.get(id)!.push(ch)
+      })
+      const emitY = new Map<(typeof withBase)[number], number>()
+      groups.forEach((list, id) => {
+        const r = rectOf(`base-${id}`)
+        if (!r) return
+        const m = list.length
+        list.forEach((ch, k) => emitY.set(ch, r.top + ((k + 1) * (r.bottom - r.top)) / (m + 1)))
+      })
+      withBase.forEach((ch) => {
+        const r = rectOf(`base-${ch.baseIf!.id}`)
         const rr = point(`role-${ch.role}`, 'l')
-        if (a && rr) conns.push({ x1: a.x, y1: a.y, x2: rr.x, y2: rr.y, label: ch.vlan?.name })
+        const y1 = emitY.get(ch)
+        if (r && rr && y1 !== undefined) {
+          conns.push({ x1: r.right, y1, x2: rr.x, y2: rr.y, label: ch.vlan?.name })
+        }
       })
 
       const n = conns.length
