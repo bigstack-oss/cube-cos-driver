@@ -64,14 +64,6 @@ export const AssignServerFlow = (props: AssignServerFlowProps) => {
 
   if (!isOpen) return null
 
-  const reorderPort = (index: number, dir: -1 | 1) => {
-    const j = index + dir
-    if (j < 0 || j >= ports.length) return
-    const next = [...ports]
-    ;[next[index], next[j]] = [next[j], next[index]]
-    setPorts(next)
-  }
-
   const steps: WizardStep[] = [
     {
       label: 'Server',
@@ -147,7 +139,6 @@ export const AssignServerFlow = (props: AssignServerFlowProps) => {
           node={workingNode}
           ports={ports}
           onChange={setWorkingNode}
-          onReorderPort={reorderPort}
         />
       ) : (
         <p className="primary-body3">Select a fetched server first.</p>

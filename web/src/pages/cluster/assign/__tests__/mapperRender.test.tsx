@@ -37,7 +37,6 @@ describe('SnapshotNetworkMapper', () => {
           { name: 'eth1', mac: 'aa:02' },
         ]}
         onChange={vi.fn()}
-        onReorderPort={vi.fn()}
       />,
     )
     // IF Table (from BMC) labels + a role with its IP.
