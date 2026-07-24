@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/bigstack-oss/cube-cos-snapshot/internal/storage"
+	"github.com/bigstack-oss/cube-cos-snapshot/internal/webui"
 )
 
 type Config struct {
@@ -20,5 +21,6 @@ func New(cfg Config) http.Handler {
 	})
 	h := &handlers{store: &storage.Store{DataDir: cfg.DataDir, ExportDir: cfg.ExportDir}}
 	h.register(mux)
+	mux.Handle("/", webui.Handler())
 	return mux
 }
