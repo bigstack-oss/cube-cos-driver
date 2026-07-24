@@ -1,0 +1,20 @@
+---
+# cubesys/cubesys1_0.yml
+name: cubesys
+version: 1.0
+role: control-converged
+domain: default
+region: RegionOne
+management: IF.5
+ha: true
+saltkey: true
+controller: tsri-cc
+external: 
+provider: IF.3
+overlay: IF.4.603
+storage: IF.4.603
+secret-seed: tsri-cc
+mgmt-cidr: 10.254.0.0/16
+control-vip: 192.168.11.10
+control-hosts: tsri-cc1,tsri-cc2,tsri-cc3
+control-addrs: 192.168.11.11,192.168.11.12,192.168.11.13
