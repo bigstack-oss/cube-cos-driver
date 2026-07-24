@@ -1,0 +1,31 @@
+---
+# network/network1_0.yml
+name: network
+version: 1.0
+hostname: cube-solo
+default-interface: IF.1
+dns:
+  auto: false
+  primary: 8.8.8.8
+interfaces:
+  - type: 0
+    enabled: true
+    label: IF.1
+    speed-duplex: auto
+    ipv4:
+      dhcp: false
+      ipaddr: 192.168.1.60
+      netmask: 255.255.255.0
+      gateway: 192.168.1.254
+    ipv6:
+      enabled: true
+      dhcp: true
+  - type: 0
+    enabled: false
+    label: IF.2
+    speed-duplex: auto
+    ipv4:
+      dhcp: true
+    ipv6:
+      enabled: true
+      dhcp: true

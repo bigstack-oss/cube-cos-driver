@@ -1,0 +1,32 @@
+---
+# network/network1_0.yml
+name: network
+version: 1.0
+hostname: cube-1
+default-interface: IF.1
+dns:
+  auto: false
+  primary: 8.8.8.8
+  secondary: 1.1.1.1
+interfaces:
+  - type: 0
+    enabled: true
+    label: IF.1
+    speed-duplex: auto
+    ipv4:
+      dhcp: false
+      ipaddr: 10.254.0.1
+      netmask: 255.255.0.0
+      gateway: 10.254.0.254
+    ipv6:
+      enabled: true
+      dhcp: true
+  - type: 0
+    enabled: false
+    label: IF.2
+    speed-duplex: auto
+    ipv4:
+      dhcp: true
+    ipv6:
+      enabled: true
+      dhcp: true

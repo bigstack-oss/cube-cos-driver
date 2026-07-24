@@ -1,0 +1,17 @@
+---
+# cubesys/cubesys1_0.yml
+name: cubesys
+version: 1.0
+role: control-converged
+domain: default
+ha: false
+saltkey: true
+controller: 
+external: 192.168.1.60
+region: RegionOne
+secret-seed: seed01
+mgmt-cidr: 192.168.1.0/24
+management: IF.1
+provider: IF.2
+overlay: IF.1
+storage: IF.1

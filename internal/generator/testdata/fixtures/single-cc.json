@@ -1,0 +1,40 @@
+{
+    "clusterInfo": {
+        "id": "0e1d2c3b4a59-6877-4655-8899-c0ffee000001",
+        "name": "one-box"
+    },
+    "clusterConfig": {
+        "DNS": ["8.8.8.8"],
+        "timezone": { "name": "America/Los_Angeles", "offset": -420 },
+        "roleSettings": {
+            "extIP": "192.168.1.60",
+            "region": "RegionOne",
+            "secretSeed": "seed01",
+            "mgmtCIDR": "192.168.1.0/24"
+        },
+        "HA": false,
+        "HASettings": {}
+    },
+    "nodeData": [
+        {
+            "id": "22222222-0000-0000-0000-000000000001",
+            "hostname": "cube-solo",
+            "initIFs": [
+                { "id": "bbbb0001-0000-0000-0000-000000000001", "type": "init", "name": "IF.1", "enabled": true, "IPAddr": "192.168.1.60", "IPMask": "255.255.255.0" },
+                { "id": "bbbb0001-0000-0000-0000-000000000002", "type": "init", "name": "IF.2", "enabled": false }
+            ],
+            "bondIFs": [],
+            "vlanIFs": [],
+            "defaultIF": { "id": "bbbb0001-0000-0000-0000-000000000001", "type": "init" },
+            "defaultGateway": "192.168.1.254",
+            "role": "control-converged",
+            "roleSettings": {
+                "mgmtIF": { "id": "bbbb0001-0000-0000-0000-000000000001", "type": "init" },
+                "providerIF": { "id": "bbbb0001-0000-0000-0000-000000000002", "type": "init" },
+                "overlayIF": { "id": "bbbb0001-0000-0000-0000-000000000001", "type": "init" },
+                "storIF": { "id": "bbbb0001-0000-0000-0000-000000000001", "type": "init" },
+                "storIFBackend": {}
+            }
+        }
+    ]
+}
