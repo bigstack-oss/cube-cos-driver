@@ -1,6 +1,7 @@
 import { Route, Routes } from 'react-router'
 import { AppHeader } from './components/AppHeader'
 import { ClusterPage } from './pages/cluster/ClusterPage'
+import { HardwarePage } from './pages/hardware/HardwarePage'
 import { LandingPage } from './pages/landing/LandingPage'
 
 export const App = () => {
@@ -11,6 +12,7 @@ export const App = () => {
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/clusters/:id" element={<ClusterPage />} />
+          <Route path="/hardware" element={<HardwarePage />} />
         </Routes>
       </main>
     </div>
