@@ -103,7 +103,27 @@ curl -sf "http://localhost:$PORT/api/v1/clusters/$ID/deploy/plan" | grep -q '"al
 curl -sf -X POST -H 'Content-Type: application/json' -d '{"confirm":true}' \
   "http://localhost:$PORT/api/v1/clusters/$ID/deploy" >/dev/null || fail "deploy start"
 
-# Agent check-in/report drives cube-1 to done.
+# Installer-phase preflight (green light 1 barrier): each node reports a passing
+# fabric result; GL1 must stay withheld until ALL nodes have passed. (Driven by
+# hostname here — the MAC-matched preflight/checkin is covered by Go tests.)
+PF_REPORT() {  # host
+  curl -sf -X POST -H 'Content-Type: application/json' \
+    -d '{"clusterId":"'"$ID"'","hostname":"'"$1"'","carrierOk":true,"clockSkewSec":0.2,"passed":true}' \
+    "http://localhost:$PORT/api/v1/agents/preflight/report" >/dev/null
+}
+GREENLIGHT() {  # host -> prints {"clear":bool}
+  curl -sf -X POST -H 'Content-Type: application/json' \
+    -d '{"clusterId":"'"$ID"'","hostname":"'"$1"'"}' \
+    "http://localhost:$PORT/api/v1/agents/preflight/greenlight"
+}
+
+PF_REPORT cube-1
+GREENLIGHT cube-1 | grep -q '"clear":false' || fail "GL1 cleared before all nodes preflighted"
+PF_REPORT cube-2
+PF_REPORT cube-3
+GREENLIGHT cube-1 | grep -q '"clear":true' || fail "GL1 not cleared after all nodes passed"
+
+# After reboot, master (cube-1) applies to done (report by hostname).
 curl -sf -X POST -H 'Content-Type: application/json' \
   -d '{"clusterId":"'"$ID"'","hostname":"cube-1","state":"done","message":"applied"}' \
   "http://localhost:$PORT/api/v1/agents/report" >/dev/null || fail "agent report"
@@ -112,6 +132,8 @@ for _ in $(seq 1 20); do
   sleep 0.2
 done
 curl -sf "http://localhost:$PORT/api/v1/clusters/$ID/deploy" | grep -q '"state":"done"' || fail "deploy node not done"
+# Lights are surfaced for the UI.
+curl -sf "http://localhost:$PORT/api/v1/clusters/$ID/deploy" | grep -q '"light1":"green"' || fail "light1 not surfaced"
 
 curl -sf -X DELETE "http://localhost:$PORT/api/v1/machines/$MID" || fail "delete machine"
 

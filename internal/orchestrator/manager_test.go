@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -40,7 +41,7 @@ func TestDeployReachesImagedThenAgentApplies(t *testing.T) {
 		{Hostname: "cube-1", MachineID: "m1", MACs: []string{"aa:01"}},
 		{Hostname: "cube-2", MachineID: "m2", MACs: []string{"aa:02"}},
 	}
-	if _, err := m.Start("cl1", nodes, "cube-1"); err != nil {
+	if _, err := m.Start("cl1", nodes, "cube-1", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -48,30 +49,87 @@ func TestDeployReachesImagedThenAgentApplies(t *testing.T) {
 	waitFor(t, m, "cl1", "cube-1", StateImaged)
 	waitFor(t, m, "cl1", "cube-2", StateImaged)
 
-	// Agent checks in and applies for cube-1.
-	m.CheckIn("cl1", "cube-1")
+	// Both nodes pass installer preflight → green light 1 clears.
+	pass := NodePreflight{CarrierOK: true, ClockSkewSec: 0.2, Passed: true}
+	m.PreflightReport("cl1", "cube-1", pass)
+	m.PreflightReport("cl1", "cube-2", pass)
+	if !m.GreenLight1("cl1", "cube-1") || !m.GreenLight1("cl1", "cube-2") {
+		t.Fatal("green light 1 should clear once all nodes pass preflight")
+	}
+	waitFor(t, m, "cl1", "cube-1", StateRestoring)
+
+	// After reboot, cube-1 (master) checks in and applies.
+	if hold := m.CheckIn("cl1", "cube-1"); hold {
+		t.Fatal("master must not hold at green light 2")
+	}
 	waitFor(t, m, "cl1", "cube-1", StateCheckedIn)
-	m.Report("cl1", "cube-1", StateNetPreflight, "", []PreflightResult{{Target: "gateway", OK: true}})
 	m.Report("cl1", "cube-1", StateApplying, "", nil)
 	m.Report("cl1", "cube-1", StateDone, "applied", nil)
 	waitFor(t, m, "cl1", "cube-1", StateDone)
 
 	d, _ := m.Status("cl1")
-	if len(d.Nodes["cube-1"].Preflight) != 1 || !d.Nodes["cube-1"].Preflight[0].OK {
-		t.Fatalf("preflight not recorded: %+v", d.Nodes["cube-1"].Preflight)
+	if d.Nodes["cube-1"].InstallerPreflight == nil || !d.Nodes["cube-1"].InstallerPreflight.Passed {
+		t.Fatalf("installer preflight not recorded: %+v", d.Nodes["cube-1"].InstallerPreflight)
+	}
+	if d.Nodes["cube-1"].Light2 != LightGreen {
+		t.Fatalf("light2 = %q, want green", d.Nodes["cube-1"].Light2)
 	}
 }
 
-func TestNonMasterHoldsUntilMasterDone(t *testing.T) {
+func TestGreenLight1Barrier(t *testing.T) {
+	m := newTestManager(t, NewFakeExecutor())
+	m.Start("cl1", []Node{{Hostname: "a", MachineID: "m1"}, {Hostname: "b", MachineID: "m2"}}, "a", nil)
+	waitFor(t, m, "cl1", "a", StateImaged)
+	waitFor(t, m, "cl1", "b", StateImaged)
+
+	// Only one node passed → GL1 withheld.
+	m.PreflightReport("cl1", "a", NodePreflight{CarrierOK: true, Passed: true})
+	if m.GreenLight1("cl1", "a") {
+		t.Fatal("GL1 must be withheld until every node passes")
+	}
+
+	// b reports a degraded bond (carrier down) → still withheld, PF_CARRIER.
+	m.PreflightReport("cl1", "b", NodePreflight{CarrierOK: false, Passed: false, Matrix: []PreflightResult{{Target: "bond0", OK: false}}})
+	if m.GreenLight1("cl1", "a") {
+		t.Fatal("GL1 must be withheld while a node is degraded")
+	}
+	d, _ := m.Status("cl1")
+	if d.Nodes["b"].ErrCode != ErrPFCarrier {
+		t.Fatalf("b errCode = %q, want %s", d.Nodes["b"].ErrCode, ErrPFCarrier)
+	}
+	if d.Nodes["b"].Light1 != LightYellow {
+		t.Fatalf("b light1 = %q, want yellow (still converging)", d.Nodes["b"].Light1)
+	}
+
+	// b re-kicks and passes but with excessive skew → withheld, PF_CLOCK_SKEW.
+	m.PreflightReport("cl1", "b", NodePreflight{CarrierOK: true, ClockSkewSec: 12, Passed: false})
+	if m.GreenLight1("cl1", "a") {
+		t.Fatal("GL1 must be withheld while a node's clock skew exceeds the gate")
+	}
+	d, _ = m.Status("cl1")
+	if d.Nodes["b"].ErrCode != ErrPFSkew {
+		t.Fatalf("b errCode = %q, want %s", d.Nodes["b"].ErrCode, ErrPFSkew)
+	}
+
+	// b re-kicks clean → GL1 clears for both; both advance to restoring.
+	m.PreflightReport("cl1", "b", NodePreflight{CarrierOK: true, ClockSkewSec: 0.1, Passed: true})
+	if !m.GreenLight1("cl1", "b") {
+		t.Fatal("GL1 should clear once every node passes")
+	}
+	waitFor(t, m, "cl1", "b", StateRestoring)
+}
+
+func TestGreenLight2MasterFirst(t *testing.T) {
 	m := newTestManager(t, NewFakeExecutor())
 	m.Start("cl1", []Node{
 		{Hostname: "master", MachineID: "m1"},
 		{Hostname: "worker", MachineID: "m2"},
-	}, "master")
+	}, "master", nil)
 	waitFor(t, m, "cl1", "master", StateImaged)
 	waitFor(t, m, "cl1", "worker", StateImaged)
 
-	// Worker checks in first → must hold (master not done yet).
+	// (Preflight barrier already cleared pre-restore; here we test GL2 only.)
+	// Worker checks in first → holds until master is done.
 	if hold := m.CheckIn("cl1", "worker"); !hold {
 		t.Fatal("worker should hold until master is done")
 	}
@@ -79,16 +137,68 @@ func TestNonMasterHoldsUntilMasterDone(t *testing.T) {
 
 	// Master checks in → no hold; drive it to done.
 	if hold := m.CheckIn("cl1", "master"); hold {
-		t.Fatal("master must not hold")
+		t.Fatal("master must not hold at green light 2")
 	}
 	m.Report("cl1", "master", StateApplying, "", nil)
 	m.Report("cl1", "master", StateDone, "applied", nil)
 
-	// Now the worker's next check-in clears.
+	// Now the worker clears.
 	if hold := m.CheckIn("cl1", "worker"); hold {
 		t.Fatal("worker should proceed once master is done")
 	}
 	waitFor(t, m, "cl1", "worker", StateCheckedIn)
+}
+
+type fakeVerifier struct {
+	targets []string
+	result  []PreflightResult
+	ran     bool
+}
+
+func (f *fakeVerifier) Verify(_ context.Context, targets []string) []PreflightResult {
+	f.targets = targets
+	f.ran = true
+	return f.result
+}
+
+func TestClusterVerifyGatedOnAllDone(t *testing.T) {
+	m := newTestManager(t, NewFakeExecutor())
+	fv := &fakeVerifier{result: []PreflightResult{{Target: "reach 10.254.0.100", OK: true}}}
+	m.SetVerifier(fv)
+	m.Start("cl1", []Node{
+		{Hostname: "cube-1", MachineID: "m1"},
+		{Hostname: "cube-2", MachineID: "m2"},
+	}, "cube-1", []string{"10.254.0.100"})
+	waitFor(t, m, "cl1", "cube-1", StateImaged)
+	waitFor(t, m, "cl1", "cube-2", StateImaged)
+
+	// Only one node done → verify must NOT run yet.
+	m.Report("cl1", "cube-1", StateDone, "", nil)
+	time.Sleep(20 * time.Millisecond)
+	if fv.ran {
+		t.Fatal("cluster verify ran before all nodes were done")
+	}
+	d, _ := m.Status("cl1")
+	if d.ClusterReady {
+		t.Fatal("clusterReady set prematurely")
+	}
+
+	// Second node done → verify runs, cluster becomes ready.
+	m.Report("cl1", "cube-2", StateDone, "", nil)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if d, _ := m.Status("cl1"); d.ClusterReady {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	d, _ = m.Status("cl1")
+	if !d.ClusterReady || len(d.Verify) != 1 {
+		t.Fatalf("cluster not verified after all done: %+v", d)
+	}
+	if len(fv.targets) != 1 || fv.targets[0] != "10.254.0.100" {
+		t.Fatalf("verify targets = %v", fv.targets)
+	}
 }
 
 func TestPreflightFailureIsolatesNode(t *testing.T) {
@@ -98,7 +208,7 @@ func TestPreflightFailureIsolatesNode(t *testing.T) {
 	m.Start("cl1", []Node{
 		{Hostname: "bad", MachineID: "m1"},
 		{Hostname: "good", MachineID: "m2"},
-	}, "good")
+	}, "good", nil)
 	waitFor(t, m, "cl1", "bad", StateError)
 	waitFor(t, m, "cl1", "good", StateImaged) // unaffected
 	d, _ := m.Status("cl1")
@@ -110,7 +220,7 @@ func TestPreflightFailureIsolatesNode(t *testing.T) {
 func TestStatusPersists(t *testing.T) {
 	store, _ := NewStore(t.TempDir())
 	m := NewManager(store, NewFakeExecutor(), Config{PollInterval: time.Millisecond, StageTimeout: time.Second})
-	m.Start("cl9", []Node{{Hostname: "n1", MachineID: "m1"}}, "n1")
+	m.Start("cl9", []Node{{Hostname: "n1", MachineID: "m1"}}, "n1", nil)
 	waitFor(t, m, "cl9", "n1", StateImaged)
 	// A fresh manager backed by the same store reads persisted status.
 	m2 := NewManager(store, NewFakeExecutor(), Config{})
@@ -125,7 +235,7 @@ func TestCancelStopsStepping(t *testing.T) {
 	exec := NewFakeExecutor()
 	exec.StepsToDone = 100000
 	m := newTestManager(t, exec)
-	m.Start("clc", []Node{{Hostname: "n1", MachineID: "m1"}}, "n1")
+	m.Start("clc", []Node{{Hostname: "n1", MachineID: "m1"}}, "n1", nil)
 	waitFor(t, m, "clc", "n1", StateNetbooting)
 	m.Cancel("clc")
 	// State should stop advancing to imaged.

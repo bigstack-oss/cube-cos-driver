@@ -116,6 +116,7 @@ func apply(ctx context.Context, snapshotURL string) error {
 func main() {
 	server := flag.String("server", envOr("SNAPSHOT_SERVER", ""), "snapshot server URL (default: snapshot_server= from kernel cmdline)")
 	poll := flag.Duration("poll", 15*time.Second, "check-in poll interval")
+	preflight := flag.Bool("preflight", false, "installer-phase network preflight (pre-restore); blocks until green light 1")
 	flag.Parse()
 
 	// Already configured → nothing to do.
@@ -135,6 +136,11 @@ func main() {
 		srv = "http://" + srv
 	}
 
+	if *preflight {
+		runPreflight(srv, *poll)
+		return
+	}
+
 	deps := agent.Deps{
 		Identity:   func() ([]string, string) { return macs(), serial() },
 		SetClock:   setClock,
@@ -150,4 +156,26 @@ func main() {
 		log.Fatalf("agent: %v", err)
 	}
 	log.Printf("phone-home-agent: snapshot applied")
+}
+
+// runPreflight runs the installer-phase network validation and blocks until
+// green light 1 clears (then the installer proceeds to restore).
+func runPreflight(srv string, poll time.Duration) {
+	deps := agent.PreflightDeps{
+		Identity:          func() ([]string, string) { return macs(), serial() },
+		SetClock:          setClock,
+		Now:               time.Now,
+		Configured:        func() bool { _, err := os.Stat(configuredMarker); return err == nil },
+		ConfigureTopology: configureTopology,
+		Carrier:           carrier,
+		Probe:             probe,
+		WriteSEL:          writeSEL,
+		HTTP:              &http.Client{Timeout: 30 * time.Second},
+		Sleep:             time.Sleep,
+	}
+	log.Printf("phone-home-agent --preflight: server=%s", srv)
+	if err := agent.RunPreflight(context.Background(), srv, deps, poll); err != nil {
+		log.Fatalf("preflight: %v", err)
+	}
+	log.Printf("phone-home-agent --preflight: green light 1 — proceeding to restore")
 }

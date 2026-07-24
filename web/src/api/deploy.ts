@@ -4,6 +4,10 @@ export type DeployState =
   | 'set-boot-pxe'
   | 'power-cycle'
   | 'netbooting'
+  | 'preflighting'
+  | 'preflight-ok'
+  | 'restoring'
+  | 'rebooting'
   | 'imaging'
   | 'imaged'
   | 'checked-in'
@@ -14,15 +18,42 @@ export type DeployState =
   | 'done'
   | 'error'
 
+// Traffic-light status for the two deploy gates (green light 1 = network
+// preflight, green light 2 = apply).
+export type Light = 'off' | 'yellow' | 'green' | 'red'
+
+// Coarse per-node phase shown in the deploy UI.
+export type Phase =
+  | 'boot'
+  | 'preflight-net'
+  | 'time'
+  | 'wait-for-master'
+  | 'applying'
+  | 'done'
+  | 'error'
+
 export type PreflightResult = { target: string; ok: boolean; detail?: string }
+
+export type NodePreflight = {
+  carrierOk: boolean
+  clockSkewSec: number
+  matrix?: PreflightResult[]
+  passed: boolean
+  reportedAt: string
+}
 
 export type NodeDeploy = {
   hostname: string
   machineId: string
   state: DeployState
   message?: string
+  errCode?: string
   preflight?: PreflightResult[]
+  installerPreflight?: NodePreflight
   updatedAt: string
+  light1: Light
+  light2: Light
+  phase: Phase
 }
 
 export type Deploy = {

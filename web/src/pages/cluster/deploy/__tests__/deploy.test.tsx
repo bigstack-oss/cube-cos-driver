@@ -79,6 +79,9 @@ describe('DeployProgress', () => {
           machineId: 'm1',
           state: 'done',
           updatedAt: '',
+          light1: 'green',
+          light2: 'green',
+          phase: 'done',
           preflight: [
             { target: 'gateway 10.0.0.254', ok: true },
             { target: 'time sync', ok: true, detail: 'corrected skew 3s' },
@@ -89,6 +92,10 @@ describe('DeployProgress', () => {
           machineId: 'm2',
           state: 'error',
           message: 'bmc unreachable',
+          errCode: 'BMC_UNREACHABLE',
+          light1: 'red',
+          light2: 'off',
+          phase: 'error',
           updatedAt: '',
         },
       },
@@ -96,8 +103,9 @@ describe('DeployProgress', () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify(deploy), { status: 200 }))
     render(<DeployProgress clusterId="c1" />)
     await waitFor(() => expect(screen.getByText('cube-1')).toBeTruthy())
-    expect(screen.getByText('done')).toBeTruthy()
-    expect(screen.getByText('error')).toBeTruthy()
+    expect(screen.getByText('Done')).toBeTruthy()
+    expect(screen.getByText('Error')).toBeTruthy()
+    expect(screen.getByText('BMC_UNREACHABLE')).toBeTruthy()
     expect(screen.getByText('bmc unreachable')).toBeTruthy()
     expect(screen.getByText(/gateway 10.0.0.254/)).toBeTruthy()
   })

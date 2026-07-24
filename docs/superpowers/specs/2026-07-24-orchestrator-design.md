@@ -1,202 +1,206 @@
 # Deploy Orchestrator — Design
 
-Date: 2026-07-24
-Status: Proposed (awaiting Travis approval)
+Date: 2026-07-24 (revised 2026-07-25)
+Status: Approved
 
 ## Goal
 
 Once a cluster's nodes are fully associated (each node bound to a BMC machine
-with an OS disk and network binding), the user can **deploy** the cluster: the
-orchestrator drives each node's BMC over IPMI to power-cycle it into a
-one-time PXE netboot, tracks install progress, and — after the node reboots
-into freshly-imaged CubeCOS — the **phone-home agent** running on that node
-checks in, pulls its appointed snapshot, applies it, and reports back. Full
-hands-free path.
+with an OS disk and a network binding), the user can **deploy** the cluster
+hands-free. The orchestrator drives each node's BMC over IPMI to netboot it,
+the node validates the **entire cluster network fabric before it is ever
+reimaged**, then — after restore + reboot into unconfigured CubeCOS — applies
+its appointed snapshot in a master-first order. Two independent report channels
+(in-band HTTP + out-of-band IPMI/SEL) keep the orchestrator informed even when
+the data-plane network is being reconfigured.
 
 ## Two binaries
 
-This repo now builds **two** static Go binaries:
+1. `cmd/cube-cos-snapshot` — the server (SPA + snapshot generator + inventory +
+   orchestrator API), runs on the pxeserver.
+2. `cmd/phone-home-agent` — one static binary that runs in **two contexts**:
+   - `--preflight` inside the **PXE installer** (RAM), before `hex_install
+     restore`.
+   - default mode on **first boot of the installed, unconfigured node**, to
+     apply the snapshot.
+   It self-disables once the node is configured (`/etc/appliance/state/configured`).
 
-1. `cmd/cube-cos-snapshot` — the existing server (SPA + snapshot generator +
-   inventory + orchestrator API), runs on the pxeserver.
-2. `cmd/phone-home-agent` — a tiny agent that ships inside the CubeCOS image and
-   runs on first boot of an **unconfigured** node. It phones home to the
-   snapshot server, learns which snapshot it's been appointed, applies it, and
-   self-disables once configured. (A cubecos packaging change installs the
-   systemd unit that launches it; the agent *code* lives here.)
+## Why preflight runs in the installer (pre-restore)
 
-Safety: deploy always shows a **dry-run plan** and requires explicit
-confirmation; nodes can be deployed individually; nothing is powered without a
-BMC-reachability **preflight**.
+An unconfigured node has no cluster network — bonds/VLANs/static IPs only exist
+after a snapshot is applied. The PXE installer is a **throwaway RAM
+environment** already on the flat L2 (the DHCP network it used to fetch the
+`.pkg`). There we can safely stand up the node's *entire* intended topology,
+validate it end-to-end, and — if it fails — fix cabling and re-kick **without
+having spent a reimage**. Nothing is torn down by hand: the restore + reboot
+wipes the transient config.
 
-## Decisions (approved)
+Because **every node stands up its full static identity concurrently**, the
+nodes can ping each other across all role networks — so the whole fabric (every
+VLAN tag, bond, switch trunk, route, gateway) is validated before any node is
+committed to a reimage. This is the strongest possible fail-fast.
 
-| Decision | Choice |
-| --- | --- |
-| Scope this iteration | Job engine + **real IPMI** power/bootdev; **phone-home agent binary** in this repo; agent-facing API is real. |
-| Node consume | `phone-home-agent` binary (built here) phones home, pulls + applies its snapshot, reports back. |
-| Safety | Plan → explicit confirm → per-node; preflight before power. |
-| Progress transport | Polling (consistent with the app's existing polling). |
-| Placement | Same Go binary, `internal/orchestrator`; runs on the pxeserver. |
+## The two green lights
 
-## Preconditions
+- **Green light 1 — network preflight passed (pre-restore).** Issued by the SPA
+  to a node once the **cluster fabric barrier** is met: every node has stood up
+  its topology, all bond members have carrier (no degraded bond), fleet clock
+  skew ≤ 5s, and **every node's full peer+gateway ping matrix is green**. On
+  receipt the node runs `hex_install restore` → reboot. A node that can't pass
+  holds and reports via SEL; operator re-cables → re-kick.
+- **Green light 2 — apply ordering (post-reboot).** Purely **master-first**: the
+  master (first control-function node) gets it immediately and runs FTS; workers
+  wait until the master's FTS completes, then apply in parallel.
 
-Deploy is available for a cluster only when **every node has an assignment**
-(machine + OS disk). The orchestrator reads, per node:
-- BMC address/username/password (decrypted from the machine record),
-- the assigned machine's NIC MACs (from discovery) — used to recognize the
-  node's DHCP lease during netboot,
-- OS disk + hostname (for the plan and future apply).
+The all-nodes-preflighted barrier lives entirely in green light 1, so the
+post-reboot apply gate collapses to master-first only.
 
-## Per-node state machine (this iteration)
+## Per-node state machine
 
 ```
-pending → bmc-preflight → set-boot-pxe → power-cycle → netbooting → imaging → imaged
-       → checked-in → net-preflight → applying → applied → done
+pending → bmc-preflight → set-boot-pxe → power-cycle → netbooting
+       → preflighting → preflight-ok ──(GL1)──► restoring → rebooting
+       → checked-in ──(GL2: master-first)──► applying → applied → done
    any step → error (with message); node is independently retryable
 ```
-The stages from `checked-in` onward are driven by the agent's check-in/report
-calls (correlated to the node by MAC), not by the orchestrator polling.
 
-- **bmc-preflight**: orchestrator-side — IPMI reachable, creds valid.
-- **net-preflight**: agent-side gate before apply — **time sync** + **network
-  connectivity test** (below). Apply is blocked until it passes (with an
-  explicit user override available).
+- **bmc-preflight / set-boot-pxe / power-cycle / netbooting**: orchestrator-side,
+  over IPMI + dnsmasq-lease observation (unchanged).
+- **preflighting**: the installer agent (`--preflight`) is configuring the
+  topology and running the ping matrix; reports progress via SEL + best-effort
+  in-band.
+- **preflight-ok**: this node's own matrix is green; it now waits for GL1.
+- **restoring / rebooting**: node received GL1 and is imaging itself.
+- **checked-in**: the installed node's agent phoned home; waiting for GL2.
+- **applying → applied → done**: snapshot pulled + applied; FTS complete.
 
-- **bmc-preflight**: IPMI Get Chassis/Power Status succeeds (BMC reachable,
-  creds valid).
-- **set-boot-pxe**: IPMI chassis bootdev = PXE, one-time.
-- **power-cycle**: power on if off, else power cycle.
-- **netbooting**: a DHCP lease for one of the node's known MACs appears
-  (real: read the pxeserver's `dnsmasq.leases`; fake: simulated).
-- **imaging**: the node is fetching its `.pkg` (real: pxeserver lighttpd
-  access log; fake: simulated). 
-- **imaged**: install media fully fetched / node reboots off-media.
-- **checked-in**: the agent on the freshly-imaged node POSTed to
-  `/api/v1/agents/checkin` with matching MACs.
-- **net-preflight**: the agent synced the node clock and passed the
-  connectivity test (see below); results reported. A failure holds the node
-  here (retryable, or user override to force apply).
-- **applying → applied → done**: the agent pulled its appointed snapshot, ran
-  apply, and reported success (via `/api/v1/agents/report`).
+## Preflight (installer, `agent --preflight`)
+
+Per-node bundle `preflight.json` is generated by the SPA and shipped inside the
+`.snapshot`. The agent:
+
+1. Fetches its bundle by MAC from the SPA over the flat L2 (already reachable).
+2. **Time sync**: set OS clock from the SPA (`serverTimeUTC`), `hwclock
+   --systohc` to persist across the reboot. OOB fallback: read the BMC clock via
+   local KCS `Get SEL Time` if the SPA is unreachable in-band.
+3. **Configure full transient topology**: bonds (members), VLANs, and the four
+   role IPs (mgmt/provider/overlay/storage) with their CIDRs. Uses `ip`
+   (iproute2); loads `bonding` + `8021q`.
+4. **Carrier check**: every intended bond member must have carrier — a member
+   down = **degraded = fail**.
+5. **Ping matrix (retry-until-converge)**: from each role IP that is configured,
+   ping every peer's IP on that same network + the configured gateway. Retry
+   until all reachable or a timeout (peers come up as they configure their own
+   topology — eventual consistency, no push signal needed).
+6. **Report** results via SEL (authoritative — the bonded phase may drop the
+   flat-L2 in-band channel) and best-effort in-band.
+7. **Hold for GL1**: poll the SPA (over the now-validated fabric, or a retained
+   flat/native IP) until the all-clear; a node that can't reach the SPA holds
+   (safe). Then `restore` + reboot. No teardown.
+
+Only role networks that resolve to an IP are pinged (e.g. an L2-only provider
+network is skipped); gateways are pinged only where configured.
+
+## Apply (installed OS, default agent mode)
+
+1. Agent starts, DHCP on the flat L2 (node is unconfigured again).
+2. Re-sync clock from the SPA.
+3. **Wait for GL2** (master-first). `Hold = hostname != master && master != done`.
+4. Download snapshot over the flat L2, run `hex_config snapshot_apply`, report
+   `applying → done` in-band + SEL. `done` = FTS complete (the
+   `/etc/appliance/state/configured` marker appears).
+
+## Out-of-band channel (IPMI/SEL)
+
+- **Node → SPA**: the agent writes compact OEM SEL records via local KCS
+  (`go-ipmi NewOpenClient` → `AddSELEntry`) at every phase transition
+  (`preflight-ok`, `preflight-degraded`, `applying`, `applied`, `error`). No
+  `ipmitool` needed in the installer.
+- **SPA → node**: green lights travel **in-band** (the node polls the SPA; the
+  flat L2 is up pre-restore and post-reboot). SEL is not used for the reverse
+  direction.
+- **SPA read**: a `SELObserver` polls each node's SEL over the BMC LAN
+  (`GetSELEntry`) and merges it with in-band reports, preferring whichever
+  confirms progress. SEL event records are self-timestamped (4-byte epoch).
+
+## Time-sync gate (≤5s across cluster)
+
+Reference clock = the SPA host. Each node syncs to it in the installer and again
+post-reboot; inter-node skew is then bounded by sync-time spread + LAN jitter
+(tens of ms) — far inside ±5s. The gate exists to catch a node that *missed* a
+sync (dead CMOS/RTC), not to fight jitter. The orchestrator verifies fleet skew
+two ways — the agent's in-band report and `Get SEL Time` over the BMC LAN — and
+**withholds GL1 if any node exceeds ±5s**. SEL time is 1s-resolution (fine for
+the gate); tight sub-second discipline is chrony's job post-FTS, configured by
+the snapshot.
+
+## Tier-C whole-cluster smoke test
+
+After every node reaches `done`, the server pings the control VIP + node mgmt
+IPs (`Verifier`). This is now a light final confirmation — the heavy fabric
+validation already happened pre-restore.
 
 ## Executor interface (the CI/hardware seam)
 
 ```go
-type Node struct {
-    Hostname string
-    BMC      struct{ Address, Username, Password string }
-    MACs     []string // candidate NIC MACs from discovery
-    OSDisk   string
-}
-
 type Executor interface {
-    Preflight(ctx context.Context, n Node) error
-    SetBootPXE(ctx context.Context, n Node) error
-    PowerCycle(ctx context.Context, n Node) error
-    // Observe returns the furthest install stage seen for this node.
-    Observe(ctx context.Context, n Node) (Stage, error) // none|dhcp|imaging|done
+    Preflight(ctx, n Node) error   // BMC reachable, creds valid
+    SetBootPXE(ctx, n Node) error  // one-time EFI PXE
+    PowerCycle(ctx, n Node) error
+    Observe(ctx, n Node) (Stage, error) // none|dhcp|imaging|done
 }
 ```
 
-- **Real**: `ipmiExecutor` (vendored `go-ipmi`) for power/bootdev; a
-  pxeserver `observer` reading `dnsmasq.leases` + lighttpd access log by MAC.
-- **Fake**: deterministic in-memory executor advancing stages over ticks —
-  used by all engine/API tests. **No real BMC is ever contacted in CI.**
+- **Real**: `IPMIExecutor` (vendored `go-ipmi`) + pxeserver observer
+  (dnsmasq.leases + lighttpd log by MAC). `SELReporter`/`SELObserver` use the
+  same library (local KCS on the node, LAN on the server).
+- **Fake**: deterministic in-memory executor + fake SEL + fake verifier — all
+  engine/API/agent tests. **No real BMC in CI.**
 
-## Job engine
-
-- One `Deploy` per cluster, holding per-node `NodeDeploy{state, stage, error,
-  timestamps}`. Persisted to `<data-dir>/deploys/<clusterShortId>.json` so
-  status survives restart.
-- The engine runs each node's state machine in its own goroutine, stepping
-  through the executor calls, polling `Observe` on an interval until `imaged`
-  (or a timeout → error). Nodes are independent (one failing doesn't block
-  others).
-- Cancel stops stepping (does not forcibly power off — a running install is
-  left alone; documented).
-
-## The agent (`cmd/phone-home-agent`)
-
-A tiny static binary. On first boot of an unconfigured node (systemd unit,
-gated on `/etc/appliance/state/configured` being absent):
-
-1. Collect identity: all NIC MACs, serial (from `ip`/DMI).
-2. Loop: `POST /api/v1/agents/checkin {macs, serial}` to the snapshot server
-   (address from kernel cmdline `snapshot_server=` or a `--server` flag / the
-   PXE server IP). Response includes `{appointed, hostname, snapshotUrl,
-   serverTimeUTC, preflight}` (see below).
-3. **Time sync** (crucial — skew breaks TLS/keystone/ceph): set the node clock
-   to `serverTimeUTC` from the checkin response (server acts as the time
-   source; no reliance on external NTP in air-gap). Report the pre-sync skew.
-4. **Network preflight** (crucial): bring up the candidate interfaces per the
-   appointed snapshot's network config and test reachability of the targets
-   the server returned — default gateway, DNS server(s), the snapshot/PXE
-   server, and the controller/VIP + peer management IPs. Report per-target
-   pass/fail. If any required target fails, **stop before apply** (node holds
-   at `net-preflight`; the UI can override to force).
-5. When preflight passes: download the snapshot from `snapshotUrl`, run
-   `hex_config snapshot_apply <file>`, and `POST /api/v1/agents/report
-   {hostname, state, message, preflight?}` at each transition
-   (net-preflight → applying → applied | error).
-6. Exit/self-disable once applied (or once the node is already configured).
-
-Server address discovery, retry/backoff, and "already configured → no-op" are
-handled in the agent. The agent has **no secrets** — it's given only its own
-snapshot URL and preflight targets after the server matches its MACs to an
-appointment. The server derives `serverTimeUTC` from its own clock and the
-`preflight` targets from the node's snapshot config (gateway, DNS, HA
-VIP/controller, peer mgmt IPs) — it already holds all of this in the
-clusterDetail.
-
-## REST API
+## REST API (additions)
 
 | Method & path | Purpose |
 | --- | --- |
-| `GET /api/v1/clusters/{id}/deploy/plan` | Dry-run: per-node actions + the MACs/OS disk that would be used; 409 if any node unassigned |
-| `POST /api/v1/clusters/{id}/deploy` | Start deploy. Body `{hostnames?: []}` to deploy a subset; requires `{confirm:true}` |
-| `GET /api/v1/clusters/{id}/deploy` | Current job status (per-node state/stage) |
-| `POST /api/v1/clusters/{id}/deploy/cancel` | Stop stepping |
-| `POST /api/v1/agents/checkin` | Agent identity → match MACs to an appointment; returns `{appointed, hostname, snapshotUrl, serverTimeUTC, preflight:{gateway,dns[],server,peers[]}}` and advances that node to `checked-in` |
-| `POST /api/v1/agents/report` | Agent progress (net-preflight results, applying/applied/error) → advances the node's deploy state and stores preflight results |
+| `POST /api/v1/agents/preflight/checkin` | Installer agent → get `preflight.json` (topology + peer/gateway matrix + serverTimeUTC) by MAC |
+| `POST /api/v1/agents/preflight/report` | Installer agent → report matrix/carrier/skew; advances `preflighting`/`preflight-ok`/`error` |
+| `GET  /api/v1/agents/preflight/greenlight` | Installer agent → poll GL1 (fabric barrier all-clear) by MAC |
+| `POST /api/v1/agents/checkin` | Installed agent → appointment + GL2 (`hold`) by MAC |
+| `POST /api/v1/agents/report` | Installed agent → applying/applied/done/error |
 
-## Frontend
-
-- **Deploy** button on the cluster page, enabled only when all nodes are
-  assigned (tooltip explains what's missing otherwise).
-- **Plan modal**: table of per-node actions (BMC, OS disk, MACs, steps) +
-  "these servers will be power-cycled" warning + Confirm.
-- **Deploy progress panel**: per-node state/stage with a small timeline and
-  error surfacing; polls `GET …/deploy` while active. Re-openable from the
-  cluster page.
+Existing deploy plan/start/status/cancel endpoints unchanged.
 
 ## Build
 
-`make all` builds the SPA, then both binaries: `bin/cube-cos-snapshot`
-(embeds SPA) and `bin/phone-home-agent`. Both static, vendored, air-gapped.
+`make all` builds the SPA then both static, vendored binaries. The
+`phone-home-agent` is **also shipped into the PXE installer bundle** (cubecos
+`projpxe.mk`) so `hex_autoinstall.sh` can invoke `--preflight` before restore.
+
+## cubecos packaging (separate branch `feat/zero-touch-orchestrator`)
+
+- `hex_autoinstall.sh`: gated on the `autoinstall` kernel arg; runs `agent
+  --preflight` (blocks on GL1) **before** `hex_install restore`.
+- `projpxe.mk`: ship the agent binary into the installer; ensure the installer
+  carries `iproute`, `iputils`, `hwclock` (util-linux) and loads `bonding`,
+  `8021q`, `ipmi_si`, `ipmi_devintf`.
+- OS image: install the agent + a systemd unit gated on the `configured` marker
+  and a `snapshot_server=` kernel arg.
 
 ## Testing
 
-- Go: engine drives fake executor through IPMI stages incl. an injected
-  failure (bmc-preflight fail → node error, others proceed); agent
-  check-in/report advances the matched node (checked-in → net-preflight →
-  applied); MAC→appointment matching; checkin returns correct serverTimeUTC +
-  preflight targets derived from the snapshot; a failing net-preflight report
-  holds the node before apply; plan precondition (unassigned → 409);
-  persistence round-trip; API confirm gate. Agent: run loop against an
-  httptest server — checkin → time-sync (injected clock setter) → connectivity
-  test (injected prober; one target fails → held) → apply (injected applyFn) →
-  report.
-- Web: Deploy button enablement, plan modal contents, progress rendering from
-  a mocked status.
-- `scripts/smoke.sh`: deploy against the fake executor, then simulate an agent
-  check-in + report and assert the node reaches `applied`.
-- Real IPMI + real `hex_config snapshot_apply` are exercised only on the sky
-  lab (follow-up), never CI.
+- Go: fake executor through IPMI stages incl. injected failure; **preflight
+  barrier** (all matrices green → GL1; one node degraded → GL1 withheld);
+  **time-skew gate** (a node >5s → GL1 withheld); master-first apply gate; SEL
+  merge prefers progress; persistence; API confirm gate. Agent: run both modes
+  against an httptest server with injected clock/prober/topology/apply/SEL.
+- Web: Deploy enablement, plan modal, progress rendering (incl. preflight phase)
+  from mocked status.
+- `scripts/smoke.sh`: deploy against the fake executor; simulate installer
+  preflight (→ GL1) then installed apply (→ done).
+- Real IPMI + real `hex_config snapshot_apply` only on the lab (tripwire), never
+  CI.
 
 ## Out of scope (later)
 
-The cubecos packaging change that installs the agent's systemd unit + kernel
-cmdline (`snapshot_server=`) into the image; per-MAC pxelinux binding; auto
-power-off on cancel; multi-cluster concurrency limits; agent auth token
-hardening.
+Per-MAC pxelinux binding; auto power-off on cancel; multi-cluster concurrency
+limits; agent auth-token hardening; IP-conflict ARP probe before assigning
+transient IPs.

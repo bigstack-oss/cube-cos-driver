@@ -51,7 +51,8 @@ func New(cfg Config) (http.Handler, error) {
 	clusterStore := &storage.Store{DataDir: cfg.DataDir, ExportDir: cfg.ExportDir}
 
 	deployExec := cfg.DeployExecutor
-	if deployExec == nil {
+	realHW := deployExec == nil
+	if realHW {
 		deployExec = orchestrator.IPMIExecutor{Observer: orchestrator.DefaultObserver()}
 	}
 	deployStore, err := orchestrator.NewStore(filepath.Join(cfg.DataDir, "deploys"))
@@ -59,6 +60,10 @@ func New(cfg Config) (http.Handler, error) {
 		return nil, err
 	}
 	mgr := orchestrator.NewManager(deployStore, deployExec, cfg.DeployConfig)
+	if realHW {
+		// Real hardware: also read node status out-of-band over the BMC LAN.
+		mgr.SetSELObserver(orchestrator.IPMISELObserver{})
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
