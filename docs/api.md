@@ -81,6 +81,20 @@ Fetched `inventory` includes source, serial/manufacturer/model, CPU
 model/count/cores, memory, and lists of NICs (name/MAC/speed), disks
 (model/size/type), and PCIe cards.
 
+### `POST /api/v1/machines/import`
+
+Multipart upload (`file` field) of an `.xlsx` or `.csv` with header columns
+`label, bmc_address, bmc_username, bmc_password`. Bulk-creates machines and
+returns `{"created": N, "errors": [{"row": R, "message": "..."}]}`. A
+downloadable template is at `GET /api/v1/machines/import/template`.
+
+### `PUT /api/v1/machines/{id}/assignment`
+
+Bind a machine to a cluster node. Body `{"clusterId": "...", "hostname": "...", "osDisk": "..."}`.
+Enforces 1:1: any other machine on the same node is unbound. `DELETE` on the
+same path clears the binding. Bindings for a cluster are also cleared when the
+cluster is deleted.
+
 ## `GET /healthz`
 
 Liveness probe; returns `200 ok`.
