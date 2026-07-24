@@ -147,6 +147,27 @@ func (m *Manager) advance(clusterID, hostname string, s State) {
 	m.set(clusterID, hostname, func(nd *NodeDeploy) { nd.State = s })
 }
 
+func (m *Manager) state(clusterID, hostname string) State {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if d := m.deploys[clusterID]; d != nil {
+		if nd := d.Nodes[hostname]; nd != nil {
+			return nd.State
+		}
+	}
+	return ""
+}
+
+// agentDriven reports whether a state is advanced by the agent (so the
+// orchestrator's imaging poll should stop).
+func agentDriven(s State) bool {
+	switch s {
+	case StateCheckedIn, StateNetPreflight, StateApplying, StateApplied, StateDone, StateError:
+		return true
+	}
+	return false
+}
+
 // runNode drives the orchestrator-side (IPMI + imaging) stages. Post-imaging
 // stages are advanced by the agent's checkin/report.
 func (m *Manager) runNode(ctx context.Context, clusterID string, n Node) {
@@ -177,6 +198,11 @@ func (m *Manager) runNode(ctx context.Context, clusterID string, n Node) {
 		case <-ctx.Done():
 			return // cancelled; leave state as-is
 		case <-ticker.C:
+		}
+		// If the agent has already checked in (or beyond), imaging is done
+		// from our perspective — stop polling.
+		if s := m.state(clusterID, n.Hostname); agentDriven(s) {
+			return
 		}
 		if time.Now().After(deadline) {
 			m.fail(clusterID, n.Hostname, errors.New("timed out waiting for install"))
