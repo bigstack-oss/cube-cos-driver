@@ -13,6 +13,8 @@ import { Machine } from '../../model/machine'
 import { ClusterWizard } from '../../components/wizards/cluster/ClusterWizard'
 import { NodeWizard } from '../../components/wizards/node/NodeWizard'
 import { AssignServerFlow } from './assign/AssignServerFlow'
+import { DeployModal } from './deploy/DeployModal'
+import { DeployProgress } from './deploy/DeployProgress'
 import { ClusterDetail, NodeConfig, shortId } from '../../model/types'
 import { validateCluster } from '../../model/validate'
 import {
@@ -50,6 +52,8 @@ export const ClusterPage = () => {
   const [serverHasCluster, setServerHasCluster] = useState(false)
   const [machines, setMachines] = useState<Machine[]>([])
   const [assigningNode, setAssigningNode] = useState<NodeConfig | undefined>()
+  const [deployOpen, setDeployOpen] = useState(false)
+  const [deployNonce, setDeployNonce] = useState(0)
 
   const refreshMachines = () => {
     listMachines()
@@ -108,6 +112,8 @@ export const ClusterPage = () => {
       serverByHostname[m.assignment.hostname] = m
     }
   }
+  const allAssigned =
+    nodes.length > 0 && nodes.every((n) => !!serverByHostname[n.hostname])
 
   const detail: ClusterDetail = {
     clusterInfo: info,
@@ -150,6 +156,8 @@ export const ClusterPage = () => {
         onEdit={() => setClusterWizardOpen(true)}
       />
 
+      <DeployProgress clusterId={sid} reloadSignal={deployNonce} />
+
       <ProblemBanner problems={problems} />
       {saveState === 'error' && (
         <ProblemBanner
@@ -186,6 +194,14 @@ export const ClusterPage = () => {
             </CosButton>
           </>
         )}
+        <CosButton
+          disabled={!allAssigned}
+          onClick={() => setDeployOpen(true)}
+        >
+          {allAssigned
+            ? 'Deploy to cluster'
+            : 'Deploy (assign all servers first)'}
+        </CosButton>
         <div className="flex-1" />
         <CosButton type="warning" onClick={() => setDeleteClusterOpen(true)}>
           Delete cluster
@@ -318,6 +334,16 @@ export const ClusterPage = () => {
         isOpen={urlModalOpen}
         hostnames={nodes.map((n) => n.hostname)}
         onClose={() => setUrlModalOpen(false)}
+      />
+
+      <DeployModal
+        isOpen={deployOpen}
+        clusterId={sid}
+        onCancel={() => setDeployOpen(false)}
+        onStarted={() => {
+          setDeployOpen(false)
+          setDeployNonce((n) => n + 1)
+        }}
       />
     </div>
   )
