@@ -1,9 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"mime/multipart"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -233,5 +236,61 @@ func TestClusterDeleteClearsAssignments(t *testing.T) {
 	resp.Body.Close()
 	if gm.Assignment != nil {
 		t.Fatalf("assignment should be cleared on cluster delete, got %+v", gm.Assignment)
+	}
+}
+
+func TestMachineImportCSV(t *testing.T) {
+	srv := newTestServerCfg(t, Config{DataDir: t.TempDir()})
+
+	csv := "label,bmc_address,bmc_username,bmc_password\n" +
+		"cube-1,10.0.0.11,admin,pw1\n" +
+		"cube-2,10.0.0.12,root,pw2\n" +
+		"bad,,admin,pw\n" // missing address
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, _ := mw.CreateFormFile("file", "machines.csv")
+	fw.Write([]byte(csv))
+	mw.Close()
+
+	req, _ := http.NewRequest("POST", srv.URL+"/api/v1/machines/import", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Created int `json:"created"`
+		Errors  []struct {
+			Row     int    `json:"row"`
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	resp.Body.Close()
+	if out.Created != 2 || len(out.Errors) != 1 {
+		t.Fatalf("import result = %+v", out)
+	}
+
+	// The two good machines are now listed.
+	resp = do(t, "GET", srv.URL+"/api/v1/machines", nil)
+	var list []inventory.Machine
+	json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	if len(list) != 2 {
+		t.Fatalf("listed %d machines", len(list))
+	}
+}
+
+func TestMachineImportTemplate(t *testing.T) {
+	srv := newTestServerCfg(t, Config{DataDir: t.TempDir()})
+	resp := do(t, "GET", srv.URL+"/api/v1/machines/import/template", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("template = %d", resp.StatusCode)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(b), "bmc_address") {
+		t.Fatalf("template missing header: %s", b)
 	}
 }

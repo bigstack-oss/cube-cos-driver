@@ -35,6 +35,11 @@ export type HardwareInventory = {
   cards?: Card[]
 }
 
+export type Assignment = {
+  clusterId: string
+  hostname: string
+}
+
 export type Machine = {
   id: string
   label: string
@@ -43,6 +48,7 @@ export type Machine = {
   inventory?: HardwareInventory
   fetchState: FetchState
   fetchError?: string
+  assignment?: Assignment
 }
 
 export type MachineInput = {

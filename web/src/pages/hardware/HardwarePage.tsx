@@ -8,6 +8,7 @@ import {
   updateMachine,
 } from '../../api/machines'
 import { formatBytes, Machine, MachineInput } from '../../model/machine'
+import { ImportMachinesModal } from './ImportMachinesModal'
 import { MachineDetails } from './MachineDetails'
 import { MachineModal } from './MachineModal'
 
@@ -58,6 +59,7 @@ export const HardwarePage = () => {
   const [editing, setEditing] = useState<Machine | undefined>()
   const [saving, setSaving] = useState(false)
   const [details, setDetails] = useState<Machine | null>(null)
+  const [importOpen, setImportOpen] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const refresh = useCallback(async () => {
@@ -152,6 +154,9 @@ export const HardwarePage = () => {
         >
           Add machine
         </CosButton>
+        <CosButton type="secondary" onClick={() => setImportOpen(true)}>
+          Import from file
+        </CosButton>
         {error && (
           <span className="primary-body4 text-status-negative">{error}</span>
         )}
@@ -224,6 +229,15 @@ export const HardwarePage = () => {
       />
 
       <MachineDetails machine={details} onClose={() => setDetails(null)} />
+
+      <ImportMachinesModal
+        isOpen={importOpen}
+        onCancel={() => setImportOpen(false)}
+        onDone={() => {
+          setImportOpen(false)
+          refresh()
+        }}
+      />
     </div>
   )
 }
