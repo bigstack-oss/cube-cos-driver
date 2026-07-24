@@ -1,0 +1,34 @@
+# The catalog below MUST stay in sync with external/cube-cos-ui/pnpm-workspace.yaml
+# (pnpm only reads the root workspace file). Re-check after submodule bumps.
+packages:
+  - 'web'
+  - 'external/cube-cos-ui/packages/*'
+allowBuilds:
+  '@swc/core': false
+
+catalog:
+  '@fontsource/inter': '^5.2.8'
+  "@fontsource/noto-sans-tc": "^5.2.8"
+  '@fontsource/urbanist': '^5.2.7'
+  '@types/lodash': ^4.17.24
+  '@types/pluralize': '^0.0.33'
+  '@types/react': ^19.2.14
+  '@types/react-dom': ^19.0.0
+  "@vitejs/plugin-react-swc": "^4.3.0"
+  axios: '1.15.2'
+  autoprefixer: ^10.4.20
+  class-variance-authority: ^0.7.1
+  code-inspector-plugin: "^1.5.1"
+  dayjs: ^1.11.20
+  i18next: "^26.0.6"
+  lodash: ^4.18.1
+  'pluralize': '^8.0.0'
+  postcss: ^8.5.10
+  react: ^19.2.5
+  react-dom: ^19.2.5
+  react-i18next: "^17.0.4"
+  tailwind-merge: ^2.6.0
+  tailwindcss: ^3.4.17
+  'vite': '^8.0.8'
+  'vite-plugin-svgr': '^5.2.0'
+  'vitest': '^4.1.4'

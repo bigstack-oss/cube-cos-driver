@@ -1,0 +1,46 @@
+{
+  "name": "@cube-frontend/snapshot-generator",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=v24.15",
+    "pnpm": ">=10.33"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "tsc": "tsc -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@cube-frontend/ui-library": "workspace:*",
+    "@cube-frontend/ui-theme": "workspace:*",
+    "@cube-frontend/utils": "workspace:*",
+    "@fontsource/inter": "catalog:",
+    "@fontsource/noto-sans-tc": "catalog:",
+    "@fontsource/urbanist": "catalog:",
+    "class-variance-authority": "catalog:",
+    "classnames": "^2.5.1",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-router": "^7.14.2",
+    "tailwind-merge": "catalog:"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react-swc": "catalog:",
+    "autoprefixer": "catalog:",
+    "jsdom": "^26.1.0",
+    "postcss": "catalog:",
+    "tailwindcss": "catalog:",
+    "typescript": "~6.0.3",
+    "vite": "catalog:",
+    "vite-plugin-svgr": "catalog:",
+    "vitest": "catalog:"
+  }
+}
