@@ -1,0 +1,94 @@
+---
+# network/network1_0.yml
+name: network
+version: 1.0
+hostname: tsri-cc2
+default-interface: IF.5
+dns: 
+  auto: false
+  primary: 140.126.24.1
+  secondary: 140.110.216.91
+interfaces: 
+  - 
+    type: 0
+    enabled: true
+    label: IF.1
+    speed-duplex: auto
+    ipv4: 
+      dhcp: false
+      ipaddr: 0.0.0.0
+      netmask: 0.0.0.0
+      gateway: 
+    ipv6: 
+      enabled: true
+      dhcp: true
+  - 
+    type: 0
+    enabled: false
+    label: IF.2
+    speed-duplex: auto
+    ipv4: 
+      dhcp: true
+    ipv6: 
+      enabled: false
+  - 
+    type: 0
+    enabled: true
+    label: IF.3
+    speed-duplex: auto
+    ipv4: 
+      dhcp: false
+      ipaddr: 0.0.0.0
+      netmask: 0.0.0.0
+      gateway: 
+    ipv6: 
+      enabled: true
+      dhcp: true
+  - 
+    type: 0
+    enabled: true
+    label: IF.4
+    speed-duplex: auto
+    ipv4: 
+      dhcp: false
+      ipaddr: 
+      netmask: 
+      gateway: 
+    ipv6: 
+      enabled: false
+  - 
+    type: 0
+    enabled: true
+    label: IF.5
+    speed-duplex: auto
+    ipv4: 
+      dhcp: false
+      ipaddr: 192.168.11.12
+      netmask: 255.255.255.0
+      gateway: 192.168.11.254
+    ipv6: 
+      enabled: true
+      dhcp: true
+  - 
+    type: 0
+    enabled: false
+    label: IF.6
+    speed-duplex: auto
+    ipv4: 
+      dhcp: true
+    ipv6: 
+      enabled: false
+  - 
+    type: 3
+    enabled: true
+    label: IF.4.603
+    master: IF.4
+    speed-duplex: auto
+    ipv4: 
+      dhcp: false
+      ipaddr: 10.10.10.102
+      netmask: 255.255.255.0
+      gateway: 
+    ipv6: 
+      enabled: true
+      dhcp: true
