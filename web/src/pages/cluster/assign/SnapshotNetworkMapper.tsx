@@ -16,49 +16,42 @@ export type SnapshotNetworkMapperProps = {
   onChange: (node: NodeConfig) => void
 }
 
-type Endpoints = {
-  x1: number
-  y1: number
-  x2: number
-  y2: number
-  cx: number // vertical channel x for this line's elbow
-  label?: string
-}
-type Path = { d: string; label?: string; lx: number; ly: number }
+type Vert = { x: number; y0: number; y1: number }
+type Path = { d: string; color: string; label?: string; lx: number; ly: number }
 
 const HOP = 6 // hump radius where a horizontal crosses another line's vertical
 
-// buildPath routes an orthogonal elbow (H → V at the line's own channel → H)
-// and draws a small upward arc "hump" wherever a horizontal segment crosses a
-// vertical channel belonging to another line.
-const buildPath = (e: Endpoints, verticals: { x: number; y0: number; y1: number }[]): Path => {
-  const cx = e.cx
-  const horiz = (y: number, xa: number, xb: number): string => {
-    const crosses = verticals
-      .filter(
-        (v) =>
-          Math.abs(v.x - cx) > 0.5 &&
-          v.x > xa + HOP &&
-          v.x < xb - HOP &&
-          y > Math.min(v.y0, v.y1) &&
-          y < Math.max(v.y0, v.y1),
-      )
-      .map((v) => v.x)
-      .sort((a, b) => a - b)
-    let d = ''
-    for (const c of crosses) {
-      // sweep-flag 0 => upward semicircle for a left-to-right segment.
-      d += ` L ${c - HOP} ${y} A ${HOP} ${HOP} 0 0 0 ${c + HOP} ${y}`
-    }
-    d += ` L ${xb} ${y}`
-    return d
+// Distinct categorical line colors from the cube theme.
+const LINE_COLORS = [
+  '#4C68F9', // primary
+  '#00D5A2', // green
+  '#31C4FF', // blue
+  '#F9C300', // yellow
+  '#FF5D5D', // red
+  '#57E2E2', // cyan
+]
+const PORT_COLOR = '#8A8D97' // grey-300, for port->base bindings
+
+// hHops draws a left-to-right horizontal segment at y from xa to xb, arcing a
+// small upward "hump" over any vertical in `verts` it crosses (excluding the
+// line's own channels in `own`).
+const hHops = (y: number, xa: number, xb: number, verts: Vert[], own: number[]): string => {
+  const crosses = verts
+    .filter(
+      (v) =>
+        !own.some((x) => Math.abs(x - v.x) < 0.5) &&
+        v.x > xa + HOP &&
+        v.x < xb - HOP &&
+        y > Math.min(v.y0, v.y1) + 0.5 &&
+        y < Math.max(v.y0, v.y1) - 0.5,
+    )
+    .map((v) => v.x)
+    .sort((a, b) => a - b)
+  let d = ''
+  for (const c of crosses) {
+    d += ` L ${c - HOP} ${y} A ${HOP} ${HOP} 0 0 0 ${c + HOP} ${y}` // sweep 0 => hump up
   }
-  const d =
-    `M ${e.x1} ${e.y1}` +
-    horiz(e.y1, e.x1, cx) +
-    ` L ${cx} ${e.y2}` +
-    horiz(e.y2, cx, e.x2)
-  return { d, label: e.label, lx: cx + 4, ly: (e.y1 + e.y2) / 2 - 4 }
+  return d + ` L ${xb} ${y}`
 }
 
 const portIndexOf = (f: IF): number => {
@@ -95,36 +88,74 @@ export const SnapshotNetworkMapper = (props: SnapshotNetworkMapperProps) => {
           y: r.top + r.height / 2 - o.top,
         }
       }
-      const ends: Endpoints[] = []
-      // Real port -> base interface: short elbow, channel at the midpoint.
+      // Collect base -> role connections (each drawn as its own bus route).
+      type Conn = { x1: number; y1: number; x2: number; y2: number; label?: string }
+      const conns: Conn[] = []
+      chains.forEach((ch) => {
+        if (!ch.baseIf) return
+        const a = point(`base-${ch.baseIf.id}`, 'r')
+        const rr = point(`role-${ch.role}`, 'l')
+        if (a && rr) conns.push({ x1: a.x, y1: a.y, x2: rr.x, y2: rr.y, label: ch.vlan?.name })
+      })
+
+      const n = conns.length
+      const baseRight = n ? Math.max(...conns.map((c) => c.x1)) : 0
+      const roleLeft = n ? Math.min(...conns.map((c) => c.x2)) : 0
+      const topY = n ? Math.min(...conns.flatMap((c) => [c.y1, c.y2])) : 0
+      const botY = n ? Math.max(...conns.flatMap((c) => [c.y1, c.y2])) : 0
+
+      // Each connection gets its own entry channel, horizontal lane, and exit
+      // channel so no two lines share a run.
+      const geo = conns.map((c, i) => ({
+        ...c,
+        entryX: baseRight + 10 + i * 7,
+        exitX: roleLeft - 10 - i * 7,
+        laneY: topY + ((i + 1) * (botY - topY)) / (n + 1),
+      }))
+
+      // Verticals from every connection (for hop detection).
+      const verts: Vert[] = geo.flatMap((g) => [
+        { x: g.entryX, y0: g.y1, y1: g.laneY },
+        { x: g.exitX, y0: g.laneY, y1: g.y2 },
+      ])
+
+      const out: Path[] = []
+
+      // Port -> base bindings: simple grey elbow on the left.
       bases.forEach((b) => {
         const idx = portIndexOf(b)
         if (idx < 0 || idx >= ports.length) return
         const a = point(`port-${idx}`, 'r')
         const bb = point(`base-${b.id}`, 'l')
-        if (a && bb) ends.push({ x1: a.x, y1: a.y, x2: bb.x, y2: bb.y, cx: (a.x + bb.x) / 2 })
-      })
-      // Base -> role: each gets its OWN staggered vertical channel so lines
-      // are distinct and their crossings show hops.
-      const roleEnds: Endpoints[] = []
-      chains.forEach((ch) => {
-        if (!ch.baseIf) return
-        const a = point(`base-${ch.baseIf.id}`, 'r')
-        const rr = point(`role-${ch.role}`, 'l')
-        if (a && rr) roleEnds.push({ x1: a.x, y1: a.y, x2: rr.x, y2: rr.y, cx: 0, label: ch.vlan?.name })
-      })
-      if (roleEnds.length) {
-        const baseRight = Math.max(...roleEnds.map((e) => e.x1))
-        const roleLeft = Math.min(...roleEnds.map((e) => e.x2))
-        const span = Math.max(40, roleLeft - baseRight)
-        const step = span / (roleEnds.length + 1)
-        roleEnds.forEach((e, i) => {
-          e.cx = baseRight + step * (i + 1)
+        if (!a || !bb) return
+        const mid = (a.x + bb.x) / 2
+        out.push({
+          d: `M ${a.x} ${a.y} L ${mid} ${a.y} L ${mid} ${bb.y} L ${bb.x} ${bb.y}`,
+          color: PORT_COLOR,
+          lx: 0,
+          ly: 0,
         })
-      }
-      ends.push(...roleEnds)
-      const verticals = ends.map((e) => ({ x: e.cx, y0: e.y1, y1: e.y2 }))
-      const out = ends.map((e) => buildPath(e, verticals))
+      })
+
+      // Base -> role bus routes: stub → entry channel → lane → exit channel → stub.
+      geo.forEach((g, i) => {
+        const own = [g.entryX, g.exitX]
+        const d =
+          `M ${g.x1} ${g.y1}` +
+          hHops(g.y1, g.x1, g.entryX, verts, own) +
+          ` L ${g.entryX} ${g.laneY}` +
+          hHops(g.laneY, g.entryX, g.exitX, verts, own) +
+          ` L ${g.exitX} ${g.y2}` +
+          hHops(g.y2, g.exitX, g.x2, verts, own)
+        out.push({
+          d,
+          color: LINE_COLORS[i % LINE_COLORS.length],
+          label: g.label,
+          lx: g.entryX + 3,
+          ly: g.laneY - 4,
+        })
+      })
+
       setPaths((prev) =>
         JSON.stringify(prev) === JSON.stringify(out) ? prev : out,
       )
@@ -140,19 +171,9 @@ export const SnapshotNetworkMapper = (props: SnapshotNetworkMapperProps) => {
       <svg className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">
         {paths.map((p, i) => (
           <g key={i}>
-            <path
-              d={p.d}
-              className="stroke-primary"
-              strokeWidth={1.5}
-              fill="none"
-            />
+            <path d={p.d} stroke={p.color} strokeWidth={1.5} fill="none" />
             {p.label && (
-              <text
-                x={p.lx}
-                y={p.ly}
-                className="fill-functional-text-light"
-                fontSize={10}
-              >
+              <text x={p.lx} y={p.ly} fill={p.color} fontSize={10}>
                 {p.label}
               </text>
             )}
