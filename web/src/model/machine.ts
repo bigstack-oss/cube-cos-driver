@@ -38,6 +38,7 @@ export type HardwareInventory = {
 export type Assignment = {
   clusterId: string
   hostname: string
+  osDisk?: string
 }
 
 export type Machine = {

@@ -1,4 +1,5 @@
 import { CosButton, CosTag, GetCosBasicTable } from '@cube-frontend/ui-library'
+import { Machine } from '../../model/machine'
 import { ifName, NodeConfig } from '../../model/types'
 
 type NodeRow = {
@@ -7,6 +8,7 @@ type NodeRow = {
   role: string
   mgmtIP: string
   interfaces: number
+  server: string
   node: NodeConfig
 }
 
@@ -14,21 +16,33 @@ const Table = GetCosBasicTable<NodeRow>()
 
 export type NodeTableProps = {
   nodes: NodeConfig[]
+  // Machine assigned to each hostname (from the hardware inventory).
+  serverByHostname: Record<string, Machine>
   // Absent when the cluster has never been saved to the server.
   snapshotUrlFor?: (hostname: string) => string
   onEdit: (node: NodeConfig) => void
   onDuplicate: (node: NodeConfig) => void
   onDelete: (node: NodeConfig) => void
+  onAssignServer: (node: NodeConfig) => void
 }
 
 export const NodeTable = (props: NodeTableProps) => {
-  const { nodes, snapshotUrlFor, onEdit, onDuplicate, onDelete } = props
+  const {
+    nodes,
+    serverByHostname,
+    snapshotUrlFor,
+    onEdit,
+    onDuplicate,
+    onDelete,
+    onAssignServer,
+  } = props
 
   const rows: NodeRow[] = nodes.map((node) => {
     const mgmtId = node.roleSettings.mgmtIF?.id
     const mgmtIF = [...node.initIFs, ...node.bondIFs, ...node.vlanIFs].find(
       (f) => f.id === mgmtId,
     )
+    const server = serverByHostname[node.hostname]
     return {
       id: node.id,
       hostname: node.hostname,
@@ -36,6 +50,7 @@ export const NodeTable = (props: NodeTableProps) => {
       mgmtIP: mgmtIF?.IPAddr ?? '—',
       interfaces:
         node.initIFs.length + node.bondIFs.length + node.vlanIFs.length,
+      server: server ? server.label : '',
       node,
     }
   })
@@ -51,6 +66,17 @@ export const NodeTable = (props: NodeTableProps) => {
         )}
       </Table.Column>
       <Table.Column label="Management IP" property="mgmtIP" />
+      <Table.Column label="Server (BMC)" property="server">
+        {(server: string, row: NodeRow) => (
+          <CosButton
+            type={server ? 'ghost' : 'secondary'}
+            size="sm"
+            onClick={() => onAssignServer(row.node)}
+          >
+            {server || 'Assign server'}
+          </CosButton>
+        )}
+      </Table.Column>
       <Table.Column label="Interfaces" property="interfaces">
         {(count: number, row: NodeRow) =>
           `${count} (${[...row.node.initIFs, ...row.node.bondIFs, ...row.node.vlanIFs]

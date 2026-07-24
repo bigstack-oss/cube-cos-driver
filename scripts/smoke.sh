@@ -61,6 +61,19 @@ echo "$LIST" | grep -q 'secret' && fail "machine list leaks password"
 # Password is encrypted on disk, never plaintext.
 grep -rq 'secret' "$TMP/data/machines" && fail "plaintext password on disk"
 grep -rq 'passwordEnc' "$TMP/data/machines" || fail "no encrypted password on disk"
+
+# Assignment: bind the machine to a cluster node (1:1), then unassign.
+curl -sf -X PUT -H 'Content-Type: application/json' \
+  -d '{"clusterId":"cl-smoke","hostname":"cube-1","osDisk":"sda"}' \
+  "http://localhost:$PORT/api/v1/machines/$MID/assignment" | grep -q '"hostname":"cube-1"' || fail "assign"
+curl -sf "http://localhost:$PORT/api/v1/machines/$MID" | grep -q '"osDisk":"sda"' || fail "assignment osDisk"
+curl -sf -X DELETE "http://localhost:$PORT/api/v1/machines/$MID/assignment" >/dev/null || fail "unassign"
+
+# Import from CSV (multipart).
+printf 'label,bmc_address,bmc_username,bmc_password\nimp-1,10.0.0.21,admin,pw\nimp-2,10.0.0.22,admin,pw\n' > "$TMP/machines.csv"
+IMP=$(curl -sf -F "file=@$TMP/machines.csv;type=text/csv" "http://localhost:$PORT/api/v1/machines/import")
+echo "$IMP" | grep -q '"created":2' || fail "csv import ($IMP)"
+
 curl -sf -X DELETE "http://localhost:$PORT/api/v1/machines/$MID" || fail "delete machine"
 
 echo "SMOKE PASS"

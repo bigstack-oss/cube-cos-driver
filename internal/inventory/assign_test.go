@@ -7,11 +7,11 @@ func TestAssignEnforcesOneMachinePerNode(t *testing.T) {
 	a, _ := s.Create(Input{Label: "a", Address: "1"})
 	b, _ := s.Create(Input{Label: "b", Address: "2"})
 
-	if _, err := s.Assign(a.ID, "cl1", "node-1"); err != nil {
+	if _, err := s.Assign(a.ID, "cl1", "node-1", ""); err != nil {
 		t.Fatal(err)
 	}
 	// Assigning b to the same node must clear a.
-	if _, err := s.Assign(b.ID, "cl1", "node-1"); err != nil {
+	if _, err := s.Assign(b.ID, "cl1", "node-1", ""); err != nil {
 		t.Fatal(err)
 	}
 	ga, _ := s.Get(a.ID)
@@ -27,8 +27,8 @@ func TestAssignEnforcesOneMachinePerNode(t *testing.T) {
 func TestAssignOverwritesOwnPrevious(t *testing.T) {
 	s := newStore(t)
 	m, _ := s.Create(Input{Label: "m", Address: "1"})
-	s.Assign(m.ID, "cl1", "node-1")
-	s.Assign(m.ID, "cl1", "node-2")
+	s.Assign(m.ID, "cl1", "node-1", "")
+	s.Assign(m.ID, "cl1", "node-2", "")
 	g, _ := s.Get(m.ID)
 	if g.Assignment == nil || g.Assignment.Hostname != "node-2" {
 		t.Fatalf("assignment = %+v", g.Assignment)
@@ -38,7 +38,7 @@ func TestAssignOverwritesOwnPrevious(t *testing.T) {
 func TestUnassign(t *testing.T) {
 	s := newStore(t)
 	m, _ := s.Create(Input{Label: "m", Address: "1"})
-	s.Assign(m.ID, "cl1", "node-1")
+	s.Assign(m.ID, "cl1", "node-1", "")
 	if _, err := s.Unassign(m.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -53,9 +53,9 @@ func TestUnassignCluster(t *testing.T) {
 	a, _ := s.Create(Input{Label: "a", Address: "1"})
 	b, _ := s.Create(Input{Label: "b", Address: "2"})
 	c, _ := s.Create(Input{Label: "c", Address: "3"})
-	s.Assign(a.ID, "cl1", "n1")
-	s.Assign(b.ID, "cl1", "n2")
-	s.Assign(c.ID, "cl2", "n1")
+	s.Assign(a.ID, "cl1", "n1", "")
+	s.Assign(b.ID, "cl1", "n2", "")
+	s.Assign(c.ID, "cl2", "n1", "")
 
 	if err := s.UnassignCluster("cl1"); err != nil {
 		t.Fatal(err)

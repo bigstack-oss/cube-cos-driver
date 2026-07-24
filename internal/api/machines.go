@@ -172,6 +172,7 @@ func (m *machineHandlers) assign(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ClusterID string `json:"clusterId"`
 		Hostname  string `json:"hostname"`
+		OSDisk    string `json:"osDisk"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
@@ -181,7 +182,7 @@ func (m *machineHandlers) assign(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "clusterId and hostname are required")
 		return
 	}
-	machine, err := m.store.Assign(id, body.ClusterID, body.Hostname)
+	machine, err := m.store.Assign(id, body.ClusterID, body.Hostname, body.OSDisk)
 	if errors.Is(err, inventory.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "machine %s not found", id)
 		return

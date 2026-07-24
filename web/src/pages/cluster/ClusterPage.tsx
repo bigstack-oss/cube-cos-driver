@@ -8,8 +8,11 @@ import {
   nodeSnapshotUrl,
   saveCluster,
 } from '../../api/client'
+import { assignMachine, listMachines } from '../../api/machines'
+import { Machine } from '../../model/machine'
 import { ClusterWizard } from '../../components/wizards/cluster/ClusterWizard'
 import { NodeWizard } from '../../components/wizards/node/NodeWizard'
+import { AssignServerFlow } from './assign/AssignServerFlow'
 import { ClusterDetail, NodeConfig, shortId } from '../../model/types'
 import { validateCluster } from '../../model/validate'
 import {
@@ -45,6 +48,15 @@ export const ClusterPage = () => {
   const [saveState, setSaveState] = useState<SaveState>('unsaved')
   const [saveError, setSaveError] = useState('')
   const [serverHasCluster, setServerHasCluster] = useState(false)
+  const [machines, setMachines] = useState<Machine[]>([])
+  const [assigningNode, setAssigningNode] = useState<NodeConfig | undefined>()
+
+  const refreshMachines = () => {
+    listMachines()
+      .then(setMachines)
+      .catch(() => setMachines([]))
+  }
+  useEffect(refreshMachines, [])
 
   // Hydrate from the server when there is no local draft (e.g. another
   // browser saved this cluster).
@@ -88,6 +100,13 @@ export const ClusterPage = () => {
         </CosButton>
       </div>
     )
+  }
+
+  const serverByHostname: Record<string, Machine> = {}
+  for (const m of machines) {
+    if (m.assignment && m.assignment.clusterId === shortId(info.id)) {
+      serverByHostname[m.assignment.hostname] = m
+    }
   }
 
   const detail: ClusterDetail = {
@@ -175,6 +194,7 @@ export const ClusterPage = () => {
 
       <NodeTable
         nodes={nodes}
+        serverByHostname={serverByHostname}
         snapshotUrlFor={
           saveState === 'saved' || serverHasCluster
             ? (hostname) => nodeSnapshotUrl(sid, hostname)
@@ -195,7 +215,35 @@ export const ClusterPage = () => {
           touch()
         }}
         onDelete={(node) => setDeletingNode(node)}
+        onAssignServer={(node) => setAssigningNode(node)}
       />
+
+      {assigningNode && (
+        <AssignServerFlow
+          isOpen
+          node={assigningNode}
+          machines={machines}
+          currentMachineId={
+            serverByHostname[assigningNode.hostname]?.id ?? undefined
+          }
+          onCancel={() => setAssigningNode(undefined)}
+          onFinish={async ({ machineId, osDisk, node: updated }) => {
+            try {
+              await assignMachine(machineId, sid, updated.hostname, osDisk)
+              // Rewrite the node's topology/roles to match the assigned box.
+              setNodes(
+                nodes.map((n) => (n.id === updated.id ? updated : n)),
+              )
+              touch()
+              refreshMachines()
+            } catch (e) {
+              setSaveError(e instanceof Error ? e.message : String(e))
+              setSaveState('error')
+            }
+            setAssigningNode(undefined)
+          }}
+        />
+      )}
 
       <ClusterWizard
         isOpen={clusterWizardOpen}

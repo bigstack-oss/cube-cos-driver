@@ -47,6 +47,9 @@ type Inventory struct {
 type Assignment struct {
 	ClusterID string `json:"clusterId"`
 	Hostname  string `json:"hostname"`
+	// OSDisk is the chosen install target disk (e.g. a disk name from the
+	// fetched inventory); empty until picked in the assignment flow.
+	OSDisk string `json:"osDisk,omitempty"`
 }
 
 type FetchState string
