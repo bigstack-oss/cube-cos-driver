@@ -34,6 +34,8 @@ func (m *machineHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/machines/{id}", m.update)
 	mux.HandleFunc("DELETE /api/v1/machines/{id}", m.delete)
 	mux.HandleFunc("POST /api/v1/machines/{id}/fetch", m.fetch)
+	mux.HandleFunc("PUT /api/v1/machines/{id}/assignment", m.assign)
+	mux.HandleFunc("DELETE /api/v1/machines/{id}/assignment", m.unassign)
 }
 
 func (m *machineHandlers) list(w http.ResponseWriter, r *http.Request) {
@@ -157,6 +159,52 @@ func (m *machineHandlers) fetch(w http.ResponseWriter, r *http.Request) {
 	go m.runFetch(id, target)
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": "fetch started"})
+}
+
+func (m *machineHandlers) assign(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathValue(w, r, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		ClusterID string `json:"clusterId"`
+		Hostname  string `json:"hostname"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+	if body.ClusterID == "" || body.Hostname == "" {
+		writeError(w, http.StatusBadRequest, "clusterId and hostname are required")
+		return
+	}
+	machine, err := m.store.Assign(id, body.ClusterID, body.Hostname)
+	if errors.Is(err, inventory.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "machine %s not found", id)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, machine)
+}
+
+func (m *machineHandlers) unassign(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathValue(w, r, "id")
+	if !ok {
+		return
+	}
+	machine, err := m.store.Unassign(id)
+	if errors.Is(err, inventory.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "machine %s not found", id)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, machine)
 }
 
 func (m *machineHandlers) runFetch(id string, target discovery.Target) {

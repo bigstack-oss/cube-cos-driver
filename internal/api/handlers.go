@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 
+	"github.com/bigstack-oss/cube-cos-snapshot/internal/inventory"
 	"github.com/bigstack-oss/cube-cos-snapshot/internal/model"
 	"github.com/bigstack-oss/cube-cos-snapshot/internal/storage"
 )
@@ -15,6 +16,9 @@ var namePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 type handlers struct {
 	store *storage.Store
+	// machines, when set, has its node bindings cleared when a cluster is
+	// deleted.
+	machines *inventory.Store
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -115,6 +119,10 @@ func (h *handlers) delete(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "delete failed: %v", err)
 		return
+	}
+	if h.machines != nil {
+		// Best-effort: release any BMC machines bound to this cluster.
+		_ = h.machines.UnassignCluster(id)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
