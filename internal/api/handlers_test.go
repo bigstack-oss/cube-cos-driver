@@ -16,7 +16,19 @@ const ha3ID = "aabbccddee01"
 
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(New(Config{DataDir: t.TempDir()}))
+	return newTestServerCfg(t, Config{DataDir: t.TempDir()})
+}
+
+func newTestServerCfg(t *testing.T, cfg Config) *httptest.Server {
+	t.Helper()
+	if cfg.DataDir == "" {
+		cfg.DataDir = t.TempDir()
+	}
+	handler, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	return srv
 }
