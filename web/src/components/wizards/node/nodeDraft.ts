@@ -119,9 +119,16 @@ export const createBond = (
 
 type VlanIF = IF & { vlanID?: number }
 
-export const createVlan = (d: IFDraft, parent: IF, vlanId: string): IFDraft => {
-  let vlanTag = 1
-  while ((d.vlanIFs as VlanIF[]).some((f) => f.vlanID === vlanTag)) vlanTag++
+export const createVlan = (
+  d: IFDraft,
+  parent: IF,
+  vlanId: string,
+  vid?: number,
+): IFDraft => {
+  let vlanTag = vid ?? 1
+  if (vid === undefined) {
+    while ((d.vlanIFs as VlanIF[]).some((f) => f.vlanID === vlanTag)) vlanTag++
+  }
   const vlan: VlanIF = {
     id: vlanId,
     type: 'vlan',
@@ -131,6 +138,39 @@ export const createVlan = (d: IFDraft, parent: IF, vlanId: string): IFDraft => {
     enabled: true,
   }
   return { ...d, vlanIFs: [...d.vlanIFs, vlan] }
+}
+
+// setVlanId changes a VLAN's 802.1Q VID and re-derives its label
+// (<parent>.<vid>) — CubeCOS parses the VID from the trailing label segment.
+export const setVlanId = (d: IFDraft, vlanId: string, vid: number): IFDraft => {
+  const ifName = (id: string | undefined) =>
+    allDraftIFs(d).find((f) => f.id === id)?.name ?? 'None'
+  return {
+    ...d,
+    vlanIFs: d.vlanIFs.map((v) => {
+      if (v.id !== vlanId) return v
+      return { ...v, name: `${ifName(v.master)}.${vid}`, vlanID: vid } as VlanIF
+    }),
+  }
+}
+
+// addToBond enslaves an additional init interface under an existing bond.
+export const addToBond = (d: IFDraft, bondId: string, slaveId: string): IFDraft => {
+  const bond = d.bondIFs.find((b) => b.id === bondId)
+  const slave = d.initIFs.find((f) => f.id === slaveId)
+  if (!bond || !slave || slave.master) return d
+  return {
+    initIFs: d.initIFs.map((f) =>
+      f.id === slaveId
+        ? { ...f, master: bondId, IPAddr: undefined, IPMask: undefined, enabled: true }
+        : f,
+    ),
+    bondIFs: d.bondIFs.map((b) =>
+      b.id === bondId ? { ...b, slaves: [...(b.slaves ?? []), slaveId] } : b,
+    ),
+    // Drop any VLAN that sat directly on the now-enslaved init IF.
+    vlanIFs: d.vlanIFs.filter((v) => v.master !== slaveId),
+  }
 }
 
 export const changeIF = (

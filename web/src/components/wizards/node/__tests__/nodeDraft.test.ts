@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest'
 import { IF } from '../../../../model/types'
 import {
   changeIF,
+  addToBond,
   createBond,
   createVlan,
   IFDraft,
   isIFSelectable,
   pruneRoleSettings,
   removeIFs,
+  setVlanId,
   resizeInitIFs,
 } from '../nodeDraft'
 
@@ -104,5 +106,26 @@ describe('pruneRoleSettings', () => {
     })
     expect(settings.mgmtIF.id).toBe('a')
     expect(settings.storIF).toEqual({})
+  })
+})
+
+describe('addToBond', () => {
+  it('adds an init interface to an existing bond', () => {
+    let d = createBond(baseDraft(), ['b', 'c'], 'bond-1')
+    // 'a' is a plain enabled init IF; enslave it too.
+    d = addToBond(d, 'bond-1', 'a')
+    expect(d.bondIFs[0].slaves).toEqual(['b', 'c', 'a'])
+    const a = d.initIFs.find((f) => f.id === 'a')!
+    expect(a.master).toBe('bond-1')
+    expect(a.IPAddr).toBeUndefined()
+  })
+})
+
+describe('createVlan with explicit vid / setVlanId', () => {
+  it('uses the given VID in the label and can change it', () => {
+    let d = createVlan(baseDraft(), baseDraft().initIFs[0], 'vlan-1', 101)
+    expect(d.vlanIFs[0].name).toBe('IF.1.101')
+    d = setVlanId(d, 'vlan-1', 202)
+    expect(d.vlanIFs[0].name).toBe('IF.1.202')
   })
 })
