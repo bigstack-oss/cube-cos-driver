@@ -198,6 +198,87 @@ func (s *Store) SetFetchState(id string, state FetchState, fetchErr string) erro
 	return s.writeRecord(r)
 }
 
+// Assign binds machine id to (clusterID, hostname), enforcing 1:1: any other
+// machine already assigned to the same node is unassigned first, and this
+// machine's own previous assignment is overwritten.
+func (s *Store) Assign(id, clusterID, hostname string) (Machine, error) {
+	target, err := s.readRecord(id)
+	if err != nil {
+		return Machine{}, err
+	}
+	// Clear any other machine holding this node.
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return Machine{}, err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		otherID := strings.TrimSuffix(e.Name(), ".json")
+		if otherID == id {
+			continue
+		}
+		other, err := s.readRecord(otherID)
+		if err != nil {
+			continue
+		}
+		if other.Assignment != nil && other.Assignment.ClusterID == clusterID && other.Assignment.Hostname == hostname {
+			other.Assignment = nil
+			if err := s.writeRecord(other); err != nil {
+				return Machine{}, err
+			}
+		}
+	}
+	target.Assignment = &Assignment{ClusterID: clusterID, Hostname: hostname}
+	if err := s.writeRecord(target); err != nil {
+		return Machine{}, err
+	}
+	return target.toMachine(), nil
+}
+
+// Unassign clears a machine's node binding.
+func (s *Store) Unassign(id string) (Machine, error) {
+	r, err := s.readRecord(id)
+	if err != nil {
+		return Machine{}, err
+	}
+	r.Assignment = nil
+	if err := s.writeRecord(r); err != nil {
+		return Machine{}, err
+	}
+	return r.toMachine(), nil
+}
+
+// UnassignCluster clears all bindings for a cluster (called on cluster
+// delete). Best-effort; missing store is not an error.
+func (s *Store) UnassignCluster(clusterID string) error {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".json")
+		r, err := s.readRecord(id)
+		if err != nil {
+			continue
+		}
+		if r.Assignment != nil && r.Assignment.ClusterID == clusterID {
+			r.Assignment = nil
+			if err := s.writeRecord(r); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // SetInventory records a successful discovery result.
 func (s *Store) SetInventory(id string, inv Inventory) error {
 	r, err := s.readRecord(id)

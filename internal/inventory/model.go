@@ -42,6 +42,13 @@ type Inventory struct {
 	Cards        []Card `json:"cards,omitempty"`
 }
 
+// Assignment binds a machine to a cluster node (by hostname). One machine
+// maps to at most one node, and one node to at most one machine.
+type Assignment struct {
+	ClusterID string `json:"clusterId"`
+	Hostname  string `json:"hostname"`
+}
+
 type FetchState string
 
 const (
@@ -53,24 +60,26 @@ const (
 
 // Machine is the API-facing view: no password, HasPassword computed.
 type Machine struct {
-	ID          string     `json:"id"`
-	Label       string     `json:"label"`
-	BMC         BMC        `json:"bmc"`
-	HasPassword bool       `json:"hasPassword"`
-	Inventory   *Inventory `json:"inventory,omitempty"`
-	FetchState  FetchState `json:"fetchState"`
-	FetchError  string     `json:"fetchError,omitempty"`
+	ID          string      `json:"id"`
+	Label       string      `json:"label"`
+	BMC         BMC         `json:"bmc"`
+	HasPassword bool        `json:"hasPassword"`
+	Inventory   *Inventory  `json:"inventory,omitempty"`
+	FetchState  FetchState  `json:"fetchState"`
+	FetchError  string      `json:"fetchError,omitempty"`
+	Assignment  *Assignment `json:"assignment,omitempty"`
 }
 
 // record is the on-disk form; the password is stored encrypted.
 type record struct {
-	ID          string     `json:"id"`
-	Label       string     `json:"label"`
-	BMC         BMC        `json:"bmc"`
-	PasswordEnc string     `json:"passwordEnc,omitempty"`
-	Inventory   *Inventory `json:"inventory,omitempty"`
-	FetchState  FetchState `json:"fetchState"`
-	FetchError  string     `json:"fetchError,omitempty"`
+	ID          string      `json:"id"`
+	Label       string      `json:"label"`
+	BMC         BMC         `json:"bmc"`
+	PasswordEnc string      `json:"passwordEnc,omitempty"`
+	Inventory   *Inventory  `json:"inventory,omitempty"`
+	FetchState  FetchState  `json:"fetchState"`
+	FetchError  string      `json:"fetchError,omitempty"`
+	Assignment  *Assignment `json:"assignment,omitempty"`
 }
 
 func (r *record) toMachine() Machine {
@@ -82,6 +91,7 @@ func (r *record) toMachine() Machine {
 		Inventory:   r.Inventory,
 		FetchState:  fetchStateOr(r.FetchState),
 		FetchError:  r.FetchError,
+		Assignment:  r.Assignment,
 	}
 }
 

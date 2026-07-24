@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -162,3 +163,75 @@ var errDiscovery = discoveryError("boom")
 type discoveryError string
 
 func (e discoveryError) Error() string { return string(e) }
+
+func TestMachineAssignment(t *testing.T) {
+	srv := newTestServerCfg(t, Config{DataDir: t.TempDir()})
+	create := func(label string) inventory.Machine {
+		resp := do(t, "POST", srv.URL+"/api/v1/machines", []byte(`{"label":"`+label+`","bmc":{"address":"1.1.1.1"}}`))
+		m := decodeMachine(t, resp.Body)
+		resp.Body.Close()
+		return m
+	}
+	a := create("a")
+	b := create("b")
+
+	// Assign a → cluster/node-1
+	resp := do(t, "PUT", srv.URL+"/api/v1/machines/"+a.ID+"/assignment", []byte(`{"clusterId":"cl1","hostname":"node-1"}`))
+	if resp.StatusCode != 200 {
+		t.Fatalf("assign = %d", resp.StatusCode)
+	}
+	ma := decodeMachine(t, resp.Body)
+	resp.Body.Close()
+	if ma.Assignment == nil || ma.Assignment.Hostname != "node-1" {
+		t.Fatalf("assignment = %+v", ma.Assignment)
+	}
+
+	// Assign b → same node moves it off a.
+	do(t, "PUT", srv.URL+"/api/v1/machines/"+b.ID+"/assignment", []byte(`{"clusterId":"cl1","hostname":"node-1"}`)).Body.Close()
+	resp = do(t, "GET", srv.URL+"/api/v1/machines/"+a.ID, nil)
+	ga := decodeMachine(t, resp.Body)
+	resp.Body.Close()
+	if ga.Assignment != nil {
+		t.Fatalf("machine a should be unassigned, got %+v", ga.Assignment)
+	}
+
+	// Missing fields → 400
+	resp = do(t, "PUT", srv.URL+"/api/v1/machines/"+a.ID+"/assignment", []byte(`{"clusterId":"cl1"}`))
+	if resp.StatusCode != 400 {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Unassign b
+	resp = do(t, "DELETE", srv.URL+"/api/v1/machines/"+b.ID+"/assignment", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("unassign = %d", resp.StatusCode)
+	}
+	gb := decodeMachine(t, resp.Body)
+	resp.Body.Close()
+	if gb.Assignment != nil {
+		t.Fatalf("machine b should be unassigned, got %+v", gb.Assignment)
+	}
+}
+
+func TestClusterDeleteClearsAssignments(t *testing.T) {
+	dir := t.TempDir()
+	srv := newTestServerCfg(t, Config{DataDir: dir})
+	// Create a machine and assign to a cluster id.
+	resp := do(t, "POST", srv.URL+"/api/v1/machines", []byte(`{"label":"m","bmc":{"address":"1.1.1.1"}}`))
+	m := decodeMachine(t, resp.Body)
+	resp.Body.Close()
+	do(t, "PUT", srv.URL+"/api/v1/machines/"+m.ID+"/assignment", []byte(`{"clusterId":"aabbccddee01","hostname":"cube-1"}`)).Body.Close()
+
+	// PUT a cluster so it exists, then delete it.
+	fixture, _ := os.ReadFile("../model/testdata/ha3.json")
+	do(t, "PUT", srv.URL+"/api/v1/clusters/aabbccddee01", fixture).Body.Close()
+	do(t, "DELETE", srv.URL+"/api/v1/clusters/aabbccddee01", nil).Body.Close()
+
+	resp = do(t, "GET", srv.URL+"/api/v1/machines/"+m.ID, nil)
+	gm := decodeMachine(t, resp.Body)
+	resp.Body.Close()
+	if gm.Assignment != nil {
+		t.Fatalf("assignment should be cleared on cluster delete, got %+v", gm.Assignment)
+	}
+}

@@ -47,7 +47,7 @@ func New(cfg Config) (http.Handler, error) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
-	h := &handlers{store: &storage.Store{DataDir: cfg.DataDir, ExportDir: cfg.ExportDir}}
+	h := &handlers{store: &storage.Store{DataDir: cfg.DataDir, ExportDir: cfg.ExportDir}, machines: machineStore}
 	h.register(mux)
 	mh := &machineHandlers{store: machineStore, discoverer: discoverer}
 	mh.register(mux)
