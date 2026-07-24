@@ -43,6 +43,18 @@ bash scripts/smoke.sh   # full end-to-end check
 Open `http://<host>:3001/`. Clusters saved in the UI are generated and
 stored under `--data-dir`.
 
+### Deploy orchestration
+
+When every node in a cluster has a server assigned, **Deploy to cluster** drives
+each node's BMC over IPMI (power-cycle into one-time PXE boot), tracks imaging,
+then the `phone-home-agent` on the freshly-imaged node checks in, syncs its
+clock, runs a network preflight, and applies its appointed snapshot — reporting
+progress live. Deploy is plan-first and confirm-gated (it powers real servers).
+
+Two binaries are built (`make all`): `bin/cube-cos-snapshot` (server) and
+`bin/phone-home-agent` (ships in the CubeCOS image). For demos without
+hardware, run the server with `--simulate` to use a fake executor.
+
 ### Hardware inventory
 
 The **Hardware** page (left nav) maintains a global pool of machines keyed by

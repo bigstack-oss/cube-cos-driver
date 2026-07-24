@@ -36,10 +36,12 @@ jobs:
       - name: Go vet + tests
         run: make test
 
-      - name: End-to-end smoke (builds SPA + binary)
+      - name: End-to-end smoke (builds SPA + both binaries)
         run: bash scripts/smoke.sh
 
       - uses: actions/upload-artifact@v4
         with:
-          name: cube-cos-snapshot
-          path: bin/cube-cos-snapshot
+          name: binaries
+          path: |
+            bin/cube-cos-snapshot
+            bin/phone-home-agent

@@ -138,13 +138,23 @@ func (m *Manager) snapshot(clusterID string) (*Deploy, error) {
 
 func (m *Manager) fail(clusterID, hostname string, err error) {
 	m.set(clusterID, hostname, func(nd *NodeDeploy) {
+		if agentDriven(nd.State) {
+			return // agent has taken over; don't regress
+		}
 		nd.State = StateError
 		nd.Message = err.Error()
 	})
 }
 
+// advance moves an orchestrator-driven node forward, but never regresses past
+// a state the agent already set (the agent's reports are authoritative).
 func (m *Manager) advance(clusterID, hostname string, s State) {
-	m.set(clusterID, hostname, func(nd *NodeDeploy) { nd.State = s })
+	m.set(clusterID, hostname, func(nd *NodeDeploy) {
+		if agentDriven(nd.State) {
+			return
+		}
+		nd.State = s
+	})
 }
 
 func (m *Manager) state(clusterID, hostname string) State {

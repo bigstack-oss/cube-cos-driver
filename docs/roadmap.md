@@ -65,8 +65,16 @@ insurance worth adding.
 - **Done**: hardware inventory + discovery. Global machine pool with
   encrypted BMC credentials (`internal/secret`, `internal/inventory`),
   Redfish-first + IPMI-FRU discovery (`internal/discovery`), machines REST API
-  with async fetch, and the Hardware UI page. This is gap #3 below plus
-  discovery.
+  with async fetch, and the Hardware UI page.
+- **Done**: node↔machine assignment + the drag-drop network binding mapper.
+- **Done**: deploy orchestrator (`internal/orchestrator`) — per-node state
+  machine driving IPMI power/bootdev + install observation, plan/confirm/
+  per-node deploy API + UI, and the `phone-home-agent` binary (time-sync +
+  network preflight + snapshot apply, reported back). Real IPMI/agent behind
+  interfaces; `--simulate` for demos.
+- **Remaining enabler (cubecos)**: packaging that installs the agent's systemd
+  unit (gated on unconfigured) + `snapshot_server=` kernel arg into the image;
+  per-MAC pxelinux binding. Until then, drive real hardware on the lab.
 
 ## Gaps to build (this repo)
 

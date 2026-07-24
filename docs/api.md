@@ -95,6 +95,45 @@ Enforces 1:1: any other machine on the same node is unbound. `DELETE` on the
 same path clears the binding. Bindings for a cluster are also cleared when the
 cluster is deleted.
 
+## Deploy orchestration
+
+Drive a fully-assigned cluster's nodes through PXE imaging (over IPMI) and the
+phone-home agent's snapshot apply. All nodes must be assigned first.
+
+### `GET /api/v1/clusters/{id}/deploy/plan`
+
+Dry-run: `{"allAssigned": bool, "nodes": [{hostname, assigned, machineLabel, bmcAddress, osDisk, macs}]}`.
+Returns `409` (with the same body) when not every node is assigned.
+
+### `POST /api/v1/clusters/{id}/deploy`
+
+Body `{"confirm": true, "hostnames": [...optional subset...]}`. Requires
+`confirm`; `409` if any node is unassigned. Starts the deploy and returns the
+initial status (`202`).
+
+### `GET /api/v1/clusters/{id}/deploy`
+
+Current status: `{clusterId, startedAt, nodes: {<hostname>: {state, message, preflight[]}}}`.
+States: `pending → bmc-preflight → set-boot-pxe → power-cycle → netbooting →
+imaging → imaged → checked-in → net-preflight → applying → applied → done`
+(or `error`).
+
+### `POST /api/v1/clusters/{id}/deploy/cancel`
+
+Stops stepping (does not force-power-off a running install).
+
+### `POST /api/v1/agents/checkin`
+
+Called by `phone-home-agent`. Body `{macs, serial}`; the server matches MACs to
+an appointment and returns `{appointed, clusterId, hostname, snapshotUrl,
+serverTimeUTC, preflight:{gateway, dns[], server, peers[]}}`, advancing that
+node to `checked-in`.
+
+### `POST /api/v1/agents/report`
+
+Agent progress: `{clusterId, hostname, state, message, preflight[]}` — advances
+the node's deploy state (net-preflight results, applying/applied/error).
+
 ## `GET /healthz`
 
 Liveness probe; returns `200 ok`.
