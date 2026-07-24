@@ -55,8 +55,10 @@ func baseDeps(clockSet *time.Time, applied *bool, probe func(string) bool) Deps 
 		Probe:    probe,
 		Apply:    func(_ context.Context, _ string) error { *applied = true; return nil },
 		HTTP:     http.DefaultClient,
-		Now:      func() time.Time { return time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC) },
-		Sleep:    func(time.Duration) {},
+		// Unconfigured until the snapshot is applied (models FTS completing).
+		Configured: func() bool { return *applied },
+		Now:        func() time.Time { return time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC) },
+		Sleep:      func(time.Duration) {},
 	}
 }
 

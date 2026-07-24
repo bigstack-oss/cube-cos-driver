@@ -15,6 +15,9 @@ const (
 	StateImaging      State = "imaging"
 	StateImaged       State = "imaged"
 	StateCheckedIn    State = "checked-in"
+	// StateWaiting: a non-master node has checked in but must wait for the
+	// master node to finish its FTS before applying its own snapshot.
+	StateWaiting      State = "waiting-controller"
 	StateNetPreflight State = "net-preflight"
 	StateApplying     State = "applying"
 	StateApplied      State = "applied"
@@ -60,9 +63,11 @@ type NodeDeploy struct {
 }
 
 type Deploy struct {
-	ClusterID string                 `json:"clusterId"`
-	StartedAt string                 `json:"startedAt"`
-	Nodes     map[string]*NodeDeploy `json:"nodes"` // by hostname
+	ClusterID string `json:"clusterId"`
+	StartedAt string `json:"startedAt"`
+	// Master is the node whose FTS must complete before others apply.
+	Master string                 `json:"master"`
+	Nodes  map[string]*NodeDeploy `json:"nodes"` // by hostname
 }
 
 // terminal reports whether a node state needs no further engine stepping.

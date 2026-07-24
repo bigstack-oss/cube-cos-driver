@@ -7,6 +7,7 @@ export type DeployState =
   | 'imaging'
   | 'imaged'
   | 'checked-in'
+  | 'waiting-controller'
   | 'net-preflight'
   | 'applying'
   | 'applied'

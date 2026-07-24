@@ -50,15 +50,19 @@ func macsOf(m inventory.Machine) []string {
 	return out
 }
 
-// buildNodes resolves a cluster's deployable nodes and a per-node plan.
-func (h *deployHandlers) buildNodes(id string) (nodes []orchestrator.Node, rows []planRow, allAssigned bool, err error) {
+// buildNodes resolves a cluster's deployable nodes, a per-node plan, and the
+// master hostname (first control-function node, whose FTS gates the rest).
+func (h *deployHandlers) buildNodes(id string) (nodes []orchestrator.Node, rows []planRow, allAssigned bool, master string, err error) {
 	detail, err := h.clusters.Detail(id)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, nil, false, "", err
+	}
+	if ctl := generator.GetControlInfo(detail.NodeData); len(ctl.Hostnames) > 0 {
+		master = ctl.Hostnames[0]
 	}
 	machines, err := h.machines.List()
 	if err != nil {
-		return nil, nil, false, err
+		return nil, nil, false, "", err
 	}
 	byHost := map[string]inventory.Machine{}
 	for _, m := range machines {
@@ -77,7 +81,7 @@ func (h *deployHandlers) buildNodes(id string) (nodes []orchestrator.Node, rows 
 		}
 		addr, user, pass, cerr := h.machines.Credentials(m.ID)
 		if cerr != nil {
-			return nil, nil, false, cerr
+			return nil, nil, false, "", cerr
 		}
 		macs := macsOf(m)
 		row.MachineLabel = m.Label
@@ -95,7 +99,7 @@ func (h *deployHandlers) buildNodes(id string) (nodes []orchestrator.Node, rows 
 			OSDisk:     m.Assignment.OSDisk,
 		})
 	}
-	return nodes, rows, allAssigned, nil
+	return nodes, rows, allAssigned, master, nil
 }
 
 func (h *deployHandlers) plan(w http.ResponseWriter, r *http.Request) {
@@ -103,7 +107,7 @@ func (h *deployHandlers) plan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_, rows, allAssigned, err := h.buildNodes(id)
+	_, rows, allAssigned, _, err := h.buildNodes(id)
 	if errors.Is(err, storage.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "cluster %s not found", id)
 		return
@@ -133,7 +137,7 @@ func (h *deployHandlers) start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "deploy requires confirm=true")
 		return
 	}
-	nodes, _, allAssigned, err := h.buildNodes(id)
+	nodes, _, allAssigned, master, err := h.buildNodes(id)
 	if errors.Is(err, storage.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "cluster %s not found", id)
 		return
@@ -163,7 +167,7 @@ func (h *deployHandlers) start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no matching nodes to deploy")
 		return
 	}
-	dep, err := h.mgr.Start(id, nodes)
+	dep, err := h.mgr.Start(id, nodes, master)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
@@ -244,15 +248,18 @@ func (h *deployHandlers) checkin(w http.ResponseWriter, r *http.Request) {
 	if i := strings.LastIndex(serverHost, ":"); i > 0 {
 		serverHost = serverHost[:i]
 	}
+	// Master-first gating: a non-master node holds until the master's FTS is
+	// done. The agent re-checks in while holding.
+	hold := h.mgr.CheckIn(cid, host)
 	resp := agent.CheckinResponse{
 		Appointed:     true,
+		Hold:          hold,
 		ClusterID:     cid,
 		Hostname:      host,
 		SnapshotURL:   scheme + r.Host + "/api/v1/clusters/" + cid + "/nodes/" + host + "/download",
 		ServerTimeUTC: time.Now().UTC().Format(time.RFC3339),
 		Preflight:     h.preflightTargets(cid, host, serverHost),
 	}
-	h.mgr.MarkCheckedIn(cid, host)
 	writeJSON(w, http.StatusOK, resp)
 }
 

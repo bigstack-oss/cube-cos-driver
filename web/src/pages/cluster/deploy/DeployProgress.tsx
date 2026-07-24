@@ -27,6 +27,7 @@ const stateColor: Record<
   imaging: 'primary-blue',
   imaged: 'cyan',
   'checked-in': 'cyan',
+  'waiting-controller': 'default',
   'net-preflight': 'cyan',
   applying: 'cyan',
   applied: 'cyan',

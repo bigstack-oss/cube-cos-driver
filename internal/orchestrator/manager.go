@@ -50,7 +50,8 @@ func NewManager(store *Store, exec Executor, cfg Config) *Manager {
 func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
 
 // Start begins (or restarts) a deploy of the given nodes for a cluster.
-func (m *Manager) Start(clusterID string, nodes []Node) (*Deploy, error) {
+// master is the hostname whose FTS must finish before other nodes apply.
+func (m *Manager) Start(clusterID string, nodes []Node, master string) (*Deploy, error) {
 	if len(nodes) == 0 {
 		return nil, errors.New("no nodes to deploy")
 	}
@@ -58,7 +59,7 @@ func (m *Manager) Start(clusterID string, nodes []Node) (*Deploy, error) {
 	if cancel, ok := m.cancels[clusterID]; ok {
 		cancel() // stop any prior run
 	}
-	d := &Deploy{ClusterID: clusterID, StartedAt: nowUTC(), Nodes: map[string]*NodeDeploy{}}
+	d := &Deploy{ClusterID: clusterID, StartedAt: nowUTC(), Master: master, Nodes: map[string]*NodeDeploy{}}
 	for _, n := range nodes {
 		d.Nodes[n.Hostname] = &NodeDeploy{
 			Hostname:  n.Hostname,
@@ -172,7 +173,7 @@ func (m *Manager) state(clusterID, hostname string) State {
 // orchestrator's imaging poll should stop).
 func agentDriven(s State) bool {
 	switch s {
-	case StateCheckedIn, StateNetPreflight, StateApplying, StateApplied, StateDone, StateError:
+	case StateCheckedIn, StateWaiting, StateNetPreflight, StateApplying, StateApplied, StateDone, StateError:
 		return true
 	}
 	return false
@@ -233,13 +234,36 @@ func (m *Manager) runNode(ctx context.Context, clusterID string, n Node) {
 	}
 }
 
-// MarkCheckedIn records that the agent on a node has phoned home.
-func (m *Manager) MarkCheckedIn(clusterID, hostname string) {
-	m.set(clusterID, hostname, func(nd *NodeDeploy) {
-		if nd.State == StateImaged || nd.State == StateNetbooting || nd.State == StateImaging {
+// CheckIn records that a node's agent phoned home and decides whether it must
+// hold: a non-master node holds until the master node reaches StateDone. It
+// returns hold=true if the agent should wait and check in again later.
+func (m *Manager) CheckIn(clusterID, hostname string) (hold bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := m.deploys[clusterID]
+	if d == nil {
+		return false
+	}
+	if hostname != d.Master {
+		master := d.Nodes[d.Master]
+		hold = master == nil || master.State != StateDone
+	}
+	nd := d.Nodes[hostname]
+	if nd == nil {
+		return hold
+	}
+	// Only advance from a pre-apply state; never regress applying/applied/done.
+	switch nd.State {
+	case StateNetbooting, StateImaging, StateImaged, StateCheckedIn, StateWaiting:
+		if hold {
+			nd.State = StateWaiting
+		} else {
 			nd.State = StateCheckedIn
 		}
-	})
+		nd.UpdatedAt = nowUTC()
+		m.persistLocked(d)
+	}
+	return hold
 }
 
 // Report applies an agent progress report to a node's deploy state.
