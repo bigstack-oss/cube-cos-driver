@@ -51,15 +51,20 @@ Deploy is available for a cluster only when **every node has an assignment**
 ## Per-node state machine (this iteration)
 
 ```
-pending → preflight → set-boot-pxe → power-cycle → netbooting → imaging → imaged
-       → checked-in → applying → applied → done
+pending → bmc-preflight → set-boot-pxe → power-cycle → netbooting → imaging → imaged
+       → checked-in → net-preflight → applying → applied → done
    any step → error (with message); node is independently retryable
 ```
 The stages from `checked-in` onward are driven by the agent's check-in/report
 calls (correlated to the node by MAC), not by the orchestrator polling.
 
-- **preflight**: IPMI Get Chassis/Power Status succeeds (BMC reachable, creds
-  valid).
+- **bmc-preflight**: orchestrator-side — IPMI reachable, creds valid.
+- **net-preflight**: agent-side gate before apply — **time sync** + **network
+  connectivity test** (below). Apply is blocked until it passes (with an
+  explicit user override available).
+
+- **bmc-preflight**: IPMI Get Chassis/Power Status succeeds (BMC reachable,
+  creds valid).
 - **set-boot-pxe**: IPMI chassis bootdev = PXE, one-time.
 - **power-cycle**: power on if off, else power cycle.
 - **netbooting**: a DHCP lease for one of the node's known MACs appears
@@ -69,6 +74,9 @@ calls (correlated to the node by MAC), not by the orchestrator polling.
 - **imaged**: install media fully fetched / node reboots off-media.
 - **checked-in**: the agent on the freshly-imaged node POSTed to
   `/api/v1/agents/checkin` with matching MACs.
+- **net-preflight**: the agent synced the node clock and passed the
+  connectivity test (see below); results reported. A failure holds the node
+  here (retryable, or user override to force apply).
 - **applying → applied → done**: the agent pulled its appointed snapshot, ran
   apply, and reported success (via `/api/v1/agents/report`).
 
@@ -116,16 +124,30 @@ gated on `/etc/appliance/state/configured` being absent):
 1. Collect identity: all NIC MACs, serial (from `ip`/DMI).
 2. Loop: `POST /api/v1/agents/checkin {macs, serial}` to the snapshot server
    (address from kernel cmdline `snapshot_server=` or a `--server` flag / the
-   PXE server IP). Response: `{appointed, hostname, snapshotUrl, token}`.
-3. When appointed: download the snapshot from `snapshotUrl`, run
-   `hex_config snapshot_apply <file>` (the documented apply path), and
-   `POST /api/v1/agents/report {hostname, state, message}` at each transition
-   (applying → applied | error).
-4. Exit/self-disable once applied (or once the node is configured).
+   PXE server IP). Response includes `{appointed, hostname, snapshotUrl,
+   serverTimeUTC, preflight}` (see below).
+3. **Time sync** (crucial — skew breaks TLS/keystone/ceph): set the node clock
+   to `serverTimeUTC` from the checkin response (server acts as the time
+   source; no reliance on external NTP in air-gap). Report the pre-sync skew.
+4. **Network preflight** (crucial): bring up the candidate interfaces per the
+   appointed snapshot's network config and test reachability of the targets
+   the server returned — default gateway, DNS server(s), the snapshot/PXE
+   server, and the controller/VIP + peer management IPs. Report per-target
+   pass/fail. If any required target fails, **stop before apply** (node holds
+   at `net-preflight`; the UI can override to force).
+5. When preflight passes: download the snapshot from `snapshotUrl`, run
+   `hex_config snapshot_apply <file>`, and `POST /api/v1/agents/report
+   {hostname, state, message, preflight?}` at each transition
+   (net-preflight → applying → applied | error).
+6. Exit/self-disable once applied (or once the node is already configured).
 
-Server address discovery, ret/backoff, and "already configured → no-op" are
+Server address discovery, retry/backoff, and "already configured → no-op" are
 handled in the agent. The agent has **no secrets** — it's given only its own
-snapshot URL after the server matches its MACs to an appointment.
+snapshot URL and preflight targets after the server matches its MACs to an
+appointment. The server derives `serverTimeUTC` from its own clock and the
+`preflight` targets from the node's snapshot config (gateway, DNS, HA
+VIP/controller, peer mgmt IPs) — it already holds all of this in the
+clusterDetail.
 
 ## REST API
 
@@ -135,8 +157,8 @@ snapshot URL after the server matches its MACs to an appointment.
 | `POST /api/v1/clusters/{id}/deploy` | Start deploy. Body `{hostnames?: []}` to deploy a subset; requires `{confirm:true}` |
 | `GET /api/v1/clusters/{id}/deploy` | Current job status (per-node state/stage) |
 | `POST /api/v1/clusters/{id}/deploy/cancel` | Stop stepping |
-| `POST /api/v1/agents/checkin` | Agent identity → match MACs to an appointment; returns `{appointed, hostname, snapshotUrl}` and advances that node to `checked-in` |
-| `POST /api/v1/agents/report` | Agent progress (applying/applied/error) → advances the node's deploy state |
+| `POST /api/v1/agents/checkin` | Agent identity → match MACs to an appointment; returns `{appointed, hostname, snapshotUrl, serverTimeUTC, preflight:{gateway,dns[],server,peers[]}}` and advances that node to `checked-in` |
+| `POST /api/v1/agents/report` | Agent progress (net-preflight results, applying/applied/error) → advances the node's deploy state and stores preflight results |
 
 ## Frontend
 
@@ -156,11 +178,15 @@ snapshot URL after the server matches its MACs to an appointment.
 ## Testing
 
 - Go: engine drives fake executor through IPMI stages incl. an injected
-  failure (preflight fail → node error, others proceed); agent check-in/report
-  advances the matched node (checked-in → applied); MAC→appointment matching;
-  plan precondition (unassigned → 409); persistence round-trip; API confirm
-  gate. Agent: run loop against an httptest server (checkin → appointed →
-  apply via an injected `applyFn` fake → report).
+  failure (bmc-preflight fail → node error, others proceed); agent
+  check-in/report advances the matched node (checked-in → net-preflight →
+  applied); MAC→appointment matching; checkin returns correct serverTimeUTC +
+  preflight targets derived from the snapshot; a failing net-preflight report
+  holds the node before apply; plan precondition (unassigned → 409);
+  persistence round-trip; API confirm gate. Agent: run loop against an
+  httptest server — checkin → time-sync (injected clock setter) → connectivity
+  test (injected prober; one target fails → held) → apply (injected applyFn) →
+  report.
 - Web: Deploy button enablement, plan modal contents, progress rendering from
   a mocked status.
 - `scripts/smoke.sh`: deploy against the fake executor, then simulate an agent
