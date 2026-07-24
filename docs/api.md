@@ -50,6 +50,37 @@ containing `<id>/clusterDetail.json` and `<id>/<hostname>.snapshot` per node.
 
 A single node's `.snapshot` file.
 
+## Machines (hardware inventory)
+
+A global pool of machines keyed by their BMC. Passwords are stored encrypted
+and never returned; responses carry `hasPassword` instead. Used to fetch
+hardware facts and (later) drive zero-touch install.
+
+### `GET /api/v1/machines`
+
+List machines (no secrets), each with its last-fetched `inventory` and
+`fetchState` (`idle` | `fetching` | `ok` | `error`).
+
+### `POST /api/v1/machines`
+
+Create. Body: `{"label": "...", "bmc": {"address": "...", "username": "...", "password": "..."}}`.
+`address` may be `host` or `host:port`. `label` and `address` are required.
+
+### `GET /api/v1/machines/{id}` · `PUT /api/v1/machines/{id}` · `DELETE /api/v1/machines/{id}`
+
+Get / update / delete. On `PUT`, omit `bmc.password` (or send `null`) to keep
+the stored password; send `""` to clear it.
+
+### `POST /api/v1/machines/{id}/fetch`
+
+Trigger asynchronous hardware discovery over the BMC (Redfish first, IPMI FRU
+fallback). Returns `202`; progress is visible via `fetchState` on subsequent
+`GET`s. A second fetch while one is in flight is a no-op `202`.
+
+Fetched `inventory` includes source, serial/manufacturer/model, CPU
+model/count/cores, memory, and lists of NICs (name/MAC/speed), disks
+(model/size/type), and PCIe cards.
+
 ## `GET /healthz`
 
 Liveness probe; returns `200 ok`.

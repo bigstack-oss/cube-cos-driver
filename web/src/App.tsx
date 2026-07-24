@@ -1,14 +1,14 @@
 import { Route, Routes } from 'react-router'
-import { AppHeader } from './components/AppHeader'
+import { AppSidebar } from './components/AppSidebar'
 import { ClusterPage } from './pages/cluster/ClusterPage'
 import { HardwarePage } from './pages/hardware/HardwarePage'
 import { LandingPage } from './pages/landing/LandingPage'
 
 export const App = () => {
   return (
-    <div className="flex h-full flex-col bg-scene-background">
-      <AppHeader />
-      <main className="flex-1 overflow-y-auto">
+    <div className="flex h-svh flex-row overflow-hidden bg-scene-background">
+      <AppSidebar />
+      <main className="min-w-0 flex-1 overflow-y-auto">
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/clusters/:id" element={<ClusterPage />} />

@@ -19,7 +19,9 @@ describe('App shell', () => {
         <App />
       </MemoryRouter>,
     )
-    expect(screen.getByText('Cube Snapshot Generator')).toBeTruthy()
+    // Sidebar nav + landing heading are present.
+    expect(screen.getByText('Snapshot Generator')).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'Hardware' })).toBeTruthy()
     expect(
       screen.getByText('Welcome to Cube Snapshot Generator'),
     ).toBeTruthy()
