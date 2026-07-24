@@ -60,6 +60,14 @@ deliberate trust decision. Gate strictly on "unconfigured" + the air-gapped
 install network; a per-cluster token carried in the kernel cmdline is cheap
 insurance worth adding.
 
+## Status
+
+- **Done**: hardware inventory + discovery. Global machine pool with
+  encrypted BMC credentials (`internal/secret`, `internal/inventory`),
+  Redfish-first + IPMI-FRU discovery (`internal/discovery`), machines REST API
+  with async fetch, and the Hardware UI page. This is gap #3 below plus
+  discovery.
+
 ## Gaps to build (this repo)
 
 1. **Job engine** (`internal/orchestrator`): persisted, resumable per-node

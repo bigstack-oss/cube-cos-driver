@@ -43,6 +43,21 @@ bash scripts/smoke.sh   # full end-to-end check
 Open `http://<host>:3001/`. Clusters saved in the UI are generated and
 stored under `--data-dir`.
 
+### Hardware inventory
+
+The **Hardware** page (left nav) maintains a global pool of machines keyed by
+their BMC (IPMI/Redfish). Add a machine with its BMC address / username /
+password, then **Fetch** to read hardware facts (CPU, memory, NICs, disks,
+PCIe cards, serial) — Redfish first, IPMI FRU fallback. This is the
+foundation for the zero-touch install roadmap (`docs/roadmap.md`): registered
+hardware is later appointed to cluster nodes and driven over IPMI.
+
+BMC passwords are **encrypted at rest** (AES-256-GCM). The key is resolved
+from `SNAPSHOT_SECRET_KEY` (env) or `--secret-key-file`; if neither is set, a
+key file is auto-generated at `<data-dir>/.secret-key` (0600). API responses
+never return the password — only a `hasPassword` flag. Note the UI itself has
+no authentication yet, so run it on a trusted/isolated management network.
+
 ### pxeserver mode
 
 ```bash

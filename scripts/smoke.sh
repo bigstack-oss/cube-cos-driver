@@ -49,4 +49,18 @@ done
 curl -sf -X DELETE "http://localhost:$PORT/api/v1/clusters/$ID" || fail "delete"
 [ ! -f "$TMP/export/cube-1.snapshot" ] || fail "stale export after delete"
 
+# Machines (hardware inventory): create, list without secret leak, delete.
+MID=$(curl -sf -X POST -H 'Content-Type: application/json' \
+  -d '{"label":"sky141","bmc":{"address":"10.32.140.141","username":"admin","password":"secret"}}' \
+  "http://localhost:$PORT/api/v1/machines" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+[ -n "$MID" ] || fail "create machine"
+LIST=$(curl -sf "http://localhost:$PORT/api/v1/machines")
+echo "$LIST" | grep -q '"sky141"' || fail "machine list"
+echo "$LIST" | grep -q '"hasPassword":true' || fail "hasPassword flag"
+echo "$LIST" | grep -q 'secret' && fail "machine list leaks password"
+# Password is encrypted on disk, never plaintext.
+grep -rq 'secret' "$TMP/data/machines" && fail "plaintext password on disk"
+grep -rq 'passwordEnc' "$TMP/data/machines" || fail "no encrypted password on disk"
+curl -sf -X DELETE "http://localhost:$PORT/api/v1/machines/$MID" || fail "delete machine"
+
 echo "SMOKE PASS"
