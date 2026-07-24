@@ -68,8 +68,12 @@ func (e IPMIExecutor) SetBootPXE(ctx context.Context, n Node) error {
 		return err
 	}
 	defer client.Close(ctx)
-	// One-time PXE boot; persist=false so it reverts to disk next boot.
-	return client.SetBootDevice(ctx, goipmi.BootDeviceSelectorForcePXE, goipmi.BIOSBootTypeLegacy, false)
+	// Force EFI PXE, one-time. UEFI firmwares (e.g. the sky MegaRAC SKY-7221
+	// boards) ignore a *legacy* PXE flag and boot the disk instead, so we
+	// must request EFI. One-time (persist=false) so the node boots the disk
+	// after imaging — persistent would re-PXE and reinstall forever. Set
+	// immediately before PowerCycle (runNode does) so the valid bit is fresh.
+	return client.SetBootDevice(ctx, goipmi.BootDeviceSelectorForcePXE, goipmi.BIOSBootTypeEFI, false)
 }
 
 func (e IPMIExecutor) PowerCycle(ctx context.Context, n Node) error {
