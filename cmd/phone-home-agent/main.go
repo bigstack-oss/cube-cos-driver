@@ -129,17 +129,21 @@ func main() {
 		srv = serverFromCmdline()
 	}
 	if srv == "" {
-		log.Fatalf("no snapshot server (set --server, SNAPSHOT_SERVER, or snapshot_server= on the kernel cmdline)")
+		srv = "http://192.168.1.150" // default pxeserver IP (PXESERVER_IP)
+	}
+	if !strings.HasPrefix(srv, "http") {
+		srv = "http://" + srv
 	}
 
 	deps := agent.Deps{
-		Identity: func() ([]string, string) { return macs(), serial() },
-		SetClock: setClock,
-		Probe:    probe,
-		Apply:    apply,
-		HTTP:     &http.Client{Timeout: 30 * time.Second},
-		Now:      time.Now,
-		Sleep:    time.Sleep,
+		Identity:   func() ([]string, string) { return macs(), serial() },
+		SetClock:   setClock,
+		Probe:      probe,
+		Apply:      apply,
+		Configured: func() bool { _, err := os.Stat(configuredMarker); return err == nil },
+		HTTP:       &http.Client{Timeout: 30 * time.Second},
+		Now:        time.Now,
+		Sleep:      time.Sleep,
 	}
 	log.Printf("phone-home-agent: server=%s", srv)
 	if err := agent.Run(context.Background(), srv, deps, *poll); err != nil {

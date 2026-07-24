@@ -28,7 +28,10 @@ type Preflight struct {
 }
 
 type CheckinResponse struct {
-	Appointed     bool      `json:"appointed"`
+	Appointed bool `json:"appointed"`
+	// Hold: appointed but must wait (master's FTS not done yet); the agent
+	// re-checks in until Hold clears.
+	Hold          bool      `json:"hold"`
 	ClusterID     string    `json:"clusterId"`
 	Hostname      string    `json:"hostname"`
 	SnapshotURL   string    `json:"snapshotUrl"`
@@ -58,9 +61,13 @@ type Deps struct {
 	Probe func(target string) bool
 	// Apply downloads snapshotURL and applies it.
 	Apply func(ctx context.Context, snapshotURL string) error
-	HTTP  *http.Client
-	Now   func() time.Time
-	Sleep func(time.Duration)
+	// Configured reports whether this node has finished FTS (the
+	// /etc/appliance/state/configured marker exists). Used to (a) self-stop
+	// once the cluster is ready and (b) confirm apply completed FTS.
+	Configured func() bool
+	HTTP       *http.Client
+	Now        func() time.Time
+	Sleep      func(time.Duration)
 }
 
 var ErrPreflightFailed = errors.New("network preflight failed")
@@ -69,11 +76,18 @@ var ErrPreflightFailed = errors.New("network preflight failed")
 // time-sync → net-preflight → apply, reporting at each step. Designed to be
 // launched by a systemd unit with Restart=on-failure.
 func Run(ctx context.Context, server string, d Deps, poll time.Duration) error {
+	// Already configured (cluster ready) → nothing to do.
+	if d.Configured != nil && d.Configured() {
+		return nil
+	}
 	macs, serial := d.Identity()
 
-	resp, err := d.checkinUntilAppointed(ctx, server, CheckinRequest{MACs: macs, Serial: serial}, poll)
+	resp, err := d.checkinUntilReady(ctx, server, CheckinRequest{MACs: macs, Serial: serial}, poll)
 	if err != nil {
 		return err
+	}
+	if resp.Appointed == false {
+		return nil // node became configured while waiting
 	}
 
 	// Time sync (before anything TLS/auth-sensitive).
@@ -121,19 +135,44 @@ func Run(ctx context.Context, server string, d Deps, poll time.Duration) error {
 		d.report(ctx, server, ReportRequest{ClusterID: resp.ClusterID, Hostname: resp.Hostname, State: "error", Message: err.Error()})
 		return err
 	}
+	// "done" means FTS complete — wait for the configured marker so a
+	// non-master node only proceeds after this node's FTS truly finishes.
+	d.waitConfigured(ctx, poll)
 	d.report(ctx, server, ReportRequest{ClusterID: resp.ClusterID, Hostname: resp.Hostname, State: "done", Message: "snapshot applied"})
 	return nil
 }
 
-func (d Deps) checkinUntilAppointed(ctx context.Context, server string, req CheckinRequest, poll time.Duration) (CheckinResponse, error) {
+// waitConfigured blocks until the node reports configured (FTS complete) or
+// the context ends. A nil Configured hook returns immediately.
+func (d Deps) waitConfigured(ctx context.Context, poll time.Duration) {
+	if d.Configured == nil {
+		return
+	}
+	for !d.Configured() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		d.Sleep(poll)
+	}
+}
+
+// checkinUntilReady polls check-in until the node is appointed AND cleared to
+// apply (not holding for the master). Returns an un-appointed response if the
+// node becomes configured while waiting (signal to exit).
+func (d Deps) checkinUntilReady(ctx context.Context, server string, req CheckinRequest, poll time.Duration) (CheckinResponse, error) {
 	for {
 		select {
 		case <-ctx.Done():
 			return CheckinResponse{}, ctx.Err()
 		default:
 		}
+		if d.Configured != nil && d.Configured() {
+			return CheckinResponse{Appointed: false}, nil // cluster ready; stop
+		}
 		resp, err := d.checkin(ctx, server, req)
-		if err == nil && resp.Appointed {
+		if err == nil && resp.Appointed && !resp.Hold {
 			return resp, nil
 		}
 		d.Sleep(poll)
