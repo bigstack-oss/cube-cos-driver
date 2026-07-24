@@ -1,0 +1,67 @@
+---
+# network/network1_0.yml
+name: network
+version: 1.0
+hostname: comp-1
+default-interface: IF.1
+dns:
+  auto: false
+  primary: 10.32.1.1
+interfaces:
+  - type: 0
+    enabled: true
+    label: IF.1
+    speed-duplex: auto
+    ipv4:
+      dhcp: false
+      ipaddr: 10.10.0.2
+      netmask: 255.255.0.0
+      gateway: 10.10.0.254
+    ipv6:
+      enabled: true
+      dhcp: true
+  - type: 2
+    enabled: false
+    label: IF.2
+    master: bond0
+    speed-duplex: auto
+    ipv4:
+      dhcp: true
+    ipv6:
+      enabled: true
+      dhcp: true
+  - type: 2
+    enabled: false
+    label: IF.3
+    master: bond0
+    speed-duplex: auto
+    ipv4:
+      dhcp: true
+    ipv6:
+      enabled: true
+      dhcp: true
+  - type: 1
+    enabled: true
+    label: bond0
+    speed-duplex: auto
+    ipv4:
+      dhcp: false
+      ipaddr: 10.11.0.2
+      netmask: 255.255.0.0
+      gateway: 
+    ipv6:
+      enabled: true
+      dhcp: true
+  - type: 3
+    enabled: true
+    label: bond0.200
+    master: bond0
+    speed-duplex: auto
+    ipv4:
+      dhcp: false
+      ipaddr: 10.12.0.2
+      netmask: 255.255.0.0
+      gateway: 
+    ipv6:
+      enabled: true
+      dhcp: true

@@ -1,0 +1,118 @@
+{
+    "clusterInfo": {
+        "id": "5a4b3c2d1e0f-1122-4334-9556-deadbeef0002",
+        "name": "mixed"
+    },
+    "clusterConfig": {
+        "DNS": ["10.32.1.1"],
+        "timezone": { "name": "UTC", "offset": 0 },
+        "roleSettings": {
+            "extIP": "",
+            "region": "RegionTwo",
+            "secretSeed": "mix123",
+            "mgmtCIDR": "10.10.0.0/16"
+        },
+        "HA": false,
+        "HASettings": {}
+    },
+    "nodeData": [
+        {
+            "id": "33333333-0000-0000-0000-000000000001",
+            "hostname": "ctrl-1",
+            "initIFs": [
+                { "id": "cccc0001-0000-0000-0000-000000000001", "type": "init", "name": "IF.1", "enabled": true, "IPAddr": "10.10.0.1", "IPMask": "255.255.0.0" },
+                { "id": "cccc0001-0000-0000-0000-000000000002", "type": "init", "name": "IF.2", "enabled": true, "IPAddr": "10.11.0.1", "IPMask": "255.255.0.0" }
+            ],
+            "bondIFs": [],
+            "vlanIFs": [],
+            "defaultIF": { "id": "cccc0001-0000-0000-0000-000000000001", "type": "init" },
+            "defaultGateway": "10.10.0.254",
+            "role": "control",
+            "roleSettings": {
+                "mgmtIF": { "id": "cccc0001-0000-0000-0000-000000000001", "type": "init" },
+                "storIF": { "id": "cccc0001-0000-0000-0000-000000000002", "type": "init" },
+                "storIFBackend": {}
+            }
+        },
+        {
+            "id": "33333333-0000-0000-0000-000000000002",
+            "hostname": "comp-1",
+            "initIFs": [
+                { "id": "cccc0002-0000-0000-0000-000000000001", "type": "init", "name": "IF.1", "enabled": true, "IPAddr": "10.10.0.2", "IPMask": "255.255.0.0" },
+                { "id": "cccc0002-0000-0000-0000-000000000002", "type": "init", "name": "IF.2", "enabled": false, "master": "cccc0002-0000-0000-0000-000000000010" },
+                { "id": "cccc0002-0000-0000-0000-000000000003", "type": "init", "name": "IF.3", "enabled": false, "master": "cccc0002-0000-0000-0000-000000000010" }
+            ],
+            "bondIFs": [
+                { "id": "cccc0002-0000-0000-0000-000000000010", "type": "bond", "name": "bond0", "enabled": true, "IPAddr": "10.11.0.2", "IPMask": "255.255.0.0", "slaves": ["cccc0002-0000-0000-0000-000000000002", "cccc0002-0000-0000-0000-000000000003"] }
+            ],
+            "vlanIFs": [
+                { "id": "cccc0002-0000-0000-0000-000000000020", "type": "vlan", "name": "bond0.200", "enabled": true, "IPAddr": "10.12.0.2", "IPMask": "255.255.0.0", "master": "cccc0002-0000-0000-0000-000000000010" }
+            ],
+            "defaultIF": { "id": "cccc0002-0000-0000-0000-000000000001", "type": "init" },
+            "defaultGateway": "10.10.0.254",
+            "role": "compute",
+            "roleSettings": {
+                "mgmtIF": { "id": "cccc0002-0000-0000-0000-000000000001", "type": "init" },
+                "providerIF": { "id": "cccc0002-0000-0000-0000-000000000010", "type": "bond" },
+                "overlayIF": { "id": "cccc0002-0000-0000-0000-000000000020", "type": "vlan" },
+                "storIF": { "id": "cccc0002-0000-0000-0000-000000000001", "type": "init" },
+                "storIFBackend": { "id": "cccc0002-0000-0000-0000-000000000010", "type": "bond" }
+            }
+        },
+        {
+            "id": "33333333-0000-0000-0000-000000000003",
+            "hostname": "stor-1",
+            "initIFs": [
+                { "id": "cccc0003-0000-0000-0000-000000000001", "type": "init", "name": "IF.1", "enabled": true, "IPAddr": "10.10.0.3", "IPMask": "255.255.0.0" },
+                { "id": "cccc0003-0000-0000-0000-000000000002", "type": "init", "name": "IF.2", "enabled": true, "IPAddr": "10.11.0.3", "IPMask": "255.255.0.0" }
+            ],
+            "bondIFs": [],
+            "vlanIFs": [],
+            "defaultIF": { "id": "cccc0003-0000-0000-0000-000000000001", "type": "init" },
+            "defaultGateway": "10.10.0.254",
+            "role": "storage",
+            "roleSettings": {
+                "mgmtIF": { "id": "cccc0003-0000-0000-0000-000000000001", "type": "init" },
+                "storIF": { "id": "cccc0003-0000-0000-0000-000000000002", "type": "init" },
+                "storIFBackend": {}
+            }
+        },
+        {
+            "id": "33333333-0000-0000-0000-000000000004",
+            "hostname": "mod-1",
+            "initIFs": [
+                { "id": "cccc0004-0000-0000-0000-000000000001", "type": "init", "name": "IF.1", "enabled": true, "IPAddr": "10.10.0.4", "IPMask": "255.255.0.0" }
+            ],
+            "bondIFs": [],
+            "vlanIFs": [],
+            "defaultIF": { "id": "cccc0004-0000-0000-0000-000000000001", "type": "init" },
+            "defaultGateway": "10.10.0.254",
+            "role": "moderator",
+            "roleSettings": {
+                "mgmtIF": { "id": "cccc0004-0000-0000-0000-000000000001", "type": "init" },
+                "storIF": { "id": "cccc0004-0000-0000-0000-000000000001", "type": "init" },
+                "storIFBackend": {}
+            }
+        },
+        {
+            "id": "33333333-0000-0000-0000-000000000005",
+            "hostname": "edge-1",
+            "initIFs": [
+                { "id": "cccc0005-0000-0000-0000-000000000001", "type": "init", "name": "IF.1", "enabled": true, "IPAddr": "10.10.0.5", "IPMask": "255.255.0.0" },
+                { "id": "cccc0005-0000-0000-0000-000000000002", "type": "init", "name": "IF.2", "enabled": false }
+            ],
+            "bondIFs": [],
+            "vlanIFs": [],
+            "defaultIF": { "id": "cccc0005-0000-0000-0000-000000000001", "type": "init" },
+            "defaultGateway": "10.10.0.254",
+            "role": "edge-core",
+            "roleSettings": {
+                "mgmtIF": { "id": "cccc0005-0000-0000-0000-000000000001", "type": "init" },
+                "providerIF": { "id": "cccc0005-0000-0000-0000-000000000002", "type": "init" },
+                "overlayIF": { "id": "cccc0005-0000-0000-0000-000000000001", "type": "init" },
+                "storIF": { "id": "cccc0005-0000-0000-0000-000000000001", "type": "init" },
+                "storIFBackend": {}
+            }
+        }
+    ]
+}

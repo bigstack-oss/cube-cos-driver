@@ -1,0 +1,14 @@
+---
+# cubesys/cubesys1_0.yml
+name: cubesys
+version: 1.0
+role: storage
+domain: default
+ha: false
+saltkey: true
+controller: ctrl-1
+controller-ip: 10.10.0.1
+region: RegionTwo
+secret-seed: mix123
+management: IF.1
+storage: IF.2

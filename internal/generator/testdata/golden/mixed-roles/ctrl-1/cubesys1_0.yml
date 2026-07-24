@@ -1,0 +1,15 @@
+---
+# cubesys/cubesys1_0.yml
+name: cubesys
+version: 1.0
+role: control
+domain: default
+ha: false
+saltkey: true
+controller: 
+external: 
+region: RegionTwo
+secret-seed: mix123
+mgmt-cidr: 10.10.0.0/16
+management: IF.1
+storage: IF.2

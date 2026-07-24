@@ -1,0 +1,20 @@
+---
+# cubesys/cubesys1_0.yml
+name: cubesys
+version: 1.0
+role: control-converged
+domain: default
+ha: true
+saltkey: true
+controller: sky-vip
+external: 10.32.140.100
+region: RegionOne
+secret-seed: xzpfwk
+mgmt-cidr: 10.254.0.0/16
+management: IF.1
+provider: bond0
+overlay: bond0.101
+storage: IF.1,bond0
+control-vip: 10.254.0.100
+control-hosts: cube-1,cube-2,cube-3
+control-addrs: 10.254.0.1,10.254.0.2,10.254.0.3

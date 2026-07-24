@@ -1,0 +1,17 @@
+---
+# cubesys/cubesys1_0.yml
+name: cubesys
+version: 1.0
+role: compute
+domain: default
+ha: false
+saltkey: true
+controller: ctrl-1
+controller-ip: 10.10.0.1
+external: 
+region: RegionTwo
+secret-seed: mix123
+management: IF.1
+provider: bond0
+overlay: bond0.200
+storage: IF.1,bond0
