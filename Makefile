@@ -1,11 +1,14 @@
-# cube-cos-snapshot — single Go binary embedding the COS UI SPA.
+# cube-cos-snapshot — two static Go binaries + the embedded COS UI SPA.
 #
-# `make all`   : build SPA + embed + binary (release artifact)
-# `make build` : Go binary only (placeholder UI unless `make web` ran)
+# `make all`   : build SPA + embed + both binaries (release artifacts)
+# `make build` : Go binaries only (placeholder UI unless `make web` ran)
 # `make test`  : Go vet + tests
 # `make web`   : build the SPA and copy it into the embed dir
+#
+# Binaries: bin/cube-cos-snapshot (server) + bin/phone-home-agent (node agent).
 
 BIN := bin/cube-cos-snapshot
+AGENT := bin/phone-home-agent
 GOFLAGS := -trimpath -ldflags '-s -w'
 
 .PHONY: all build test web ensure-dist clean
@@ -14,6 +17,7 @@ all: web build
 
 build: ensure-dist
 	CGO_ENABLED=0 go build $(GOFLAGS) -o $(BIN) ./cmd/cube-cos-snapshot
+	CGO_ENABLED=0 go build $(GOFLAGS) -o $(AGENT) ./cmd/phone-home-agent
 
 test: ensure-dist
 	go vet ./...
