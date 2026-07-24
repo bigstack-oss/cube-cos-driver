@@ -27,6 +27,33 @@ func (h *deployHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/clusters/{id}/deploy/cancel", h.cancel)
 	mux.HandleFunc("POST /api/v1/agents/checkin", h.checkin)
 	mux.HandleFunc("POST /api/v1/agents/report", h.report)
+	mux.HandleFunc("POST /api/v1/agents/preflight/checkin", h.preflightCheckin)
+	mux.HandleFunc("POST /api/v1/agents/preflight/report", h.preflightReport)
+	mux.HandleFunc("POST /api/v1/agents/preflight/greenlight", h.greenlight)
+}
+
+// matchByMAC finds the assigned machine whose discovered NICs include any of
+// the given MACs (case-insensitive).
+func (h *deployHandlers) matchByMAC(macs []string) (*inventory.Machine, error) {
+	want := map[string]bool{}
+	for _, m := range macs {
+		want[strings.ToLower(strings.TrimSpace(m))] = true
+	}
+	machines, err := h.machines.List()
+	if err != nil {
+		return nil, err
+	}
+	for i := range machines {
+		if machines[i].Assignment == nil {
+			continue
+		}
+		for _, mac := range macsOf(machines[i]) {
+			if want[strings.ToLower(mac)] {
+				return &machines[i], nil
+			}
+		}
+	}
+	return nil, nil
 }
 
 type planRow struct {
@@ -167,7 +194,7 @@ func (h *deployHandlers) start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no matching nodes to deploy")
 		return
 	}
-	dep, err := h.mgr.Start(id, nodes, master)
+	dep, err := h.mgr.Start(id, nodes, master, h.verifyTargets(id))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
@@ -209,29 +236,10 @@ func (h *deployHandlers) checkin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
 		return
 	}
-	want := map[string]bool{}
-	for _, m := range req.MACs {
-		want[strings.ToLower(strings.TrimSpace(m))] = true
-	}
-	machines, err := h.machines.List()
+	matched, err := h.matchByMAC(req.MACs)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
-	}
-	var matched *inventory.Machine
-	for i := range machines {
-		if machines[i].Assignment == nil {
-			continue
-		}
-		for _, mac := range macsOf(machines[i]) {
-			if want[strings.ToLower(mac)] {
-				matched = &machines[i]
-				break
-			}
-		}
-		if matched != nil {
-			break
-		}
 	}
 	if matched == nil {
 		writeJSON(w, http.StatusOK, agent.CheckinResponse{Appointed: false})
@@ -261,6 +269,22 @@ func (h *deployHandlers) checkin(w http.ResponseWriter, r *http.Request) {
 		Preflight:     h.preflightTargets(cid, host, serverHost),
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// verifyTargets are the Tier-2 whole-cluster reachability targets (control
+// node mgmt IPs), tested from the server only once every node reaches done.
+func (h *deployHandlers) verifyTargets(clusterID string) []string {
+	detail, err := h.clusters.Detail(clusterID)
+	if err != nil {
+		return nil
+	}
+	var targets []string
+	for _, ip := range generator.GetControlInfo(detail.NodeData).IPs {
+		if ip != "" && ip != "None" {
+			targets = append(targets, ip)
+		}
+	}
+	return targets
 }
 
 // preflightTargets derives connectivity targets for a node from its cluster
@@ -308,4 +332,82 @@ func (h *deployHandlers) report(w http.ResponseWriter, r *http.Request) {
 	}
 	h.mgr.Report(req.ClusterID, req.Hostname, orchestrator.State(req.State), req.Message, pf)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "ok"})
+}
+
+// preflightCheckin (installer phase): match the node by MAC and return its
+// topology+peer bundle and the server clock. Marks the node preflighting.
+func (h *deployHandlers) preflightCheckin(w http.ResponseWriter, r *http.Request) {
+	var req agent.CheckinRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+	matched, err := h.matchByMAC(req.MACs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	if matched == nil {
+		writeJSON(w, http.StatusOK, agent.PreflightCheckinResponse{Appointed: false})
+		return
+	}
+	cid := matched.Assignment.ClusterID
+	host := matched.Assignment.Hostname
+	detail, err := h.clusters.Detail(cid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	bundle := generator.BuildPreflightBundles(detail)[host]
+	h.mgr.PreflightProgress(cid, host)
+	writeJSON(w, http.StatusOK, agent.PreflightCheckinResponse{
+		Appointed:     true,
+		ClusterID:     cid,
+		Hostname:      host,
+		ServerTimeUTC: time.Now().UTC().Format(time.RFC3339),
+		Bundle:        bundle,
+	})
+}
+
+// preflightReport (installer phase): record a node's carrier/skew/ping-matrix
+// result.
+func (h *deployHandlers) preflightReport(w http.ResponseWriter, r *http.Request) {
+	var req agent.PreflightReportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+	if req.ClusterID == "" || req.Hostname == "" {
+		writeError(w, http.StatusBadRequest, "clusterId and hostname required")
+		return
+	}
+	var matrix []orchestrator.PreflightResult
+	for _, p := range req.Matrix {
+		matrix = append(matrix, orchestrator.PreflightResult{Target: p.Target, OK: p.OK, Detail: p.Detail})
+	}
+	h.mgr.PreflightReport(req.ClusterID, req.Hostname, orchestrator.NodePreflight{
+		CarrierOK:    req.CarrierOK,
+		ClockSkewSec: req.ClockSkewSec,
+		Matrix:       matrix,
+		Passed:       req.Passed,
+	})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "ok"})
+}
+
+// greenlight (installer phase): report whether green light 1 has cleared so the
+// node may restore.
+func (h *deployHandlers) greenlight(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ClusterID string `json:"clusterId"`
+		Hostname  string `json:"hostname"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+	if req.ClusterID == "" || req.Hostname == "" {
+		writeError(w, http.StatusBadRequest, "clusterId and hostname required")
+		return
+	}
+	writeJSON(w, http.StatusOK, agent.GreenlightResponse{Clear: h.mgr.GreenLight1(req.ClusterID, req.Hostname)})
 }

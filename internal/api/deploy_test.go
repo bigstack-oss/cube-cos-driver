@@ -193,3 +193,71 @@ func mustClusterDetail(t *testing.T, raw []byte) model.ClusterDetail {
 	}
 	return d
 }
+
+func TestPreflightEndpoints(t *testing.T) {
+	srv, _ := deployFixture(t, orchestrator.NewFakeExecutor())
+
+	// Start the deploy so the manager has a Deploy for the cluster.
+	do(t, "POST", srv.URL+"/api/v1/clusters/"+depClusterID+"/deploy", []byte(`{"confirm":true}`)).Body.Close()
+
+	// Installer-phase check-in by MAC → appointed with a topology+peer bundle.
+	ci := do(t, "POST", srv.URL+"/api/v1/agents/preflight/checkin", []byte(`{"macs":["`+macFor(0)+`"],"serial":"S"}`))
+	var pc struct {
+		Appointed     bool                  `json:"appointed"`
+		Hostname      string                `json:"hostname"`
+		ServerTimeUTC string                `json:"serverTimeUTC"`
+		Bundle        model.PreflightBundle `json:"bundle"`
+	}
+	json.NewDecoder(ci.Body).Decode(&pc)
+	ci.Body.Close()
+	if !pc.Appointed || pc.Hostname != "cube-1" {
+		t.Fatalf("preflight checkin = %+v", pc)
+	}
+	if len(pc.Bundle.Links) == 0 || pc.Bundle.Hostname != "cube-1" {
+		t.Fatalf("bundle missing links: %+v", pc.Bundle)
+	}
+	if pc.ServerTimeUTC == "" {
+		t.Fatal("serverTimeUTC missing")
+	}
+
+	greenlight := func(host string) bool {
+		r := do(t, "POST", srv.URL+"/api/v1/agents/preflight/greenlight",
+			[]byte(`{"clusterId":"`+depClusterID+`","hostname":"`+host+`"}`))
+		var g struct {
+			Clear bool `json:"clear"`
+		}
+		json.NewDecoder(r.Body).Decode(&g)
+		r.Body.Close()
+		return g.Clear
+	}
+	report := func(host string, passed, carrier bool, skew float64) {
+		body, _ := json.Marshal(agentPfReport{ClusterID: depClusterID, Hostname: host, CarrierOK: carrier, ClockSkewSec: skew, Passed: passed})
+		do(t, "POST", srv.URL+"/api/v1/agents/preflight/report", body).Body.Close()
+	}
+
+	// Only cube-1 passed → green light 1 withheld.
+	report("cube-1", true, true, 0.1)
+	if greenlight("cube-1") {
+		t.Fatal("GL1 must be withheld until every node passes")
+	}
+	// cube-2 passes but cube-3 has excessive skew → still withheld.
+	report("cube-2", true, true, 0.1)
+	report("cube-3", false, true, 9)
+	if greenlight("cube-1") {
+		t.Fatal("GL1 must be withheld while a node exceeds the skew gate")
+	}
+	// cube-3 re-kicks clean → GL1 clears.
+	report("cube-3", true, true, 0.1)
+	if !greenlight("cube-3") {
+		t.Fatal("GL1 should clear once every node passes")
+	}
+	waitNode(t, srv, "cube-3", "restoring")
+}
+
+type agentPfReport struct {
+	ClusterID    string  `json:"clusterId"`
+	Hostname     string  `json:"hostname"`
+	CarrierOK    bool    `json:"carrierOk"`
+	ClockSkewSec float64 `json:"clockSkewSec"`
+	Passed       bool    `json:"passed"`
+}

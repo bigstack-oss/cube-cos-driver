@@ -4,6 +4,8 @@
 // interfaces so tests never touch a real BMC or node.
 package orchestrator
 
+import "strings"
+
 type State string
 
 const (
@@ -12,17 +14,22 @@ const (
 	StateSetBootPXE   State = "set-boot-pxe"
 	StatePowerCycle   State = "power-cycle"
 	StateNetbooting   State = "netbooting"
-	StateImaging      State = "imaging"
-	StateImaged       State = "imaged"
-	StateCheckedIn    State = "checked-in"
+	// Installer (pre-restore) phase, driven by `agent --preflight`.
+	StatePreflighting State = "preflighting"  // configuring topology + pinging matrix
+	StatePreflightOK  State = "preflight-ok"  // own matrix green; waiting for green light 1
+	StateRestoring    State = "restoring"     // received GL1; imaging self
+	StateRebooting    State = "rebooting"     // restore done; rebooting into installed OS
+	StateImaging      State = "imaging"       // (legacy observe stage)
+	StateImaged       State = "imaged"        // (legacy observe stage)
+	StateCheckedIn    State = "checked-in"    // installed agent phoned home; waiting for GL2
+	StateNetPreflight State = "net-preflight" // (legacy pre-apply gate)
 	// StateWaiting: a non-master node has checked in but must wait for the
-	// master node to finish its FTS before applying its own snapshot.
-	StateWaiting      State = "waiting-controller"
-	StateNetPreflight State = "net-preflight"
-	StateApplying     State = "applying"
-	StateApplied      State = "applied"
-	StateDone         State = "done"
-	StateError        State = "error"
+	// master node to finish its FTS before applying (green light 2).
+	StateWaiting  State = "waiting-controller"
+	StateApplying State = "applying"
+	StateApplied  State = "applied"
+	StateDone     State = "done"
+	StateError    State = "error"
 )
 
 // Stage is the coarse install progress observed on the pxeserver.
@@ -53,13 +60,116 @@ type PreflightResult struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// NodePreflight is the installer-phase (pre-restore) validation outcome for one
+// node: carrier on bond members, clock skew vs the server, and the peer/gateway
+// ping matrix.
+type NodePreflight struct {
+	CarrierOK    bool              `json:"carrierOk"`
+	ClockSkewSec float64           `json:"clockSkewSec"`
+	Matrix       []PreflightResult `json:"matrix,omitempty"`
+	Passed       bool              `json:"passed"`
+	ReportedAt   string            `json:"reportedAt"`
+}
+
 type NodeDeploy struct {
 	Hostname  string            `json:"hostname"`
 	MachineID string            `json:"machineId"`
 	State     State             `json:"state"`
 	Message   string            `json:"message,omitempty"`
+	ErrCode   ErrCode           `json:"errCode,omitempty"`
 	Preflight []PreflightResult `json:"preflight,omitempty"`
-	UpdatedAt string            `json:"updatedAt"`
+	// InstallerPreflight is the pre-restore fabric-validation result (nil until
+	// the installer agent reports).
+	InstallerPreflight *NodePreflight `json:"installerPreflight,omitempty"`
+	UpdatedAt          string         `json:"updatedAt"`
+	// Derived, read-only view for the UI (filled by snapshot()).
+	Light1 Light `json:"light1"`
+	Light2 Light `json:"light2"`
+	Phase  Phase `json:"phase"`
+}
+
+// Light is a traffic-light status for the two deploy gates.
+type Light string
+
+const (
+	LightRed    Light = "red"    // failed
+	LightYellow Light = "yellow" // in progress / waiting
+	LightGreen  Light = "green"  // passed
+	LightOff    Light = "off"    // not reached yet
+)
+
+// Phase is the coarse per-node stage shown in the deploy UI.
+type Phase string
+
+const (
+	PhaseBoot         Phase = "boot"          // netbooting from the pxeserver
+	PhasePreflightNet Phase = "preflight-net" // configuring topology + ping matrix
+	PhaseTimeSync     Phase = "time"          // clock sync / skew gate
+	PhaseWaitMaster   Phase = "wait-for-master"
+	PhaseApplying     Phase = "applying" // applying snapshot / FTS
+	PhaseDone         Phase = "done"
+	PhaseError        Phase = "error"
+)
+
+// lights derives (light1, light2) from a node's state + preflight result.
+// Light 1 = network preflight (fabric + carrier + skew). Light 2 = apply gate.
+func (nd *NodeDeploy) lights() (Light, Light) {
+	if nd.State == StateError {
+		// A post-reboot apply failure is red on light 2 (light 1 already
+		// passed). Everything earlier (BMC/PXE/preflight) is red on light 1.
+		if strings.HasPrefix(string(nd.ErrCode), "APPLY_") {
+			return LightGreen, LightRed
+		}
+		return LightRed, LightOff
+	}
+	l1 := LightOff
+	switch nd.State {
+	case StatePending, StateBMCPreflight, StateSetBootPXE, StatePowerCycle, StateNetbooting:
+		l1 = LightOff
+	case StatePreflighting:
+		l1 = LightYellow
+	default:
+		l1 = LightGreen // preflight-ok and everything after it cleared GL1
+	}
+	l2 := LightOff
+	switch nd.State {
+	case StateCheckedIn, StateWaiting, StateNetPreflight:
+		l2 = LightYellow
+	case StateApplying, StateApplied:
+		l2 = LightYellow
+	case StateDone:
+		l2 = LightGreen
+	}
+	return l1, l2
+}
+
+// phase derives the coarse UI phase from a node's state.
+func (nd *NodeDeploy) phase() Phase {
+	switch nd.State {
+	case StatePending, StateBMCPreflight, StateSetBootPXE, StatePowerCycle, StateNetbooting, StateImaging, StateImaged:
+		return PhaseBoot
+	case StatePreflighting, StatePreflightOK, StateRestoring, StateRebooting:
+		return PhasePreflightNet
+	case StateCheckedIn, StateWaiting:
+		return PhaseWaitMaster
+	case StateNetPreflight, StateApplying, StateApplied:
+		return PhaseApplying
+	case StateDone:
+		return PhaseDone
+	case StateError:
+		return PhaseError
+	}
+	return PhaseBoot
+}
+
+// isPreRestore reports whether a state is in the installer (pre-restore) phase.
+func isPreRestore(s State) bool {
+	switch s {
+	case StatePending, StateBMCPreflight, StateSetBootPXE, StatePowerCycle,
+		StateNetbooting, StatePreflighting, StatePreflightOK, StateRestoring, StateRebooting:
+		return true
+	}
+	return false
 }
 
 type Deploy struct {
@@ -68,6 +178,12 @@ type Deploy struct {
 	// Master is the node whose FTS must complete before others apply.
 	Master string                 `json:"master"`
 	Nodes  map[string]*NodeDeploy `json:"nodes"` // by hostname
+	// VerifyTargets are cluster-wide reachability targets (control VIP +
+	// node mgmt IPs) tested only once every node reaches done.
+	VerifyTargets []string `json:"verifyTargets,omitempty"`
+	// ClusterReady + Verify hold the Tier-2 whole-cluster check result.
+	ClusterReady bool              `json:"clusterReady"`
+	Verify       []PreflightResult `json:"verify,omitempty"`
 }
 
 // terminal reports whether a node state needs no further engine stepping.

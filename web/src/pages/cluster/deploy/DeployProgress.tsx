@@ -7,6 +7,8 @@ import {
   DeployState,
   getDeployStatus,
   isTerminal,
+  Light,
+  Phase,
 } from '../../../api/deploy'
 
 export type DeployProgressProps = {
@@ -24,6 +26,10 @@ const stateColor: Record<
   'set-boot-pxe': 'primary-blue',
   'power-cycle': 'primary-blue',
   netbooting: 'primary-blue',
+  preflighting: 'primary-blue',
+  'preflight-ok': 'cyan',
+  restoring: 'primary-blue',
+  rebooting: 'primary-blue',
   imaging: 'primary-blue',
   imaged: 'cyan',
   'checked-in': 'cyan',
@@ -34,6 +40,31 @@ const stateColor: Record<
   done: 'cyan',
   error: 'dark',
 }
+
+const phaseLabel: Record<Phase, string> = {
+  boot: 'Boot from PXE',
+  'preflight-net': 'Network preflight',
+  time: 'Time sync',
+  'wait-for-master': 'Wait for master',
+  applying: 'Applying snapshot',
+  done: 'Done',
+  error: 'Error',
+}
+
+const lightClass: Record<Light, string> = {
+  off: 'bg-functional-border-divider',
+  yellow: 'bg-status-warning',
+  green: 'bg-status-positive',
+  red: 'bg-status-negative',
+}
+
+// LightDot renders one traffic-light gate with a label.
+const LightDot = (props: { label: string; value: Light }) => (
+  <span className="flex items-center gap-x-1" title={`${props.label}: ${props.value}`}>
+    <span className={`inline-block h-2.5 w-2.5 rounded-full ${lightClass[props.value]}`} />
+    <span className="secondary-body5 text-functional-text-light">{props.label}</span>
+  </span>
+)
 
 export const DeployProgress = (props: DeployProgressProps) => {
   const { clusterId, reloadSignal } = props
@@ -96,8 +127,15 @@ export const DeployProgress = (props: DeployProgressProps) => {
                 variant={n.state === 'error' ? 'filled' : 'stroke'}
                 color={stateColor[n.state]}
               >
-                {n.state}
+                {phaseLabel[n.phase]}
               </CosTag>
+              <LightDot label="Net" value={n.light1} />
+              <LightDot label="Apply" value={n.light2} />
+              {n.errCode && (
+                <CosTag variant="filled" color="dark">
+                  {n.errCode}
+                </CosTag>
+              )}
               {n.message && (
                 <span
                   className={`secondary-body5 ${n.state === 'error' ? 'text-status-negative' : 'text-functional-text-light'}`}

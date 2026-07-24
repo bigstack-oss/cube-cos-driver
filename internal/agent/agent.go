@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/bigstack-oss/cube-cos-snapshot/internal/model"
 )
 
 type CheckinRequest struct {
@@ -43,6 +45,32 @@ type PreflightResult struct {
 	Target string `json:"target"`
 	OK     bool   `json:"ok"`
 	Detail string `json:"detail,omitempty"`
+}
+
+// PreflightCheckinResponse is returned to the installer-phase agent: its
+// per-node topology+peer bundle plus the server clock (for the ±5s gate).
+type PreflightCheckinResponse struct {
+	Appointed     bool                  `json:"appointed"`
+	ClusterID     string                `json:"clusterId"`
+	Hostname      string                `json:"hostname"`
+	ServerTimeUTC string                `json:"serverTimeUTC"`
+	Bundle        model.PreflightBundle `json:"bundle"`
+}
+
+// PreflightReportRequest carries the installer-phase validation outcome.
+type PreflightReportRequest struct {
+	ClusterID    string            `json:"clusterId"`
+	Hostname     string            `json:"hostname"`
+	CarrierOK    bool              `json:"carrierOk"`
+	ClockSkewSec float64           `json:"clockSkewSec"`
+	Matrix       []PreflightResult `json:"matrix,omitempty"`
+	Passed       bool              `json:"passed"`
+}
+
+// GreenlightResponse tells the installer-phase agent whether green light 1 has
+// cleared (all nodes preflighted + skew ≤ gate) so it may restore.
+type GreenlightResponse struct {
+	Clear bool `json:"clear"`
 }
 
 type ReportRequest struct {
@@ -81,12 +109,13 @@ func Run(ctx context.Context, server string, d Deps, poll time.Duration) error {
 		return nil
 	}
 	macs, serial := d.Identity()
+	req := CheckinRequest{MACs: macs, Serial: serial}
 
-	resp, err := d.checkinUntilReady(ctx, server, CheckinRequest{MACs: macs, Serial: serial}, poll)
+	resp, err := d.checkinUntilAppointed(ctx, server, req, poll)
 	if err != nil {
 		return err
 	}
-	if resp.Appointed == false {
+	if !resp.Appointed {
 		return nil // node became configured while waiting
 	}
 
@@ -124,9 +153,21 @@ func Run(ctx context.Context, server string, d Deps, poll time.Duration) error {
 			allOK = false
 		}
 	}
+	// Report preflight results BEFORE any apply. This runs on every node; the
+	// server withholds the apply gate until all nodes have passed.
 	d.report(ctx, server, ReportRequest{ClusterID: resp.ClusterID, Hostname: resp.Hostname, State: "net-preflight", Preflight: results})
 	if !allOK {
 		return ErrPreflightFailed
+	}
+
+	// Wait for the apply gate: all nodes preflighted (barrier) + master-first
+	// ordering. The server clears Hold when it's this node's turn.
+	cleared, err := d.waitApplyGate(ctx, server, req, poll)
+	if err != nil {
+		return err
+	}
+	if !cleared {
+		return nil // node became configured while waiting
 	}
 
 	// Apply the appointed snapshot.
@@ -158,10 +199,10 @@ func (d Deps) waitConfigured(ctx context.Context, poll time.Duration) {
 	}
 }
 
-// checkinUntilReady polls check-in until the node is appointed AND cleared to
-// apply (not holding for the master). Returns an un-appointed response if the
-// node becomes configured while waiting (signal to exit).
-func (d Deps) checkinUntilReady(ctx context.Context, server string, req CheckinRequest, poll time.Duration) (CheckinResponse, error) {
+// checkinUntilAppointed polls check-in until the node is appointed (so it has
+// its snapshot URL + preflight targets). Returns an un-appointed response if
+// the node becomes configured while waiting (signal to exit).
+func (d Deps) checkinUntilAppointed(ctx context.Context, server string, req CheckinRequest, poll time.Duration) (CheckinResponse, error) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -172,8 +213,29 @@ func (d Deps) checkinUntilReady(ctx context.Context, server string, req CheckinR
 			return CheckinResponse{Appointed: false}, nil // cluster ready; stop
 		}
 		resp, err := d.checkin(ctx, server, req)
-		if err == nil && resp.Appointed && !resp.Hold {
+		if err == nil && resp.Appointed {
 			return resp, nil
+		}
+		d.Sleep(poll)
+	}
+}
+
+// waitApplyGate polls check-in until the server clears Hold (all nodes
+// preflighted + master-first ordering satisfied). Returns cleared=false if the
+// node becomes configured while waiting.
+func (d Deps) waitApplyGate(ctx context.Context, server string, req CheckinRequest, poll time.Duration) (bool, error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		default:
+		}
+		if d.Configured != nil && d.Configured() {
+			return false, nil
+		}
+		resp, err := d.checkin(ctx, server, req)
+		if err == nil && resp.Appointed && !resp.Hold {
+			return true, nil
 		}
 		d.Sleep(poll)
 	}
