@@ -69,12 +69,13 @@ export const assignMachine = async (
   id: string,
   clusterId: string,
   hostname: string,
+  osDisk: string,
 ): Promise<void> => {
   await jsonOrThrow(
     await fetch(`/api/v1/machines/${encodeURIComponent(id)}/assignment`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clusterId, hostname }),
+      body: JSON.stringify({ clusterId, hostname, osDisk }),
     }),
   )
 }

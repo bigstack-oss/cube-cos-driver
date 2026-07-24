@@ -201,7 +201,7 @@ func (s *Store) SetFetchState(id string, state FetchState, fetchErr string) erro
 // Assign binds machine id to (clusterID, hostname), enforcing 1:1: any other
 // machine already assigned to the same node is unassigned first, and this
 // machine's own previous assignment is overwritten.
-func (s *Store) Assign(id, clusterID, hostname string) (Machine, error) {
+func (s *Store) Assign(id, clusterID, hostname, osDisk string) (Machine, error) {
 	target, err := s.readRecord(id)
 	if err != nil {
 		return Machine{}, err
@@ -230,7 +230,7 @@ func (s *Store) Assign(id, clusterID, hostname string) (Machine, error) {
 			}
 		}
 	}
-	target.Assignment = &Assignment{ClusterID: clusterID, Hostname: hostname}
+	target.Assignment = &Assignment{ClusterID: clusterID, Hostname: hostname, OSDisk: osDisk}
 	if err := s.writeRecord(target); err != nil {
 		return Machine{}, err
 	}
