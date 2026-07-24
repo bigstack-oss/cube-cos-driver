@@ -1,14 +1,13 @@
 // Assignment flow: pick a server (BMC machine) → pick the CubeCOS OS disk →
-// map its real NICs to bonds/VLANs and tag roles. On finish it binds the
-// machine to the node and rewrites the node's interface topology + role tags
-// so the generated snapshot matches the assigned hardware.
+// bind its real NICs to the snapshot's network topology (correcting IF.N
+// picks with real hardware info). Binds the machine to the node and applies
+// any interface-label corrections back onto the node config.
 import { useEffect, useMemo, useState } from 'react'
-import { RoleIFKey, roleOptions } from '../../../model/roles'
 import { formatBytes, Machine, NIC } from '../../../model/machine'
-import { IF, IFInfo, NodeConfig, NodeRoleSettings } from '../../../model/types'
+import { NodeConfig } from '../../../model/types'
 import { Select } from '../../../components/form/Select'
 import { WizardModal, WizardStep } from '../../../components/WizardModal'
-import { NicMapper, NicMapperValue } from './NicMapper'
+import { SnapshotNetworkMapper } from './SnapshotNetworkMapper'
 
 export type AssignResult = {
   machineId: string
@@ -19,65 +18,10 @@ export type AssignResult = {
 export type AssignServerFlowProps = {
   isOpen: boolean
   node: NodeConfig
-  // Machines selectable: fetched, and either unassigned or already this node.
   machines: Machine[]
   currentMachineId?: string
   onCancel: () => void
   onFinish: (result: AssignResult) => void
-}
-
-const buildInitIFs = (ports: NIC[]): IF[] =>
-  ports.map((_, i) => ({
-    id: `if-${i}`,
-    type: 'init' as const,
-    name: `IF.${i + 1}`,
-    enabled: true,
-  }))
-
-// assembleNode rewrites a node's interface topology + role tags from a
-// completed mapper value, preserving IP config from the previous interfaces
-// (matched by label). Pure, so it's unit-testable without the DnD UI.
-export const assembleNode = (
-  node: NodeConfig,
-  mapper: NicMapperValue,
-): NodeConfig => {
-  const byLabel = new Map(
-    [...node.initIFs, ...node.bondIFs, ...node.vlanIFs].map((f) => [f.name, f]),
-  )
-  const carryIP = (f: IF): IF => {
-    const prev = byLabel.get(f.name)
-    return prev
-      ? { ...f, enabled: prev.enabled, IPAddr: prev.IPAddr, IPMask: prev.IPMask }
-      : f
-  }
-  const all = [
-    ...mapper.draft.initIFs,
-    ...mapper.draft.bondIFs,
-    ...mapper.draft.vlanIFs,
-  ]
-  const toInfo = (id: string | undefined): IFInfo => {
-    const f = all.find((x) => x.id === id)
-    return f ? { id: f.id, type: f.type } : {}
-  }
-  const roleSettings: NodeRoleSettings = {
-    mgmtIF: {},
-    storIF: {},
-    storIFBackend: {},
-  }
-  for (const key of roleOptions[node.role]) {
-    ;(roleSettings as Record<RoleIFKey, IFInfo>)[key] = toInfo(
-      mapper.roleTags[key],
-    )
-  }
-  const mgmtId = roleSettings.mgmtIF.id
-  return {
-    ...node,
-    initIFs: mapper.draft.initIFs.map(carryIP),
-    bondIFs: mapper.draft.bondIFs.map(carryIP),
-    vlanIFs: mapper.draft.vlanIFs.map(carryIP),
-    defaultIF: mgmtId ? toInfo(mgmtId) : node.defaultIF,
-    roleSettings,
-  }
 }
 
 export const AssignServerFlow = (props: AssignServerFlowProps) => {
@@ -97,32 +41,25 @@ export const AssignServerFlow = (props: AssignServerFlowProps) => {
   const [machineId, setMachineId] = useState<string | undefined>()
   const [osDisk, setOsDisk] = useState<string>('')
   const [ports, setPorts] = useState<NIC[]>([])
-  const [mapper, setMapper] = useState<NicMapperValue>({
-    draft: { initIFs: [], bondIFs: [], vlanIFs: [] },
-    roleTags: {},
-  })
+  const [workingNode, setWorkingNode] = useState<NodeConfig>(node)
 
   const machine = machines.find((m) => m.id === machineId)
 
-  // Seed defaults when the modal opens or the selected machine changes.
   useEffect(() => {
     if (!isOpen) return
     setMachineId(currentMachineId)
-  }, [isOpen, currentMachineId])
+    setWorkingNode(node)
+  }, [isOpen, currentMachineId, node])
 
   useEffect(() => {
     if (!machine?.inventory) {
       setPorts([])
-      setMapper({ draft: { initIFs: [], bondIFs: [], vlanIFs: [] }, roleTags: {} })
       return
     }
-    const nics = machine.inventory.nics ?? []
-    setPorts(nics)
-    setOsDisk(machine.assignment?.osDisk ?? machine.inventory.disks?.[0]?.name ?? '')
-    setMapper({
-      draft: { initIFs: buildInitIFs(nics), bondIFs: [], vlanIFs: [] },
-      roleTags: {},
-    })
+    setPorts(machine.inventory.nics ?? [])
+    setOsDisk(
+      machine.assignment?.osDisk ?? machine.inventory.disks?.[0]?.name ?? '',
+    )
   }, [machineId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!isOpen) return null
@@ -133,18 +70,7 @@ export const AssignServerFlow = (props: AssignServerFlowProps) => {
     const next = [...ports]
     ;[next[index], next[j]] = [next[j], next[index]]
     setPorts(next)
-    // Rebuild init IFs to match new order; drop bonds/vlans/tags to avoid
-    // stale references.
-    setMapper({
-      draft: { initIFs: buildInitIFs(next), bondIFs: [], vlanIFs: [] },
-      roleTags: {},
-    })
   }
-
-  const requiredRoles = roleOptions[node.role].filter(
-    (k) => k !== 'storIFBackend',
-  )
-  const rolesComplete = requiredRoles.every((k) => !!mapper.roleTags[k])
 
   const steps: WizardStep[] = [
     {
@@ -195,7 +121,10 @@ export const AssignServerFlow = (props: AssignServerFlowProps) => {
             (machine?.inventory?.disks ?? []).map((d, i) => {
               const name = d.name || d.model || `disk-${i}`
               return (
-                <label key={i} className="primary-body4 flex items-center gap-x-2">
+                <label
+                  key={i}
+                  className="primary-body4 flex items-center gap-x-2"
+                >
                   <input
                     type="radio"
                     name="os-disk"
@@ -212,13 +141,12 @@ export const AssignServerFlow = (props: AssignServerFlowProps) => {
     },
     {
       label: 'Network',
-      canNext: rolesComplete,
+      canNext: true,
       content: machine?.inventory ? (
-        <NicMapper
-          role={node.role}
+        <SnapshotNetworkMapper
+          node={workingNode}
           ports={ports}
-          value={mapper}
-          onChange={setMapper}
+          onChange={setWorkingNode}
           onReorderPort={reorderPort}
         />
       ) : (
@@ -227,15 +155,6 @@ export const AssignServerFlow = (props: AssignServerFlowProps) => {
     },
   ]
 
-  const finish = () => {
-    if (!machine) return
-    onFinish({
-      machineId: machine.id,
-      osDisk,
-      node: assembleNode(node, mapper),
-    })
-  }
-
   return (
     <WizardModal
       isOpen={isOpen}
@@ -243,10 +162,10 @@ export const AssignServerFlow = (props: AssignServerFlowProps) => {
       steps={steps}
       finishText="Assign"
       onCancel={onCancel}
-      onFinish={finish}
+      onFinish={() => {
+        if (!machine) return
+        onFinish({ machineId: machine.id, osDisk, node: workingNode })
+      }}
     />
   )
 }
-
-// exported for tests
-export { buildInitIFs }
