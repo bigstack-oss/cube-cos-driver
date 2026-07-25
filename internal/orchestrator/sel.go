@@ -28,6 +28,54 @@ var selResultName = map[byte]string{
 	0x01: "ok", 0x02: "degraded", 0x03: "unreachable", 0x04: "topology-error", 0xff: "error",
 }
 
+// GateWriter drops the master-done "go" record on a node's BMC over LAN, so a
+// non-master agent (which has no in-band network yet) sees it via local KCS.
+type GateWriter interface {
+	WriteGate(ctx context.Context, n Node) error
+}
+
+// IPMIGateWriter adds the cube "gate/go" OEM SEL record over IPMI LAN.
+type IPMIGateWriter struct{}
+
+func (IPMIGateWriter) WriteGate(ctx context.Context, n Node) error {
+	client, err := goipmi.NewClient(n.BMCAddress, 623, n.BMCUser, n.BMCPass)
+	if err != nil {
+		return err
+	}
+	if err := client.Connect(ctx); err != nil {
+		return err
+	}
+	defer client.Close(ctx)
+
+	if _, err := client.AddSELEntry(ctx, gateSEL()); err != nil {
+		// SEL full ("out of space", cc 0xc4) — clear it and retry once. The SEL
+		// here only carries our coordination records, so clearing is safe.
+		if res, rerr := client.ReserveSEL(ctx); rerr == nil {
+			if _, cerr := client.ClearSEL(ctx, res.ReservationID); cerr == nil {
+				time.Sleep(2 * time.Second)
+				_, err = client.AddSELEntry(ctx, gateSEL())
+			}
+		}
+		return err
+	}
+	return nil
+}
+
+// gateSEL builds the cube "gate/go" OEM SEL record (master-done handoff).
+func gateSEL() *goipmi.SEL {
+	var oem [6]byte
+	oem[0] = 0x30 // gate phase
+	oem[1] = 0x05 // go result
+	return &goipmi.SEL{
+		RecordType: goipmi.SELRecordType(0xC0),
+		OEMTimestamped: &goipmi.SELOEMTimestamped{
+			Timestamp:      time.Now(),
+			ManufacturerID: cubeManufacturerID,
+			OEMDefined:     oem,
+		},
+	}
+}
+
 // SELObserver reads a node's out-of-band status from its BMC over the LAN.
 type SELObserver interface {
 	// Observe returns the latest Cube OEM SEL record for a node, or nil if none.

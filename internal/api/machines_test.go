@@ -35,7 +35,11 @@ func decodeMachine(t *testing.T, r io.Reader) inventory.Machine {
 }
 
 func TestMachinesCRUD(t *testing.T) {
-	srv := newTestServerCfg(t, Config{DataDir: t.TempDir()})
+	// create/update verify the BMC synchronously, so a succeeding discoverer.
+	srv := newTestServerCfg(t, Config{
+		DataDir:    t.TempDir(),
+		Discoverer: fakeDiscoverer{inv: inventory.Inventory{Serial: "SN"}},
+	})
 
 	// Create
 	body := `{"label":"node-1","bmc":{"address":"10.0.0.1","username":"admin","password":"secret"}}`
@@ -125,30 +129,25 @@ func TestMachineFetchSuccess(t *testing.T) {
 	}
 }
 
-func TestMachineFetchError(t *testing.T) {
+// Create verifies the BMC synchronously: an unreachable BMC / bad credentials
+// (discoverer error) rejects the create and stores nothing.
+func TestMachineCreateVerifyRejects(t *testing.T) {
 	srv := newTestServerCfg(t, Config{
 		DataDir:    t.TempDir(),
 		Discoverer: fakeDiscoverer{err: errDiscovery},
 	})
 	resp := do(t, "POST", srv.URL+"/api/v1/machines", []byte(`{"label":"n","bmc":{"address":"1.2.3.4","username":"u","password":"p"}}`))
-	created := decodeMachine(t, resp.Body)
+	if resp.StatusCode != 502 {
+		t.Fatalf("create with failing BMC verify = %d, want 502", resp.StatusCode)
+	}
 	resp.Body.Close()
 
-	do(t, "POST", srv.URL+"/api/v1/machines/"+created.ID+"/fetch", nil).Body.Close()
-
-	deadline := time.Now().Add(3 * time.Second)
-	var m inventory.Machine
-	for time.Now().Before(deadline) {
-		resp = do(t, "GET", srv.URL+"/api/v1/machines/"+created.ID, nil)
-		m = decodeMachine(t, resp.Body)
-		resp.Body.Close()
-		if m.FetchState == inventory.FetchError {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if m.FetchState != inventory.FetchError || !strings.Contains(m.FetchError, "boom") {
-		t.Fatalf("expected fetch error, got %+v", m)
+	// Nothing was stored.
+	resp = do(t, "GET", srv.URL+"/api/v1/machines", nil)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if strings.TrimSpace(string(raw)) != "[]" {
+		t.Fatalf("expected empty machine list, got %s", raw)
 	}
 }
 

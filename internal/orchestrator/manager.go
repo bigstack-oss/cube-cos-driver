@@ -14,6 +14,9 @@ type Config struct {
 	PollInterval time.Duration // Observe poll cadence
 	StageTimeout time.Duration // max wait per install phase
 	SkewLimitSec float64       // max tolerated clock skew for green light 1
+	// PowerStagger spaces out per-node power-ons in a batch (inspect/deploy) so
+	// many servers don't draw simultaneous inrush. 0 = no stagger (tests).
+	PowerStagger time.Duration
 }
 
 func (c Config) withDefaults() Config {
@@ -36,11 +39,42 @@ type Manager struct {
 	exec     Executor
 	verifier Verifier
 	sel      SELObserver
+	gate     GateWriter
 	cfg      Config
 
 	mu      sync.Mutex
 	deploys map[string]*Deploy
 	cancels map[string]context.CancelFunc
+	// nodes keeps each run's Node (with BMC creds) by cluster→hostname, so the
+	// master-first release can write the "go" SEL to non-masters' BMCs.
+	nodes map[string]map[string]Node
+	// setReady holds the operator's UI-supplied FTS finalize input per cluster;
+	// the master agent polls it and runs `cluster set_ready`.
+	setReady map[string]SetReadyInput
+	// inspects tracks in-flight hardware-inspect boots by machine id.
+	inspects map[string]*InspectStatus
+}
+
+// InspectStatus is the per-machine state of a hardware-inspect boot.
+type InspectStatus struct {
+	MachineID string `json:"machineId"`
+	Label     string `json:"label"`
+	State     string `json:"state"` // booting | reported | error
+	Message   string `json:"message,omitempty"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
+// SetReadyInput is the operator's UI input for the one-time cluster set_ready
+// (FTS finalize): create the shared external network + its CIDR/gateway/pool.
+type SetReadyInput struct {
+	Trigger        bool   `json:"trigger"`
+	CreateExternal bool   `json:"createExternal"`
+	CIDR           string `json:"cidr"`
+	Gateway        string `json:"gateway"`
+	IPRange        string `json:"ipRange"`
+	// Ready reflects the master's result once set_ready has run.
+	Ready   bool   `json:"ready"`
+	Message string `json:"message,omitempty"`
 }
 
 func NewManager(store *Store, exec Executor, cfg Config) *Manager {
@@ -51,6 +85,134 @@ func NewManager(store *Store, exec Executor, cfg Config) *Manager {
 		cfg:      cfg.withDefaults(),
 		deploys:  map[string]*Deploy{},
 		cancels:  map[string]context.CancelFunc{},
+		nodes:    map[string]map[string]Node{},
+		setReady: map[string]SetReadyInput{},
+		inspects: map[string]*InspectStatus{},
+	}
+}
+
+// inspectCheckinTimeout bounds how long an inspect may sit "booting" with no
+// check-in before it's marked errored (dead PSU, PXE failure, wrong network).
+const inspectCheckinTimeout = 15 * time.Minute
+
+// StartInspect force-PXEs + power-cycles each machine so it boots the installer
+// in inventory mode (agent --inventory: report hardware, then halt). Progress is
+// tracked per machine for the UI.
+func (m *Manager) StartInspect(nodes []Node, labels map[string]string) {
+	m.mu.Lock()
+	for _, n := range nodes {
+		m.inspects[n.MachineID] = &InspectStatus{
+			MachineID: n.MachineID, Label: labels[n.MachineID], State: "booting", UpdatedAt: nowUTC(),
+		}
+	}
+	m.mu.Unlock()
+	for i, n := range nodes {
+		go func(n Node, idx int) {
+			// Stagger power-ons so a batch doesn't hit simultaneous inrush.
+			time.Sleep(time.Duration(idx) * m.cfg.PowerStagger)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if err := m.exec.SetBootPXE(ctx, n); err != nil {
+				m.setInspect(n.MachineID, "error", err.Error())
+				return
+			}
+			if err := m.exec.PowerCycle(ctx, n); err != nil {
+				m.setInspect(n.MachineID, "error", err.Error())
+				return
+			}
+			// No-checkin timeout: if the node never boots to inspect (dead PSU,
+			// PXE failure), don't leave it hanging "booting" — mark it error.
+			time.Sleep(inspectCheckinTimeout)
+			m.expireInspect(n.MachineID)
+		}(n, i)
+	}
+}
+
+// expireInspect marks an inspect as errored only if it never reported — a node
+// that checked in and inventoried is already "reported" and left untouched.
+func (m *Manager) expireInspect(machineID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s := m.inspects[machineID]; s != nil && s.State == "booting" {
+		s.State = "error"
+		s.Message = "no check-in within timeout — node did not boot to inspect (check power / PXE)"
+		s.UpdatedAt = nowUTC()
+	}
+}
+
+func (m *Manager) setInspect(machineID, state, msg string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s := m.inspects[machineID]; s != nil {
+		s.State = state
+		s.Message = msg
+		s.UpdatedAt = nowUTC()
+	}
+}
+
+// IsInspecting reports whether a machine is in an active inspect boot (so the
+// preflight checkin can tell it to inventory + halt rather than deploy).
+func (m *Manager) IsInspecting(machineID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.inspects[machineID]
+	return s != nil && s.State != "reported"
+}
+
+// InspectReported marks a machine's inspect complete (its hardware landed).
+func (m *Manager) InspectReported(machineID string) { m.setInspect(machineID, "reported", "") }
+
+// Inspects returns the current inspect statuses (for the UI).
+func (m *Manager) Inspects() []InspectStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]InspectStatus, 0, len(m.inspects))
+	for _, s := range m.inspects {
+		out = append(out, *s)
+	}
+	return out
+}
+
+// SubmitSetReady stores the operator's set_ready input (from the UI) and arms
+// the trigger the master agent is polling for.
+func (m *Manager) SubmitSetReady(clusterID string, in SetReadyInput) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	in.Trigger = true
+	in.Ready = false // a fresh submit (new reimage) is not ready until it runs
+	in.Message = ""
+	m.setReady[clusterID] = in
+	if err := m.store.SaveSetReady(clusterID, in); err != nil {
+		log.Printf("orchestrator: persist set-ready %s: %v", clusterID, err)
+	}
+}
+
+// GetSetReady returns the current set_ready input/status for a cluster, lazily
+// loading the persisted value (so it's pre-filled on a later reimage / after a
+// restart, not just within the session that submitted it).
+func (m *Manager) GetSetReady(clusterID string) SetReadyInput {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if in, ok := m.setReady[clusterID]; ok {
+		return in
+	}
+	if in, ok := m.store.LoadSetReady(clusterID); ok {
+		m.setReady[clusterID] = in
+		return in
+	}
+	return SetReadyInput{}
+}
+
+// MarkReady records the master's set_ready result (cluster ready or not).
+func (m *Manager) MarkReady(clusterID string, ok bool, msg string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	in := m.setReady[clusterID]
+	in.Ready = ok
+	in.Message = msg
+	m.setReady[clusterID] = in
+	if err := m.store.SaveSetReady(clusterID, in); err != nil {
+		log.Printf("orchestrator: persist set-ready %s: %v", clusterID, err)
 	}
 }
 
@@ -61,6 +223,76 @@ func (m *Manager) SetVerifier(v Verifier) { m.verifier = v }
 // SetSELObserver enables the out-of-band SEL status poll (nil = disabled, the
 // default, so CI never contacts a real BMC).
 func (m *Manager) SetSELObserver(o SELObserver) { m.sel = o }
+
+// SetGateWriter enables writing the master-done "go" SEL to non-master BMCs
+// (nil = disabled).
+func (m *Manager) SetGateWriter(g GateWriter) { m.gate = g }
+
+// HasActiveDeploy reports whether a cluster has a non-terminal deploy running —
+// used to resolve which of a multi-assigned machine's clusters is deploying.
+func (m *Manager) HasActiveDeploy(clusterID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := m.deploys[clusterID]
+	if d == nil {
+		return false
+	}
+	for _, nd := range d.Nodes {
+		if nd.State != StateDone && nd.State != StateError {
+			return true
+		}
+	}
+	return false
+}
+
+// Master returns the master hostname for a running deploy (empty if unknown).
+func (m *Manager) Master(clusterID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if d := m.deploys[clusterID]; d != nil {
+		return d.Master
+	}
+	return ""
+}
+
+// Applied records that a node finished applying its (local) snapshot. When the
+// master reports applied, the server releases every non-master by writing the
+// "go" SEL record to its BMC over LAN — the OOB master-first handoff.
+func (m *Manager) Applied(clusterID, hostname string, isMaster bool) {
+	m.set(clusterID, hostname, func(nd *NodeDeploy) { nd.State = StateDone })
+	if !isMaster {
+		return
+	}
+	m.mu.Lock()
+	byHost := m.nodes[clusterID]
+	master := ""
+	if d := m.deploys[clusterID]; d != nil {
+		master = d.Master
+	}
+	var targets []Node
+	for host, n := range byHost {
+		if host != master {
+			targets = append(targets, n)
+		}
+	}
+	gate := m.gate
+	m.mu.Unlock()
+
+	if gate == nil {
+		return
+	}
+	for _, n := range targets {
+		go func(n Node) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := gate.WriteGate(ctx, n); err != nil {
+				log.Printf("release %s via SEL go: %v", n.Hostname, err)
+			} else {
+				log.Printf("released %s: wrote master-done 'go' SEL to %s", n.Hostname, n.BMCAddress)
+			}
+		}(n)
+	}
+}
 
 func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
 
@@ -75,6 +307,7 @@ func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTar
 		cancel() // stop any prior run
 	}
 	d := &Deploy{ClusterID: clusterID, StartedAt: nowUTC(), Master: master, VerifyTargets: verifyTargets, Nodes: map[string]*NodeDeploy{}}
+	byHost := map[string]Node{}
 	for _, n := range nodes {
 		d.Nodes[n.Hostname] = &NodeDeploy{
 			Hostname:  n.Hostname,
@@ -82,15 +315,25 @@ func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTar
 			State:     StatePending,
 			UpdatedAt: nowUTC(),
 		}
+		byHost[n.Hostname] = n
 	}
+	m.nodes[clusterID] = byHost
 	m.deploys[clusterID] = d
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancels[clusterID] = cancel
 	m.persistLocked(d)
 	m.mu.Unlock()
 
-	for _, n := range nodes {
-		go m.runNode(ctx, clusterID, n)
+	for i, n := range nodes {
+		go func(idx int, n Node) {
+			// Stagger power-ons across nodes (respecting cancellation).
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Duration(idx) * m.cfg.PowerStagger):
+			}
+			m.runNode(ctx, clusterID, n)
+		}(i, n)
 	}
 	if m.sel != nil {
 		go m.pollSEL(ctx, clusterID, nodes)
@@ -155,6 +398,7 @@ func (m *Manager) snapshot(clusterID string) (*Deploy, error) {
 	for _, nd := range cp.Nodes {
 		nd.Light1, nd.Light2 = nd.lights()
 		nd.Phase = nd.phase()
+		nd.Progress = nd.progress()
 	}
 	return &cp, nil
 }
@@ -345,6 +589,40 @@ func (m *Manager) PreflightProgress(clusterID, hostname string) {
 		if nd.State == StateNetbooting || nd.State == StateImaged || nd.State == "" {
 			nd.State = StatePreflighting
 		}
+	})
+}
+
+// RestoreDone advances a node from restoring to rebooting. The installer reports
+// this in-band right before it reboots the freshly-imaged node, so the progress
+// strip can show restore-complete (green) and reboot (yellow) distinctly instead
+// of a single opaque "restoring".
+func (m *Manager) RestoreDone(clusterID, hostname string) {
+	m.set(clusterID, hostname, func(nd *NodeDeploy) {
+		if nd.State == StateRestoring {
+			nd.State = StateRebooting
+		}
+	})
+}
+
+// ApplyStarted marks the OS-phase agent up and applying: the reboot completed
+// and the snapshot apply is in progress. Moves the node off "rebooting" so the
+// UI flips reboot → done and apply → active during the long FTS apply.
+func (m *Manager) ApplyStarted(clusterID, hostname string) {
+	m.set(clusterID, hostname, func(nd *NodeDeploy) {
+		if nd.State == StateRebooting {
+			nd.State = StateApplying
+		}
+	})
+}
+
+// ApplyFailed marks a node's snapshot apply as terminally failed (real failure,
+// or did not converge after the bounded two-phase reboots) — the UI shows the
+// node errored (apply cell red) instead of hanging on rebooting/applying.
+func (m *Manager) ApplyFailed(clusterID, hostname, msg string) {
+	m.set(clusterID, hostname, func(nd *NodeDeploy) {
+		nd.State = StateError
+		nd.ErrCode = ErrApplyFailed
+		nd.Message = msg
 	})
 }
 

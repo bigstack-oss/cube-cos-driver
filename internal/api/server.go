@@ -61,8 +61,10 @@ func New(cfg Config) (http.Handler, error) {
 	}
 	mgr := orchestrator.NewManager(deployStore, deployExec, cfg.DeployConfig)
 	if realHW {
-		// Real hardware: also read node status out-of-band over the BMC LAN.
+		// Real hardware: read node status out-of-band over the BMC LAN, and
+		// release non-masters after the master applies by writing the "go" SEL.
 		mgr.SetSELObserver(orchestrator.IPMISELObserver{})
+		mgr.SetGateWriter(orchestrator.IPMIGateWriter{})
 	}
 
 	mux := http.NewServeMux()
@@ -72,7 +74,7 @@ func New(cfg Config) (http.Handler, error) {
 	})
 	h := &handlers{store: clusterStore, machines: machineStore}
 	h.register(mux)
-	mh := &machineHandlers{store: machineStore, discoverer: discoverer}
+	mh := &machineHandlers{store: machineStore, discoverer: discoverer, mgr: mgr}
 	mh.register(mux)
 	dh := &deployHandlers{clusters: clusterStore, machines: machineStore, mgr: mgr}
 	dh.register(mux)

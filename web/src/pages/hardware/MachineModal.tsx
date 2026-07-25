@@ -1,4 +1,8 @@
-import { CosInput, CosModal } from '@cube-frontend/ui-library'
+import {
+  CosInlineNotification,
+  CosInput,
+  CosModal,
+} from '@cube-frontend/ui-library'
 import { useEffect, useState } from 'react'
 import { Machine, MachineInput } from '../../model/machine'
 
@@ -8,11 +12,13 @@ export type MachineModalProps = {
   machine?: Machine
   onCancel: () => void
   onSave: (input: MachineInput) => void
+  // saving reflects the synchronous BMC verify + fetch that create/edit run.
   saving?: boolean
+  error?: string
 }
 
 export const MachineModal = (props: MachineModalProps) => {
-  const { isOpen, machine, onCancel, onSave, saving } = props
+  const { isOpen, machine, onCancel, onSave, saving, error } = props
   const isEdit = !!machine
 
   const [label, setLabel] = useState('')
@@ -37,8 +43,8 @@ export const MachineModal = (props: MachineModalProps) => {
       isOpen={isOpen}
       title={isEdit ? 'Edit machine' : 'Add machine'}
       size="sm"
-      actionText="Save"
-      actionButtonProps={{ disabled: !valid, loading: saving }}
+      actionText={saving ? 'Verifying…' : 'Save'}
+      actionButtonProps={{ disabled: !valid || saving, loading: saving }}
       onActionClick={() => {
         const input: MachineInput = {
           label: label.trim(),
@@ -49,9 +55,28 @@ export const MachineModal = (props: MachineModalProps) => {
         if (password !== '' || !isEdit) input.bmc.password = password
         onSave(input)
       }}
-      onCloseClick={onCancel}
+      onCloseClick={saving ? () => {} : onCancel}
     >
       <div className="flex flex-col gap-y-4">
+        {saving && (
+          <CosInlineNotification
+            type="neutral"
+            isClosable={false}
+            title="Verifying BMC"
+          >
+            Contacting the BMC over IPMI/Redfish to confirm the address and
+            credentials and read hardware. This can take a few seconds.
+          </CosInlineNotification>
+        )}
+        {error && (
+          <CosInlineNotification
+            type="error"
+            isClosable={false}
+            title="Could not verify BMC"
+          >
+            {error}
+          </CosInlineNotification>
+        )}
         <CosInput
           label="Label"
           value={label}

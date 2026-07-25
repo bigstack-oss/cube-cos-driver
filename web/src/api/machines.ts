@@ -52,6 +52,32 @@ export const fetchMachineHardware = async (id: string): Promise<void> => {
   )
 }
 
+// Inspect (hardware discovery) boot: power-cycle machines into an inventory-only
+// boot that reports CPU/mem/disk/NIC, then halts.
+export type InspectStatus = {
+  machineId: string
+  label: string
+  state: string // booting | reported | error
+  message?: string
+  updatedAt: string
+}
+
+export const startInspect = async (ids: string[]): Promise<void> => {
+  await jsonOrThrow(
+    await fetch('/api/v1/machines/inspect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    }),
+  )
+}
+
+export const getInspectStatus = async (): Promise<InspectStatus[]> => {
+  const resp = await fetch('/api/v1/machines/inspect')
+  if (!resp.ok) return []
+  return (await resp.json()) as InspectStatus[]
+}
+
 export type ImportRowError = { row: number; message: string }
 export type ImportResult = { created: number; errors: ImportRowError[] }
 

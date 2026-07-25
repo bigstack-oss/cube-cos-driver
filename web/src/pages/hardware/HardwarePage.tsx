@@ -1,10 +1,12 @@
-import { CosButton, CosTag, GetCosBasicTable } from '@cube-frontend/ui-library'
+import { CosButton, CosModal, CosTag, GetCosBasicTable } from '@cube-frontend/ui-library'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   createMachine,
   deleteMachine,
-  fetchMachineHardware,
+  getInspectStatus,
+  InspectStatus,
   listMachines,
+  startInspect,
   updateMachine,
 } from '../../api/machines'
 import { formatBytes, Machine, MachineInput } from '../../model/machine'
@@ -23,15 +25,7 @@ type MachineRow = {
   memory: string
   nics: number
   disks: number
-  state: Machine['fetchState']
   machine: Machine
-}
-
-const fetchTag: Record<Machine['fetchState'], { color: 'default' | 'primary-blue' | 'cyan' | 'dark'; text: string }> = {
-  idle: { color: 'default', text: 'not fetched' },
-  fetching: { color: 'primary-blue', text: 'fetching…' },
-  ok: { color: 'cyan', text: 'ok' },
-  error: { color: 'dark', text: 'error' },
 }
 
 const toRow = (m: Machine): MachineRow => ({
@@ -47,7 +41,6 @@ const toRow = (m: Machine): MachineRow => ({
   memory: formatBytes(m.inventory?.memoryBytes),
   nics: m.inventory?.nics?.length ?? 0,
   disks: m.inventory?.disks?.length ?? 0,
-  state: m.fetchState,
   machine: m,
 })
 
@@ -60,7 +53,12 @@ export const HardwarePage = () => {
   const [saving, setSaving] = useState(false)
   const [details, setDetails] = useState<Machine | null>(null)
   const [importOpen, setImportOpen] = useState(false)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [inspectConfirm, setInspectConfirm] = useState(false)
+  const [inspects, setInspects] = useState<InspectStatus[]>([])
+  const [modalError, setModalError] = useState('')
+  const [deletingMachine, setDeletingMachine] = useState<Machine | null>(null)
+  const inspectPoll = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -80,25 +78,9 @@ export const HardwarePage = () => {
     refresh()
   }, [refresh])
 
-  // Poll while any machine is fetching.
-  useEffect(() => {
-    const anyFetching = machines.some((m) => m.fetchState === 'fetching')
-    if (anyFetching && !pollRef.current) {
-      pollRef.current = setInterval(refresh, 1500)
-    } else if (!anyFetching && pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current)
-        pollRef.current = null
-      }
-    }
-  }, [machines, refresh])
-
   const handleSave = async (input: MachineInput) => {
     setSaving(true)
+    setModalError('')
     try {
       if (editing) {
         await updateMachine(editing.id, input)
@@ -109,29 +91,73 @@ export const HardwarePage = () => {
       setEditing(undefined)
       await refresh()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      // Keep the modal open with the verify error so the operator can correct
+      // the address/credentials — nothing was stored.
+      setModalError(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
     }
   }
 
-  const handleFetch = async (m: Machine) => {
+  const confirmDelete = async () => {
+    if (!deletingMachine) return
     try {
-      await fetchMachineHardware(m.id)
+      // Delete cascades: the assignment lives on the machine record, so removing
+      // it unassigns any cluster node that referenced it (snapshots are kept).
+      await deleteMachine(deletingMachine.id)
+      setDeletingMachine(null)
       await refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
   }
 
-  const handleDelete = async (m: Machine) => {
+  const refreshInspects = useCallback(() => {
+    getInspectStatus()
+      .then(setInspects)
+      .catch(() => {})
+  }, [])
+  useEffect(refreshInspects, [refreshInspects])
+  useEffect(() => {
+    const active = inspects.some((s) => s.state === 'booting')
+    if (active && !inspectPoll.current) {
+      inspectPoll.current = setInterval(() => {
+        refreshInspects()
+        refresh()
+      }, 3000)
+    } else if (!active && inspectPoll.current) {
+      clearInterval(inspectPoll.current)
+      inspectPoll.current = null
+    }
+    return () => {
+      if (inspectPoll.current) {
+        clearInterval(inspectPoll.current)
+        inspectPoll.current = null
+      }
+    }
+  }, [inspects, refreshInspects, refresh])
+
+  const toggle = (id: string) =>
+    setSelected((s) => {
+      const n = new Set(s)
+      if (n.has(id)) n.delete(id)
+      else n.add(id)
+      return n
+    })
+
+  const handleInspect = async () => {
     try {
-      await deleteMachine(m.id)
-      await refresh()
+      await startInspect([...selected])
+      setInspectConfirm(false)
+      setSelected(new Set())
+      refreshInspects()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
   }
+
+  const inspectColor = (s: string): 'primary-blue' | 'cyan' | 'dark' =>
+    s === 'reported' ? 'cyan' : s === 'error' ? 'dark' : 'primary-blue'
 
   const rows = machines.map(toRow)
 
@@ -149,6 +175,7 @@ export const HardwarePage = () => {
         <CosButton
           onClick={() => {
             setEditing(undefined)
+            setModalError('')
             setModalOpen(true)
           }}
         >
@@ -157,12 +184,42 @@ export const HardwarePage = () => {
         <CosButton type="secondary" onClick={() => setImportOpen(true)}>
           Import from file
         </CosButton>
+        <CosButton
+          type="secondary"
+          disabled={selected.size === 0}
+          onClick={() => setInspectConfirm(true)}
+        >
+          {`Inspect selected (${selected.size})`}
+        </CosButton>
         {error && (
           <span className="primary-body4 text-status-negative">{error}</span>
         )}
       </div>
 
+      {inspects.length > 0 && (
+        <div className="flex flex-col gap-y-2 rounded-md border border-functional-border-divider p-4">
+          <span className="primary-h4">Hardware inspect</span>
+          <div className="flex flex-wrap gap-2">
+            {inspects.map((s) => (
+              <CosTag key={s.machineId} variant="stroke" color={inspectColor(s.state)}>
+                {`${s.label}: ${s.state === 'booting' ? 'inspecting…' : s.state}`}
+              </CosTag>
+            ))}
+          </div>
+        </div>
+      )}
+
       <Table rows={rows} isLoading={loading}>
+        <Table.Column label="" property="id" fitContent>
+          {(id: string) => (
+            <input
+              type="checkbox"
+              checked={selected.has(id)}
+              onChange={() => toggle(id)}
+              aria-label="select for inspect"
+            />
+          )}
+        </Table.Column>
         <Table.Column label="Label" property="label" emphasize />
         <Table.Column label="BMC address" property="address" />
         <Table.Column label="Serial" property="serial" />
@@ -170,24 +227,9 @@ export const HardwarePage = () => {
         <Table.Column label="Memory" property="memory" />
         <Table.Column label="NICs" property="nics" />
         <Table.Column label="Disks" property="disks" />
-        <Table.Column label="Fetch" property="state">
-          {(state: Machine['fetchState']) => (
-            <CosTag variant="stroke" color={fetchTag[state].color}>
-              {fetchTag[state].text}
-            </CosTag>
-          )}
-        </Table.Column>
         <Table.Column label="Actions" property="id" fitContent>
           {(_: string, row: MachineRow) => (
             <div className="flex gap-x-1">
-              <CosButton
-                type="ghost"
-                size="sm"
-                disabled={row.state === 'fetching'}
-                onClick={() => handleFetch(row.machine)}
-              >
-                Fetch
-              </CosButton>
               <CosButton
                 type="ghost"
                 size="sm"
@@ -200,6 +242,7 @@ export const HardwarePage = () => {
                 size="sm"
                 onClick={() => {
                   setEditing(row.machine)
+                  setModalError('')
                   setModalOpen(true)
                 }}
               >
@@ -208,7 +251,7 @@ export const HardwarePage = () => {
               <CosButton
                 type="warning"
                 size="sm"
-                onClick={() => handleDelete(row.machine)}
+                onClick={() => setDeletingMachine(row.machine)}
               >
                 Delete
               </CosButton>
@@ -221,9 +264,11 @@ export const HardwarePage = () => {
         isOpen={modalOpen}
         machine={editing}
         saving={saving}
+        error={modalError}
         onCancel={() => {
           setModalOpen(false)
           setEditing(undefined)
+          setModalError('')
         }}
         onSave={handleSave}
       />
@@ -238,6 +283,59 @@ export const HardwarePage = () => {
           refresh()
         }}
       />
+
+      {inspectConfirm && (
+        <CosModal
+          isOpen
+          size="sm"
+          title="Inspect servers"
+          actionText="Power-cycle & inspect"
+          onActionClick={handleInspect}
+          onCloseClick={() => setInspectConfirm(false)}
+        >
+          <p className="primary-body3">
+            This will <b>power-cycle {selected.size} server(s)</b> and boot them
+            into a hardware-discovery pass — each reports its CPU, memory, disks,
+            and NICs, then powers off. Only run on servers that are safe to
+            reboot.
+          </p>
+        </CosModal>
+      )}
+
+      {deletingMachine && (
+        <CosModal
+          isOpen
+          size="sm"
+          title={`Delete ${deletingMachine.label}?`}
+          actionText="Delete"
+          onActionClick={confirmDelete}
+          onCloseClick={() => setDeletingMachine(null)}
+        >
+          <div className="flex flex-col gap-y-2">
+            <p className="primary-body3">
+              Removes this server entry and its hardware inventory.
+            </p>
+            {(deletingMachine.assignments?.length ?? 0) > 0 && (
+              <>
+                <p className="primary-body4 text-status-negative">
+                  It is assigned to {deletingMachine.assignments!.length} cluster
+                  node(s) — deleting will unassign:
+                </p>
+                <ul className="secondary-body4 list-inside list-disc text-functional-text-light">
+                  {deletingMachine.assignments!.map((a, i) => (
+                    <li key={i}>
+                      {a.hostname} in cluster {a.clusterId}
+                    </li>
+                  ))}
+                </ul>
+                <p className="secondary-body5 text-functional-text-light">
+                  Their snapshots are kept; re-assign a server before deploying.
+                </p>
+              </>
+            )}
+          </div>
+        </CosModal>
+      )}
     </div>
   )
 }

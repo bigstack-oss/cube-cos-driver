@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -20,8 +21,18 @@ type PreflightDeps struct {
 	Now      func() time.Time
 	// Configured reports FTS-complete; a re-run after the cluster is up is a no-op.
 	Configured func() bool
-	// ConfigureTopology stands up the node's bonds/VLANs/role IPs transiently.
-	ConfigureTopology func(b model.PreflightBundle) error
+	// ConfigureTopology stands up the node's bonds/VLANs/role IPs transiently
+	// and returns a diagnostic string (the resolved IF→device map + per-device
+	// carrier) so the server can see the actual interface binding.
+	ConfigureTopology func(b model.PreflightBundle) (diag string, err error)
+	// FetchSnapshot downloads the appointed snapshot to a RAM path, on the
+	// stable initial network before topology reconfig. hex_autoinstall persists
+	// it to /store after restore for a local (network-free) OS-phase apply.
+	FetchSnapshot func(url string) error
+	// StampEnv records the node's OS-phase identity (hostname, cluster, master
+	// role, and the operator-picked OS disk) to RAM so the installer can persist
+	// it into the restored OS and target the restore at the chosen disk.
+	StampEnv func(host, cluster string, isMaster bool, osDisk string)
 	// Carrier reports whether every intended bond member has carrier (link up);
 	// detail names the offending member when not.
 	Carrier func(b model.PreflightBundle) (ok bool, detail string)
@@ -49,6 +60,9 @@ func RunPreflight(ctx context.Context, server string, d PreflightDeps, poll time
 	if err != nil {
 		return err
 	}
+	if resp.Inspect {
+		return ErrInspect // caller reports hardware inventory + halts
+	}
 	if !resp.Appointed {
 		return nil
 	}
@@ -56,11 +70,53 @@ func RunPreflight(ctx context.Context, server string, d PreflightDeps, poll time
 	// Time sync — report the skew so the server can enforce the ±5s fleet gate.
 	skew := d.syncClock(resp.ServerTimeUTC)
 
-	// Stand up the transient topology once; carrier/ping then validate it.
+	// Pre-fetch the snapshot NOW, while the initial network is still up. The
+	// next step (ConfigureTopology) may sever the SPA link, and /store does not
+	// exist until restore, so we hold it in RAM and persist it post-restore.
+	if d.FetchSnapshot != nil && resp.SnapshotURL != "" {
+		if e := d.FetchSnapshot(resp.SnapshotURL); e != nil {
+			log.Printf("preflight: snapshot pre-fetch failed: %v (OS phase will fall back to download)", e)
+		} else {
+			log.Printf("preflight: snapshot pre-fetched to RAM for post-restore local apply")
+		}
+	}
+	if d.StampEnv != nil {
+		d.StampEnv(resp.Hostname, resp.ClusterID, resp.IsMaster, resp.OSDisk)
+		log.Printf("preflight: stamped OS-phase identity host=%s master=%v osDisk=%s", resp.Hostname, resp.IsMaster, resp.OSDisk)
+	}
+
+	// SEL self-test BEFORE the network reconfig. ConfigureTopology can sever the
+	// bootstrap (DHCP) route the agent used to reach the SPA, so while in-band is
+	// still guaranteed we probe the OOB channel (write a marker to /dev/ipmi0)
+	// and report whether it works — the server then knows if it can fall back to
+	// reading SEL for this node's post-topology status.
+	selErr := ""
+	if d.WriteSEL != nil {
+		if e := d.WriteSEL("preflight", "started", ""); e != nil {
+			selErr = e.Error()
+		}
+	}
+	d.preflightReport(ctx, server, PreflightReportRequest{
+		ClusterID: resp.ClusterID, Hostname: resp.Hostname, ClockSkewSec: skew, Passed: false,
+		Matrix: []PreflightResult{
+			{Target: "preflight-started", OK: true},
+			{Target: "sel-capable", OK: selErr == "", Detail: selErr},
+		},
+	})
+
+	// Stand up the transient topology (best-effort): a failure is reported via
+	// the matrix each round, not fatal — the ping test still validates whatever
+	// connectivity exists.
+	log.Printf("preflight: appointed host=%s cluster=%s skew=%.4fs", resp.Hostname, resp.ClusterID, skew)
+	var topoErr, topoDiag string
 	if d.ConfigureTopology != nil {
-		if terr := d.ConfigureTopology(resp.Bundle); terr != nil {
-			d.sel("preflight", "topology-error", terr.Error())
-			return fmt.Errorf("configure topology: %w", terr)
+		diag, terr := d.ConfigureTopology(resp.Bundle)
+		topoDiag = diag
+		log.Printf("preflight: topology configured: %s", topoDiag)
+		if terr != nil {
+			topoErr = terr.Error()
+			log.Printf("preflight: topology ERROR: %s", topoErr)
+			d.sel("preflight", "topology-error", topoErr)
 		}
 	}
 	targets := pingTargets(resp.Bundle)
@@ -80,6 +136,13 @@ func RunPreflight(ctx context.Context, server string, d PreflightDeps, poll time
 			carrierOK, cdetail = d.Carrier(resp.Bundle)
 		}
 		var matrix []PreflightResult
+		if topoDiag != "" || topoErr != "" {
+			d := topoDiag
+			if topoErr != "" {
+				d = topoErr + " | " + topoDiag
+			}
+			matrix = append(matrix, PreflightResult{Target: "topology", OK: topoErr == "", Detail: d})
+		}
 		allReach := true
 		for _, t := range targets {
 			ok := d.Probe(t.ip)
@@ -88,7 +151,18 @@ func RunPreflight(ctx context.Context, server string, d PreflightDeps, poll time
 			}
 			matrix = append(matrix, PreflightResult{Target: t.label, OK: ok})
 		}
-		passed := carrierOK && allReach
+		passed := carrierOK && allReach && topoErr == ""
+		if passed {
+			log.Printf("preflight: round PASSED — carrier ok, all peers+gateway reachable; requesting green light 1")
+		} else {
+			var f []string
+			for _, m := range matrix {
+				if !m.OK {
+					f = append(f, m.Target)
+				}
+			}
+			log.Printf("preflight: round not-passed carrier=%v topoErr=%q fails=%v", carrierOK, topoErr, f)
+		}
 
 		d.preflightReport(ctx, server, PreflightReportRequest{
 			ClusterID:    resp.ClusterID,
@@ -164,7 +238,7 @@ func (d PreflightDeps) preflightCheckinUntilAppointed(ctx context.Context, serve
 		resp, err := d.postJSON(ctx, server+"/api/v1/agents/preflight/checkin", req)
 		if err == nil {
 			var out PreflightCheckinResponse
-			if json.Unmarshal(resp, &out) == nil && out.Appointed {
+			if json.Unmarshal(resp, &out) == nil && (out.Appointed || out.Inspect) {
 				return out, nil
 			}
 		}

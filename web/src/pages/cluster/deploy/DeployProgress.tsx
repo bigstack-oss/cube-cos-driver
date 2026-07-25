@@ -9,6 +9,8 @@ import {
   isTerminal,
   Light,
   Phase,
+  PhaseCell,
+  CellStatus,
 } from '../../../api/deploy'
 
 export type DeployProgressProps = {
@@ -64,6 +66,47 @@ const LightDot = (props: { label: string; value: Light }) => (
     <span className={`inline-block h-2.5 w-2.5 rounded-full ${lightClass[props.value]}`} />
     <span className="secondary-body5 text-functional-text-light">{props.label}</span>
   </span>
+)
+
+const cellClass: Record<CellStatus, string> = {
+  pending: 'bg-functional-border-divider',
+  active: 'bg-status-warning',
+  done: 'bg-status-positive',
+  error: 'bg-status-negative',
+}
+const cellLabel: Record<string, string> = {
+  preflight: 'Preflight',
+  restore: 'Restore',
+  reboot: 'Reboot',
+  apply: 'Apply',
+}
+
+// ProgressStrip renders the per-node pipeline: preflight → restore → reboot →
+// apply, each cell pending (grey) / active (pulsing yellow) / done (green) /
+// error (red).
+const ProgressStrip = ({ cells }: { cells: PhaseCell[] }) => (
+  <div className="flex items-center gap-x-1.5">
+    {cells.map((c, i) => (
+      <span key={c.name} className="flex items-center gap-x-1">
+        <span
+          className="flex items-center gap-x-1"
+          title={`${cellLabel[c.name] ?? c.name}: ${c.status}`}
+        >
+          <span
+            className={`inline-block h-2.5 w-2.5 rounded-full ${cellClass[c.status]} ${
+              c.status === 'active' ? 'animate-pulse' : ''
+            }`}
+          />
+          <span className="secondary-body5 text-functional-text-light">
+            {cellLabel[c.name] ?? c.name}
+          </span>
+        </span>
+        {i < cells.length - 1 && (
+          <span className="secondary-body6 text-functional-border-divider">›</span>
+        )}
+      </span>
+    ))}
+  </div>
 )
 
 export const DeployProgress = (props: DeployProgressProps) => {
@@ -129,8 +172,14 @@ export const DeployProgress = (props: DeployProgressProps) => {
               >
                 {phaseLabel[n.phase]}
               </CosTag>
-              <LightDot label="Net" value={n.light1} />
-              <LightDot label="Apply" value={n.light2} />
+              {n.progress && n.progress.length > 0 ? (
+                <ProgressStrip cells={n.progress} />
+              ) : (
+                <>
+                  <LightDot label="Net" value={n.light1} />
+                  <LightDot label="Apply" value={n.light2} />
+                </>
+              )}
               {n.errCode && (
                 <CosTag variant="filled" color="dark">
                   {n.errCode}

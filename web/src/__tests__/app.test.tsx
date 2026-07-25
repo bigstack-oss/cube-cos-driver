@@ -20,11 +20,9 @@ describe('App shell', () => {
       </MemoryRouter>,
     )
     // Sidebar nav + landing heading are present.
-    expect(screen.getByText('Snapshot Generator')).toBeTruthy()
+    expect(screen.getByText('Provisioning')).toBeTruthy()
     expect(screen.getByRole('link', { name: 'Hardware' })).toBeTruthy()
-    expect(
-      screen.getByText('Welcome to Cube Snapshot Generator'),
-    ).toBeTruthy()
+    expect(screen.getByText('Welcome to cubeDriver')).toBeTruthy()
   })
 
   it('routes to the cluster page (unknown id shows not-found)', () => {
