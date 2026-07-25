@@ -74,6 +74,7 @@ const shade = (hex: string, amt: number): string => {
 type Bus = { device: string; isBond: boolean; roles: RoleIFKey[]; y: number; color: string }
 type Wire = { role: RoleIFKey; side: 'top' | 'bottom'; busY: number; net: string; vlan: string }
 type Group = { role: string; nodes: NodeConfig[]; rep: NodeConfig; chains: RoleChain[] }
+type DevGlyph = { name: string; isBond: boolean; members: string[]; color: string }
 
 const Box = ({
   x,
@@ -119,12 +120,12 @@ const Box = ({
   </g>
 )
 
-// NIC glyph: grey for uplink (top), blue for data (bottom).
-const Nic = ({ x, y, blue }: { x: number; y: number; blue: boolean }) => (
+// NIC glyph, tinted to its role/wire color so the port matches the line it feeds.
+const Nic = ({ x, y, color }: { x: number; y: number; color: string }) => (
   <g style={{ pointerEvents: 'none' }}>
-    <rect x={x - 11} y={y - 8} width={22} height={16} rx={2} fill={blue ? '#7FB2E8' : '#C9CDD6'} stroke="rgba(0,0,0,.25)" strokeWidth={0.5} />
-    <line x1={x - 4} y1={y - 6} x2={x - 4} y2={y + 6} stroke="rgba(0,0,0,.3)" strokeWidth={1} />
-    <line x1={x + 4} y1={y - 6} x2={x + 4} y2={y + 6} stroke="rgba(0,0,0,.3)" strokeWidth={1} />
+    <rect x={x - 11} y={y - 8} width={22} height={16} rx={2} fill={shade(color, 0.6)} stroke={color} strokeWidth={1.25} />
+    <line x1={x - 4} y1={y - 6} x2={x - 4} y2={y + 6} stroke={color} strokeWidth={1} />
+    <line x1={x + 4} y1={y - 6} x2={x + 4} y2={y + 6} stroke={color} strokeWidth={1} />
   </g>
 )
 
@@ -158,7 +159,7 @@ export const ClusterDiagram = (props: Props) => {
     const busInfo = new Map<string, { isBond: boolean; roles: Set<RoleIFKey> }>()
     for (const n of nodes) {
       for (const c of buildChains(n)) {
-        const dev = c.baseIf?.name ?? c.bond?.name ?? c.roleIf?.name
+        const dev = c.bond?.name ?? c.baseIf?.name ?? c.roleIf?.name
         if (!dev) continue
         const b = busInfo.get(dev) ?? { isBond: !!c.bond, roles: new Set<RoleIFKey>() }
         b.isBond = b.isBond || !!c.bond
@@ -167,8 +168,22 @@ export const ClusterDiagram = (props: Props) => {
       }
     }
     const names = [...busInfo.keys()]
-    const topNames = names.filter((d) => busInfo.get(d)!.roles.has('mgmtIF'))
-    const bottomNames = names.filter((d) => !busInfo.get(d)!.roles.has('mgmtIF'))
+    // Split planes: a plane rides the TOP bus only if every role it carries is
+    // Management/Provider; any Overlay/Storage on it sends the whole plane DOWN.
+    // So a shared Provider+Overlay+Storage bond goes down, while dedicated
+    // mgmt/provider planes go up.
+    const TOP_ROLES = new Set<RoleIFKey>(['mgmtIF', 'providerIF'])
+    const isTopBus = (d: string) => [...busInfo.get(d)!.roles].every((r) => TOP_ROLES.has(r))
+    let topNames = names.filter(isTopBus)
+    let bottomNames = names.filter((d) => !isTopBus(d))
+    // Never leave the top empty: a single combined NIC carrying every role (or any
+    // config where no plane is pure mgmt/provider) promotes its mgmt-carrying
+    // plane to the top — so a 1-line node reads "up".
+    if (topNames.length === 0 && names.length > 0) {
+      const promote = names.find((d) => busInfo.get(d)!.roles.has('mgmtIF')) ?? names[0]
+      topNames = [promote]
+      bottomNames = bottomNames.filter((d) => d !== promote)
+    }
     const buses: Record<string, Bus> = {}
     topNames.forEach((d, i) => {
       buses[d] = { device: d, isBond: busInfo.get(d)!.isBond, roles: ROLE_ORDER.filter((r) => busInfo.get(d)!.roles.has(r)), y: 88 - i * 44, color: '#2C3454' }
@@ -180,7 +195,7 @@ export const ClusterDiagram = (props: Props) => {
   }, [nodes])
 
   const { groups, buses } = layout
-  const W = 1220
+  const W = 1320
   const busX0 = 96
   const busX1 = 946
   const legendX = 972
@@ -192,10 +207,36 @@ export const ClusterDiagram = (props: Props) => {
   const bw = 156
   const bh = 120
   const boxTopY = 210
+  const glyphGap = 38 // glyph labels are short now (bond0); detail is in the legend
   const n = groups.length
-  const span = busX1 - busX0 - 40
-  const step = n > 1 ? Math.min(230, span / n) : 0
-  const startX = busX0 + 60 + (span - step * (n - 1) - bw) / 2
+  const areaW = busX1 - busX0
+  const gap = n > 1 ? Math.max(20, (areaW - n * bw) / (n + 1)) : (areaW - bw) / 2
+  const step = bw + gap
+  const startX = busX0 + gap
+
+  // Per-device detail for the right-side legend (bond -> members -> role), so the
+  // glyphs stay compact (just the device name).
+  const devLegend = Object.values(buses)
+    .sort((a, b) => a.y - b.y)
+    .map((b) => {
+      let members: string[] = []
+      for (const nd of nodes) {
+        const bond = nd.bondIFs.find((f) => f.name === b.device)
+        if (bond?.slaves?.length) {
+          members = bond.slaves
+            .map((sid) => nd.initIFs.find((f) => f.id === sid)?.name)
+            .filter((x): x is string => !!x)
+          break
+        }
+      }
+      return {
+        name: b.device,
+        isBond: b.isBond,
+        members,
+        roleName: b.roles.map((r) => ROLE[r].name).join(' / '),
+        color: ROLE[b.roles[0]].color,
+      }
+    })
 
   return (
     <div className="overflow-x-auto rounded-2xl border border-functional-border-divider bg-functional-background-default p-2 text-functional-text-primary">
@@ -210,11 +251,7 @@ export const ClusterDiagram = (props: Props) => {
         {Object.values(buses).map((b) => (
           <g key={b.device}>
             <line x1={busX0} y1={b.y} x2={busX1} y2={b.y} stroke={b.color} strokeWidth={5} strokeLinecap="round" />
-            <text x={busX0} y={b.y < 200 ? b.y - 27 : b.y + 20} fontSize={13} fontWeight={700} fill="currentColor">
-              {b.device}
-              {b.isBond ? ' · LACP' : ''}
-            </text>
-            <text x={busX0} y={b.y < 200 ? b.y - 12 : b.y + 35} fontSize={11} fill="currentColor" opacity={0.6}>
+            <text x={busX0} y={b.y < 200 ? b.y - 14 : b.y + 24} fontSize={12.5} fontWeight={700} fill="currentColor">
               {b.roles.map((r) => ROLE[r].name).join(' / ')}
             </text>
           </g>
@@ -226,7 +263,7 @@ export const ClusterDiagram = (props: Props) => {
           const cx = bx + bw / 2
           const wires: Wire[] = grp.chains
             .map((c): Wire | null => {
-              const dev = c.baseIf?.name ?? c.bond?.name ?? c.roleIf?.name
+              const dev = c.bond?.name ?? c.baseIf?.name ?? c.roleIf?.name
               const bus = dev ? buses[dev] : undefined
               if (!bus) return null
               return {
@@ -241,8 +278,26 @@ export const ClusterDiagram = (props: Props) => {
 
           const topWires = wires.filter((w) => w.side === 'top')
           const botWires = wires.filter((w) => w.side === 'bottom')
-          const topDevs = new Set(grp.chains.filter((c) => topWires.some((w) => w.role === c.role)).map((c) => c.baseIf?.name)).size || 1
-          const botDevs = new Set(grp.chains.filter((c) => botWires.some((w) => w.role === c.role)).map((c) => c.baseIf?.name)).size || 1
+          const devOf = (c: RoleChain): DevGlyph | null => {
+            const name = c.bond?.name ?? c.baseIf?.name ?? c.roleIf?.name
+            if (!name) return null
+            const members = (c.bond?.slaves ?? [])
+              .map((sid) => grp.rep.initIFs.find((f) => f.id === sid)?.name)
+              .filter((x): x is string => !!x)
+            const primary = buses[name]?.roles[0] ?? c.role
+            return { name, isBond: !!c.bond, members, color: ROLE[primary].color }
+          }
+          const uniqDevs = (ws: Wire[]): DevGlyph[] => {
+            const m = new Map<string, DevGlyph>()
+            for (const c of grp.chains) {
+              if (!ws.some((w) => w.role === c.role)) continue
+              const d = devOf(c)
+              if (d) m.set(d.name, d)
+            }
+            return [...m.values()]
+          }
+          const topDevGlyphs = uniqDevs(topWires)
+          const botDevGlyphs = uniqDevs(botWires)
           const topBusYNode = Math.min(...topWires.map((w) => w.busY), 88)
           const botBusYNode = Math.max(...botWires.map((w) => w.busY), 476)
 
@@ -293,13 +348,29 @@ export const ClusterDiagram = (props: Props) => {
                   setViewHost(grp.rep.hostname)
                 }}
               />
-              {Array.from({ length: topDevs }).map((_, k) => (
-                <Nic key={'t' + k} x={cx + (k - (topDevs - 1) / 2) * 26} y={boxTopY} blue={false} />
-              ))}
-              {Array.from({ length: botDevs }).map((_, k) => (
-                <Nic key={'b' + k} x={cx + (k - (botDevs - 1) / 2) * 26} y={boxTopY + bh} blue={true} />
-              ))}
-              <text x={cx} y={boxTopY - 12} fontSize={12} textAnchor="middle" fill="currentColor" opacity={0.75}>
+              {topDevGlyphs.map((d, k) => {
+                const gx = cx + (k - (topDevGlyphs.length - 1) / 2) * glyphGap
+                return (
+                  <g key={'t' + d.name}>
+                    <Nic x={gx} y={boxTopY} color={d.color} />
+                    <text x={gx} y={boxTopY - 8} fontSize={9.5} fontWeight={600} textAnchor="middle" fill="currentColor" opacity={0.9} style={{ fontFamily: 'monospace' }}>
+                      {d.name}
+                    </text>
+                  </g>
+                )
+              })}
+              {botDevGlyphs.map((d, k) => {
+                const gx = cx + (k - (botDevGlyphs.length - 1) / 2) * glyphGap
+                return (
+                  <g key={'b' + d.name}>
+                    <Nic x={gx} y={boxTopY + bh} color={d.color} />
+                    <text x={gx} y={boxTopY + bh + 17} fontSize={9.5} fontWeight={600} textAnchor="middle" fill="currentColor" opacity={0.9} style={{ fontFamily: 'monospace' }}>
+                      {d.name}
+                    </text>
+                  </g>
+                )
+              })}
+              <text x={cx} y={boxTopY - 27} fontSize={12} textAnchor="middle" fill="currentColor" opacity={0.75}>
                 {grp.nodes.length === 1 ? grp.nodes[0].hostname : `${grp.nodes.length} nodes`}
               </text>
               {drawLabels(topWires, true)}
@@ -322,19 +393,30 @@ export const ClusterDiagram = (props: Props) => {
               </text>
             </g>
           ))}
-          <g transform={`translate(0, ${16 + ROLE_ORDER.length * 20 + 10})`}>
-            <Nic x={11} y={0} blue={false} />
-            <text x={32} y={4} fontSize={11} fill="currentColor">
-              Uplink NIC
-            </text>
-            <g transform="translate(0, 24)">
-              <Nic x={11} y={0} blue={true} />
-              <text x={32} y={4} fontSize={11} fill="currentColor">
-                Data NIC
-              </text>
-            </g>
-          </g>
         </g>
+
+        {/* ports & bonds legend: the NIC detail (LACP + members + role) lives here
+            so the diagram glyphs stay compact (just bond0/1/2/3, IF.n). */}
+        {devLegend.length > 0 && (
+          <g transform={`translate(${legendX}, ${topY + 20 + ROLE_ORDER.length * 20 + 34})`}>
+            <text x={0} y={0} fontSize={12} fontWeight={700} fill="currentColor">
+              Ports &amp; bonds
+            </text>
+            {devLegend.map((d, i) => (
+              <g key={d.name} transform={`translate(0, ${20 + i * 30})`}>
+                <Nic x={11} y={2} color={d.color} />
+                <text x={32} y={-1} fontSize={11} fontWeight={600} fill="currentColor" style={{ fontFamily: 'monospace' }}>
+                  {d.name}
+                  {d.isBond ? ' (LACP)' : ''}
+                </text>
+                <text x={32} y={11} fontSize={9.5} fill="currentColor" opacity={0.65} style={{ fontFamily: 'monospace' }}>
+                  {d.members.length ? d.members.join(' + ') + ' · ' : ''}
+                  {d.roleName}
+                </text>
+              </g>
+            ))}
+          </g>
+        )}
       </svg>
 
       {selected && (
@@ -343,6 +425,7 @@ export const ClusterDiagram = (props: Props) => {
           size="md"
           title={`${selected.role}${selected.nodes.length > 1 ? ` ×${selected.nodes.length}` : ''} — network topology`}
           actionText="Close"
+          isCancelButtonVisible={false}
           onActionClick={() => setSelected(undefined)}
           onCloseClick={() => setSelected(undefined)}
         >
