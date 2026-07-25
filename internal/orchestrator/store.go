@@ -35,6 +35,37 @@ func (s *Store) Save(d *Deploy) error {
 	return os.Rename(tmp, s.path(d.ClusterID))
 }
 
+// setReadyPath/SaveSetReady/LoadSetReady persist the operator's set_ready input
+// per cluster, so the external-network config is remembered and pre-filled on a
+// later reimage (and survives a server restart) rather than re-entered.
+func (s *Store) setReadyPath(clusterID string) string {
+	return filepath.Join(s.dir, clusterID+".setready.json")
+}
+
+func (s *Store) SaveSetReady(clusterID string, in SetReadyInput) error {
+	data, err := json.MarshalIndent(in, "", "    ")
+	if err != nil {
+		return err
+	}
+	tmp := s.setReadyPath(clusterID) + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.setReadyPath(clusterID))
+}
+
+func (s *Store) LoadSetReady(clusterID string) (SetReadyInput, bool) {
+	data, err := os.ReadFile(s.setReadyPath(clusterID))
+	if err != nil {
+		return SetReadyInput{}, false
+	}
+	var in SetReadyInput
+	if err := json.Unmarshal(data, &in); err != nil {
+		return SetReadyInput{}, false
+	}
+	return in, true
+}
+
 func (s *Store) Load(clusterID string) (*Deploy, error) {
 	data, err := os.ReadFile(s.path(clusterID))
 	if err != nil {

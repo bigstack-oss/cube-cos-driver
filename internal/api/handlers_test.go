@@ -24,6 +24,11 @@ func newTestServerCfg(t *testing.T, cfg Config) *httptest.Server {
 	if cfg.DataDir == "" {
 		cfg.DataDir = t.TempDir()
 	}
+	// create/update now verify the BMC via the discoverer; default to a
+	// succeeding fake so tests that add machines don't need a real BMC.
+	if cfg.Discoverer == nil {
+		cfg.Discoverer = fakeDiscoverer{}
+	}
 	handler, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)

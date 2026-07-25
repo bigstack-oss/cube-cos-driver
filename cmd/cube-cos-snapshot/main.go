@@ -43,7 +43,7 @@ func main() {
 	}
 	if *simulate {
 		cfg.DeployExecutor = orchestrator.NewFakeExecutor()
-		cfg.DeployConfig = orchestrator.Config{PollInterval: 800 * time.Millisecond, StageTimeout: time.Minute}
+		cfg.DeployConfig = orchestrator.Config{PollInterval: 800 * time.Millisecond, StageTimeout: time.Minute, PowerStagger: 5 * time.Second}
 		log.Printf("deploy simulation mode: using fake executor (no real IPMI)")
 	}
 	handler, err := api.New(cfg)

@@ -24,14 +24,22 @@ func TestAssignEnforcesOneMachinePerNode(t *testing.T) {
 	}
 }
 
-func TestAssignOverwritesOwnPrevious(t *testing.T) {
+func TestAssignAllowsMultipleNodesInCluster(t *testing.T) {
 	s := newStore(t)
 	m, _ := s.Create(Input{Label: "m", Address: "1"})
 	s.Assign(m.ID, "cl1", "node-1", "")
 	s.Assign(m.ID, "cl1", "node-2", "")
 	g, _ := s.Get(m.ID)
-	if g.Assignment == nil || g.Assignment.Hostname != "node-2" {
-		t.Fatalf("assignment = %+v", g.Assignment)
+	// A server may now be assigned to more than one node in a cluster; the UI
+	// surfaces that as a non-blocking duplicate error.
+	if len(g.Assignments) != 2 {
+		t.Fatalf("expected 2 assignments (within-cluster dup kept), got %+v", g.Assignments)
+	}
+	// Re-assigning to the same node is an update, not a duplicate.
+	s.Assign(m.ID, "cl1", "node-2", "sdb")
+	g, _ = s.Get(m.ID)
+	if len(g.Assignments) != 2 || g.AssignmentFor("cl1") == nil {
+		t.Fatalf("re-assign same node should update, got %+v", g.Assignments)
 	}
 }
 

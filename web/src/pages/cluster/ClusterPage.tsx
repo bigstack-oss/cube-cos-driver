@@ -1,4 +1,4 @@
-import { CosButton, CosModal } from '@cube-frontend/ui-library'
+import { CosButton, CosModal, CosTag } from '@cube-frontend/ui-library'
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import {
@@ -15,6 +15,7 @@ import { NodeWizard } from '../../components/wizards/node/NodeWizard'
 import { AssignServerFlow } from './assign/AssignServerFlow'
 import { DeployModal } from './deploy/DeployModal'
 import { DeployProgress } from './deploy/DeployProgress'
+import { getSetReady, SetReady } from '../../api/deploy'
 import { ClusterDetail, NodeConfig, shortId } from '../../model/types'
 import { validateCluster } from '../../model/validate'
 import {
@@ -27,6 +28,7 @@ import {
 import { newId } from '../../utils/random'
 import { ClusterDetailCard } from './ClusterDetailCard'
 import { NodeTable } from './NodeTable'
+import { ClusterDiagram } from './ClusterDiagram'
 import { ProblemBanner } from './ProblemBanner'
 import { SnapshotUrlModal } from './SnapshotUrlModal'
 
@@ -54,6 +56,7 @@ export const ClusterPage = () => {
   const [assigningNode, setAssigningNode] = useState<NodeConfig | undefined>()
   const [deployOpen, setDeployOpen] = useState(false)
   const [deployNonce, setDeployNonce] = useState(0)
+  const [setReadyInfo, setSetReadyInfo] = useState<SetReady | null>(null)
 
   const refreshMachines = () => {
     listMachines()
@@ -61,6 +64,15 @@ export const ClusterPage = () => {
       .catch(() => setMachines([]))
   }
   useEffect(refreshMachines, [])
+
+  // Load the saved set_ready value (external network + finalize status) to show
+  // for reference; refreshes when a deploy is (re)started.
+  useEffect(() => {
+    if (!info) return
+    getSetReady(shortId(info.id))
+      .then(setSetReadyInfo)
+      .catch(() => {})
+  }, [info, deployNonce])
 
   // Hydrate from the server when there is no local draft (e.g. another
   // browser saved this cluster).
@@ -107,11 +119,38 @@ export const ClusterPage = () => {
   }
 
   const serverByHostname: Record<string, Machine> = {}
+  const osDiskByHostname: Record<string, string> = {}
+  const hostsByMachine: Record<string, string[]> = {}
   for (const m of machines) {
-    if (m.assignment && m.assignment.clusterId === shortId(info.id)) {
-      serverByHostname[m.assignment.hostname] = m
+    const list =
+      m.assignments && m.assignments.length
+        ? m.assignments
+        : m.assignment
+          ? [m.assignment]
+          : []
+    for (const a of list) {
+      if (a.clusterId === shortId(info.id)) {
+        serverByHostname[a.hostname] = m
+        osDiskByHostname[a.hostname] = a.osDisk ?? ''
+        ;(hostsByMachine[m.id] ??= []).push(a.hostname)
+      }
     }
   }
+  // An assigned node with no OS disk chosen cannot be imaged — gate Deploy on it
+  // (same non-blocking-error pattern as a duplicate assignment).
+  const missingOsDisk = nodes
+    .filter((n) => !!serverByHostname[n.hostname] && !osDiskByHostname[n.hostname])
+    .map((n) => n.hostname)
+  const hasMissingOsDisk = missingOsDisk.length > 0
+  // A server may be assigned across clusters, but within THIS cluster it must
+  // map to one node — a duplicate is a non-blocking error that gates Deploy.
+  const duplicateAssigns = Object.entries(hostsByMachine)
+    .filter(([, hosts]) => hosts.length > 1)
+    .map(([machineId, hosts]) => {
+      const label = machines.find((m) => m.id === machineId)?.label ?? machineId
+      return `${label} is assigned to ${hosts.length} nodes (${hosts.join(', ')})`
+    })
+  const hasDuplicateAssign = duplicateAssigns.length > 0
   const allAssigned =
     nodes.length > 0 && nodes.every((n) => !!serverByHostname[n.hostname])
 
@@ -158,11 +197,67 @@ export const ClusterPage = () => {
 
       <DeployProgress clusterId={sid} reloadSignal={deployNonce} />
 
+      {setReadyInfo && (setReadyInfo.trigger || setReadyInfo.ready) && (
+        <div className="flex flex-col gap-y-1 rounded-md border border-functional-border-divider p-4">
+          <div className="flex items-center gap-x-3">
+            <span className="primary-h4">Finalize — set ready</span>
+            <CosTag
+              variant="stroke"
+              color={
+                setReadyInfo.ready
+                  ? 'cyan'
+                  : setReadyInfo.message
+                    ? 'dark'
+                    : 'primary-blue'
+              }
+            >
+              {setReadyInfo.ready
+                ? 'ready'
+                : setReadyInfo.message
+                  ? 'failed'
+                  : 'armed — runs after apply'}
+            </CosTag>
+          </div>
+          <span className="secondary-body4 text-functional-text-light">
+            {setReadyInfo.createExternal
+              ? `External network: ${setReadyInfo.cidr}` +
+                (setReadyInfo.gateway ? ` · gw ${setReadyInfo.gateway}` : '') +
+                (setReadyInfo.ipRange ? ` · pool ${setReadyInfo.ipRange}` : '')
+              : 'No shared external network'}
+          </span>
+          {setReadyInfo.message && (
+            <span className="secondary-body5 text-status-negative">
+              {setReadyInfo.message}
+            </span>
+          )}
+        </div>
+      )}
+
       <ProblemBanner problems={problems} />
       {saveState === 'error' && (
         <ProblemBanner
           problems={[
             { level: 'error', title: 'Save failed', text: saveError },
+          ]}
+        />
+      )}
+      {hasDuplicateAssign && (
+        <ProblemBanner
+          problems={duplicateAssigns.map((text) => ({
+            level: 'error',
+            title: 'Duplicate server assignment',
+            text: `${text} — a server can only fill one node in a cluster. Deploy is disabled until resolved.`,
+          }))}
+        />
+      )}
+      {hasMissingOsDisk && (
+        <ProblemBanner
+          problems={[
+            {
+              level: 'error',
+              title: 'OS disk not selected',
+              text: `${missingOsDisk.join(', ')} — assigned but no OS install disk chosen. Re-run Assign server and pick a local disk. Deploy is disabled until resolved.`,
+            },
           ]}
         />
       )}
@@ -195,12 +290,14 @@ export const ClusterPage = () => {
           </>
         )}
         <CosButton
-          disabled={!allAssigned}
+          disabled={!allAssigned || hasDuplicateAssign || hasMissingOsDisk}
           onClick={() => setDeployOpen(true)}
         >
-          {allAssigned
-            ? 'Deploy to cluster'
-            : 'Deploy (assign all servers first)'}
+          {!allAssigned
+            ? 'Deploy (assign all servers first)'
+            : hasMissingOsDisk
+              ? 'Deploy (select OS disk first)'
+              : 'Deploy to cluster'}
         </CosButton>
         <div className="flex-1" />
         <CosButton type="warning" onClick={() => setDeleteClusterOpen(true)}>
@@ -211,6 +308,7 @@ export const ClusterPage = () => {
       <NodeTable
         nodes={nodes}
         serverByHostname={serverByHostname}
+        osDiskByHostname={osDiskByHostname}
         snapshotUrlFor={
           saveState === 'saved' || serverHasCluster
             ? (hostname) => nodeSnapshotUrl(sid, hostname)
@@ -233,6 +331,23 @@ export const ClusterPage = () => {
         onDelete={(node) => setDeletingNode(node)}
         onAssignServer={(node) => setAssigningNode(node)}
       />
+
+      {nodes.length > 0 && (
+        <div className="flex flex-col gap-y-3">
+          <div className="flex items-center gap-x-3">
+            <span className="primary-h4">Network topology</span>
+            <span className="secondary-body5 text-functional-text-light">
+              Confirm roles, bonds, VLANs, interface mapping &amp; addresses — click a
+              node for its detail
+            </span>
+          </div>
+          <ClusterDiagram
+            cluster={config}
+            nodes={nodes}
+            machineByHostname={serverByHostname}
+          />
+        </div>
+      )}
 
       {assigningNode && (
         <AssignServerFlow

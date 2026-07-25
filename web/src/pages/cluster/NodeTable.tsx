@@ -9,6 +9,7 @@ type NodeRow = {
   mgmtIP: string
   interfaces: number
   server: string
+  osDisk: string
   node: NodeConfig
 }
 
@@ -18,6 +19,8 @@ export type NodeTableProps = {
   nodes: NodeConfig[]
   // Machine assigned to each hostname (from the hardware inventory).
   serverByHostname: Record<string, Machine>
+  // OS install disk chosen per hostname (empty when not yet selected).
+  osDiskByHostname: Record<string, string>
   // Absent when the cluster has never been saved to the server.
   snapshotUrlFor?: (hostname: string) => string
   onEdit: (node: NodeConfig) => void
@@ -30,6 +33,7 @@ export const NodeTable = (props: NodeTableProps) => {
   const {
     nodes,
     serverByHostname,
+    osDiskByHostname,
     snapshotUrlFor,
     onEdit,
     onDuplicate,
@@ -51,6 +55,7 @@ export const NodeTable = (props: NodeTableProps) => {
       interfaces:
         node.initIFs.length + node.bondIFs.length + node.vlanIFs.length,
       server: server ? server.label : '',
+      osDisk: osDiskByHostname[node.hostname] ?? '',
       node,
     }
   })
@@ -76,6 +81,19 @@ export const NodeTable = (props: NodeTableProps) => {
             {server || 'Assign server'}
           </CosButton>
         )}
+      </Table.Column>
+      <Table.Column label="OS disk" property="osDisk">
+        {(osDisk: string, row: NodeRow) =>
+          osDisk ? (
+            <span className="primary-body4">{osDisk}</span>
+          ) : row.server ? (
+            <CosTag variant="stroke" color="dark">
+              Not selected
+            </CosTag>
+          ) : (
+            <span className="secondary-body5 text-functional-text-light">—</span>
+          )
+        }
       </Table.Column>
       <Table.Column label="Interfaces" property="interfaces">
         {(count: number, row: NodeRow) =>

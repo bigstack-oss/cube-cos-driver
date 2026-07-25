@@ -54,7 +54,12 @@ export type NodeDeploy = {
   light1: Light
   light2: Light
   phase: Phase
+  progress?: PhaseCell[]
 }
+
+// One cell of the per-node progress strip: preflight → restore → reboot → apply.
+export type CellStatus = 'pending' | 'active' | 'done' | 'error'
+export type PhaseCell = { name: string; status: CellStatus }
 
 export type Deploy = {
   clusterId: string
@@ -129,3 +134,34 @@ export const cancelDeploy = async (id: string): Promise<void> => {
 // A deploy node is done stepping when it reaches a terminal state.
 export const isTerminal = (s: DeployState): boolean =>
   s === 'done' || s === 'error'
+
+// set_ready (FTS finalize) — the operator supplies the external network; the
+// master agent polls this and runs `cluster set_ready`.
+export type SetReady = {
+  trigger: boolean
+  createExternal: boolean
+  cidr: string
+  gateway: string
+  ipRange: string
+  ready: boolean
+  message?: string
+}
+
+export const getSetReady = async (id: string): Promise<SetReady | null> => {
+  const resp = await fetch(`/api/v1/clusters/${encodeURIComponent(id)}/set-ready`)
+  if (!resp.ok) return null
+  return (await resp.json()) as SetReady
+}
+
+export const submitSetReady = async (
+  id: string,
+  input: { createExternal: boolean; cidr: string; gateway: string; ipRange: string },
+): Promise<void> => {
+  await throwOnError(
+    await fetch(`/api/v1/clusters/${encodeURIComponent(id)}/set-ready`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    }),
+  )
+}

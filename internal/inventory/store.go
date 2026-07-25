@@ -223,31 +223,71 @@ func (s *Store) Assign(id, clusterID, hostname, osDisk string) (Machine, error) 
 		if err != nil {
 			continue
 		}
-		if other.Assignment != nil && other.Assignment.ClusterID == clusterID && other.Assignment.Hostname == hostname {
-			other.Assignment = nil
+		if removeAssignment(other, clusterID, hostname) {
 			if err := s.writeRecord(other); err != nil {
 				return Machine{}, err
 			}
 		}
 	}
-	target.Assignment = &Assignment{ClusterID: clusterID, Hostname: hostname, OSDisk: osDisk}
+	// A machine may hold assignments across clusters (and, deliberately, more
+	// than one node in a cluster — surfaced as a non-blocking UI error). Add or
+	// update this (cluster, hostname).
+	migrateAssignments(target)
+	found := false
+	for i := range target.Assignments {
+		if target.Assignments[i].ClusterID == clusterID && target.Assignments[i].Hostname == hostname {
+			target.Assignments[i].OSDisk = osDisk
+			found = true
+			break
+		}
+	}
+	if !found {
+		target.Assignments = append(target.Assignments, Assignment{ClusterID: clusterID, Hostname: hostname, OSDisk: osDisk})
+	}
+	target.Assignment = nil // canonical form is the list now
 	if err := s.writeRecord(target); err != nil {
 		return Machine{}, err
 	}
 	return target.toMachine(), nil
 }
 
-// Unassign clears a machine's node binding.
+// Unassign clears all of a machine's node bindings.
 func (s *Store) Unassign(id string) (Machine, error) {
 	r, err := s.readRecord(id)
 	if err != nil {
 		return Machine{}, err
 	}
 	r.Assignment = nil
+	r.Assignments = nil
 	if err := s.writeRecord(r); err != nil {
 		return Machine{}, err
 	}
 	return r.toMachine(), nil
+}
+
+// migrateAssignments folds a legacy single Assignment into the list in place.
+func migrateAssignments(r *record) {
+	if len(r.Assignments) == 0 && r.Assignment != nil {
+		r.Assignments = []Assignment{*r.Assignment}
+	}
+	r.Assignment = nil
+}
+
+// removeAssignment drops a (clusterID, hostname) binding from a record's list
+// (and legacy field), returning whether anything changed.
+func removeAssignment(r *record, clusterID, hostname string) bool {
+	migrateAssignments(r)
+	kept := r.Assignments[:0]
+	changed := false
+	for _, a := range r.Assignments {
+		if a.ClusterID == clusterID && a.Hostname == hostname {
+			changed = true
+			continue
+		}
+		kept = append(kept, a)
+	}
+	r.Assignments = kept
+	return changed
 }
 
 // UnassignCluster clears all bindings for a cluster (called on cluster
@@ -269,8 +309,18 @@ func (s *Store) UnassignCluster(clusterID string) error {
 		if err != nil {
 			continue
 		}
-		if r.Assignment != nil && r.Assignment.ClusterID == clusterID {
-			r.Assignment = nil
+		migrateAssignments(r)
+		kept := r.Assignments[:0]
+		changed := false
+		for _, a := range r.Assignments {
+			if a.ClusterID == clusterID {
+				changed = true
+				continue
+			}
+			kept = append(kept, a)
+		}
+		r.Assignments = kept
+		if changed {
 			if err := s.writeRecord(r); err != nil {
 				return err
 			}
@@ -285,8 +335,52 @@ func (s *Store) SetInventory(id string, inv Inventory) error {
 	if err != nil {
 		return err
 	}
+	// Preserve richer previously-discovered facts that a sparser fetch omits.
+	// A Redfish fetch fills NICs/disks/CPU/mem; when it fails and we fall back
+	// to IPMI FRU (serial only), a wholesale replace would wipe that good data.
+	// So fields the new result leaves empty keep their prior value.
+	if r.Inventory != nil {
+		inv = mergeInventory(inv, *r.Inventory)
+	}
 	r.Inventory = &inv
 	r.FetchState = FetchOK
 	r.FetchError = ""
 	return s.writeRecord(r)
+}
+
+// mergeInventory returns next with any empty rich field filled from prev, so a
+// downgraded (IPMI-fallback) fetch never clobbers Redfish-discovered hardware.
+// A successful re-fetch that DOES carry these fields still overwrites them.
+func mergeInventory(next, prev Inventory) Inventory {
+	if len(next.NICs) == 0 {
+		next.NICs = prev.NICs
+	}
+	if len(next.Disks) == 0 {
+		next.Disks = prev.Disks
+	}
+	if len(next.Cards) == 0 {
+		next.Cards = prev.Cards
+	}
+	if next.CPUCount == 0 {
+		next.CPUCount = prev.CPUCount
+	}
+	if next.CPUCores == 0 {
+		next.CPUCores = prev.CPUCores
+	}
+	if next.CPUModel == "" {
+		next.CPUModel = prev.CPUModel
+	}
+	if next.MemoryBytes == 0 {
+		next.MemoryBytes = prev.MemoryBytes
+	}
+	if next.Manufacturer == "" {
+		next.Manufacturer = prev.Manufacturer
+	}
+	if next.Model == "" {
+		next.Model = prev.Model
+	}
+	if next.Serial == "" {
+		next.Serial = prev.Serial
+	}
+	return next
 }

@@ -59,7 +59,7 @@ func TestRunPreflightRetriesThenClears(t *testing.T) {
 		SetClock:          func(time.Time) error { return nil },
 		Now:               func() time.Time { return time.Now().Add(500 * time.Millisecond) }, // ~0.5s skew
 		Configured:        func() bool { return false },
-		ConfigureTopology: func(model.PreflightBundle) error { topoCalls++; return nil },
+		ConfigureTopology: func(model.PreflightBundle) (string, error) { topoCalls++; return "map: test", nil },
 		Carrier:           func(model.PreflightBundle) (bool, string) { return true, "" },
 		// Peer unreachable on the first probe, reachable after; gateway always up.
 		Probe: func(target string) bool {

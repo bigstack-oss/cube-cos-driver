@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/bigstack-oss/cube-cos-snapshot/internal/model"
@@ -55,7 +56,24 @@ type PreflightCheckinResponse struct {
 	Hostname      string                `json:"hostname"`
 	ServerTimeUTC string                `json:"serverTimeUTC"`
 	Bundle        model.PreflightBundle `json:"bundle"`
+	// SnapshotURL lets the installer pull this node's snapshot early — before
+	// preflight reconfigures the network and can sever the SPA link — to stash
+	// it for a local apply after restore.
+	SnapshotURL string `json:"snapshotUrl"`
+	// IsMaster marks the master (first control node); the installer stamps it so
+	// the OS-phase agent knows whether to apply first or wait for the SEL "go".
+	IsMaster bool `json:"isMaster"`
+	// OSDisk is the operator-picked install target (e.g. /dev/sda) from the
+	// assignment. The installer writes the restored image to this disk instead
+	// of auto-detecting, so the OS never lands on a SAN LUN or the wrong disk.
+	OSDisk string `json:"osDisk,omitempty"`
+	// Inspect tells an installer-booted node to report hardware inventory and
+	// halt (a discovery/inspect boot), instead of preflighting for a deploy.
+	Inspect bool `json:"inspect"`
 }
+
+// ErrInspect signals the caller to run hardware inventory + halt (inspect boot).
+var ErrInspect = errors.New("inspect boot")
 
 // PreflightReportRequest carries the installer-phase validation outcome.
 type PreflightReportRequest struct {
@@ -149,6 +167,12 @@ func Run(ctx context.Context, server string, d Deps, poll time.Duration) error {
 
 	allOK := true
 	for _, r := range results {
+		// Peers boot at different times and GL1 already validated the fabric
+		// pre-restore, so peer/dns reachability here is informational, not a
+		// gate — otherwise a node deadlocks waiting on peers still imaging.
+		if strings.HasPrefix(r.Target, "peer ") || strings.HasPrefix(r.Target, "dns ") {
+			continue
+		}
 		if !r.OK {
 			allOK = false
 		}

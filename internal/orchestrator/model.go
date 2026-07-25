@@ -83,10 +83,28 @@ type NodeDeploy struct {
 	InstallerPreflight *NodePreflight `json:"installerPreflight,omitempty"`
 	UpdatedAt          string         `json:"updatedAt"`
 	// Derived, read-only view for the UI (filled by snapshot()).
-	Light1 Light `json:"light1"`
-	Light2 Light `json:"light2"`
-	Phase  Phase `json:"phase"`
+	Light1   Light       `json:"light1"`
+	Light2   Light       `json:"light2"`
+	Phase    Phase       `json:"phase"`
+	Progress []PhaseCell `json:"progress"`
 }
+
+// PhaseCell is one segment of the per-node progress strip shown in the deploy
+// UI: preflight → restore → reboot → apply, each pending → active → done/error.
+type PhaseCell struct {
+	Name   string     `json:"name"`
+	Status CellStatus `json:"status"`
+}
+
+// CellStatus is the traffic-light state of a single progress cell.
+type CellStatus string
+
+const (
+	CellPending CellStatus = "pending" // grey — not reached
+	CellActive  CellStatus = "active"  // yellow — in progress
+	CellDone    CellStatus = "done"    // green — complete
+	CellError   CellStatus = "error"   // red — failed here
+)
 
 // Light is a traffic-light status for the two deploy gates.
 type Light string
@@ -160,6 +178,66 @@ func (nd *NodeDeploy) phase() Phase {
 		return PhaseError
 	}
 	return PhaseBoot
+}
+
+// pipelineRank places a state on the linear install pipeline so progress cells
+// can classify each phase as pending/active/done.
+func pipelineRank(s State) int {
+	switch s {
+	case StatePreflighting:
+		return 1
+	case StatePreflightOK:
+		return 2
+	case StateRestoring:
+		return 3
+	case StateRebooting:
+		return 4
+	case StateCheckedIn, StateWaiting, StateNetPreflight:
+		return 5
+	case StateApplying, StateApplied:
+		return 6
+	case StateDone:
+		return 7
+	default: // pending/bmc/pxe/power/netbooting/imaging
+		return 0
+	}
+}
+
+// progress builds the 4-cell per-node strip: preflight → restore → reboot →
+// apply. A cell is done once the pipeline is past it, active while in it, and
+// pending before. On error the failing cell is red and later cells stay pending.
+func (nd *NodeDeploy) progress() []PhaseCell {
+	cell := func(name string, activeRank, doneRank int) PhaseCell {
+		r := pipelineRank(nd.State)
+		st := CellPending
+		if r >= doneRank {
+			st = CellDone
+		} else if r >= activeRank {
+			st = CellActive
+		}
+		return PhaseCell{Name: name, Status: st}
+	}
+	// preflight active at rank 1, done at >=2; restore 3/>=4; reboot 4/>=5;
+	// apply 5..6 active, done at 7.
+	pre := cell("preflight", 1, 2)
+	res := cell("restore", 3, 4)
+	reb := cell("reboot", 4, 5)
+	app := cell("apply", 5, 7)
+
+	if nd.State == StateError {
+		ec := string(nd.ErrCode)
+		switch {
+		case strings.HasPrefix(ec, "APPLY_"):
+			pre.Status, res.Status, reb.Status, app.Status = CellDone, CellDone, CellDone, CellError
+		case strings.HasPrefix(ec, "REBOOT_"):
+			pre.Status, res.Status, reb.Status = CellDone, CellDone, CellError
+		case strings.HasPrefix(ec, "RESTORE_"):
+			pre.Status, res.Status = CellDone, CellError
+		default: // BMC_/PXE_/PF_ — failed before restore
+			pre.Status = CellError
+		}
+	}
+	return []PhaseCell{pre, res, reb, app}
 }
 
 // isPreRestore reports whether a state is in the installer (pre-restore) phase.

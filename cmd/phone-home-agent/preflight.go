@@ -26,11 +26,15 @@ const cubeManufacturerID uint32 = 0x0BC0DE
 
 // phaseCode maps a phase/result to a compact byte pair for the SEL OEM field.
 var phaseCode = map[string]byte{
-	"preflight": 0x10, "applying": 0x20, "applied": 0x21, "done": 0x2f, "error": 0xff,
+	"preflight": 0x10, "applying": 0x20, "applied": 0x21, "done": 0x2f, "gate": 0x30, "error": 0xff,
 }
 var resultCode = map[string]byte{
-	"ok": 0x01, "degraded": 0x02, "unreachable": 0x03, "topology-error": 0x04, "error": 0xff,
+	"ok": 0x01, "degraded": 0x02, "unreachable": 0x03, "topology-error": 0x04, "go": 0x05, "error": 0xff,
 }
+
+// selGateGo is the OEM byte pair the server writes to a non-master node's BMC
+// SEL (over LAN) once the master's apply is done — the OOB "your turn" signal.
+var selGateGo = [2]byte{phaseCode["gate"], resultCode["go"]}
 
 // physIFs returns physical NIC kernel names sorted by PCI address so the k-th
 // entry corresponds to CubeCOS's IF.k enumeration.
@@ -58,21 +62,20 @@ func physIFs() []string {
 	return out
 }
 
-// labelDevMap maps a bundle's init IF labels (IF.1..) to kernel device names by
-// enumeration order.
+// labelDevMap maps a bundle's init IF labels (IF.N) to kernel device names.
+// CubeCOS numbers interfaces by PCI enumeration order, so IF.N is the N-th
+// physical NIC (1-indexed) — NOT the N-th *enabled* one. Mapping positionally
+// would put e.g. IF.5 on the 2nd NIC when only IF.1+IF.5 are enabled.
 func labelDevMap(b model.PreflightBundle) map[string]string {
-	var initLabels []string
-	for _, l := range b.Links {
-		if l.Type == "init" {
-			initLabels = append(initLabels, l.Name)
-		}
-	}
-	sort.Slice(initLabels, func(i, j int) bool { return ifIndex(initLabels[i]) < ifIndex(initLabels[j]) })
 	phys := physIFs()
 	m := map[string]string{}
-	for i, lbl := range initLabels {
-		if i < len(phys) {
-			m[lbl] = phys[i]
+	for _, l := range b.Links {
+		if l.Type != "init" {
+			continue
+		}
+		idx := ifIndex(l.Name) - 1 // IF.1 → phys[0], IF.5 → phys[4]
+		if idx >= 0 && idx < len(phys) {
+			m[l.Name] = phys[idx]
 		}
 	}
 	return m
@@ -101,10 +104,27 @@ func ipCmd(args ...string) error {
 // configureTopology stands up the node's bonds, VLANs, and role IPs transiently
 // (torn down by the restore + reboot). Kernel devices for a link:
 // init → its physical NIC; bond/vlan → the link name itself.
-func configureTopology(b model.PreflightBundle) error {
+// configureTopology stands up the node's transient topology best-effort: it
+// continues past individual failures and returns a combined diagnostic string
+// (nil if everything succeeded) so the server can see exactly what happened.
+func configureTopology(b model.PreflightBundle) (string, error) {
 	labelDev := labelDevMap(b)
 	_ = exec.Command("modprobe", "bonding").Run()
 	_ = exec.Command("modprobe", "8021q").Run()
+
+	var errs []string
+	note := func(format string, a ...any) { errs = append(errs, fmt.Sprintf(format, a...)) }
+
+	// mapping diagnostic: resolved IF→device + physical carrier/operstate, so
+	// the server can see which NIC each role landed on.
+	var mapDiag []string
+	for _, l := range b.Links {
+		if l.Type == "init" {
+			dev := labelDev[l.Name]
+			mapDiag = append(mapDiag, fmt.Sprintf("%s->%s[%s]", l.Name, dev, nicState(dev)))
+		}
+	}
+	diag := "map: " + strings.Join(mapDiag, " ") + " | phys: " + strings.Join(allNICStates(), " ")
 
 	devFor := func(l model.PfLink) string {
 		if l.Type == "init" {
@@ -119,19 +139,18 @@ func configureTopology(b model.PreflightBundle) error {
 			continue
 		}
 		if err := ipCmd("link", "add", l.Name, "type", "bond"); err != nil {
-			return err
+			note("bond %s add: %v", l.Name, err)
 		}
-		if err := ipCmd("link", "set", l.Name, "up"); err != nil {
-			return err
-		}
+		_ = ipCmd("link", "set", l.Name, "up")
 		for _, mLabel := range l.Members {
 			dev := labelDev[mLabel]
 			if dev == "" {
-				return fmt.Errorf("bond %s: no device for member %s", l.Name, mLabel)
+				note("bond %s: no device for member %s", l.Name, mLabel)
+				continue
 			}
 			_ = ipCmd("link", "set", dev, "down")
 			if err := ipCmd("link", "set", dev, "master", l.Name); err != nil {
-				return err
+				note("enslave %s→%s: %v", dev, l.Name, err)
 			}
 			_ = ipCmd("link", "set", dev, "up")
 		}
@@ -142,25 +161,56 @@ func configureTopology(b model.PreflightBundle) error {
 		}
 		parent := labelDev[l.Parent]
 		if parent == "" {
-			parent = l.Parent // parent may itself be a bond name
+			parent = l.Parent
 		}
 		if err := ipCmd("link", "add", "link", parent, "name", l.Name, "type", "vlan", "id", strconv.Itoa(l.VLANID)); err != nil {
-			return err
+			note("vlan %s: %v", l.Name, err)
 		}
 	}
 	for _, l := range b.Links {
 		dev := devFor(l)
 		if dev == "" {
+			note("link %s: no device resolved", l.Name)
 			continue
 		}
 		_ = ipCmd("link", "set", dev, "up")
 		if l.IP != "" {
 			if err := ipCmd("addr", "add", l.IP, "dev", dev); err != nil {
-				return err
+				note("addr %s dev %s(%s): %v", l.IP, l.Name, dev, err)
 			}
 		}
 	}
-	return nil
+	if len(errs) > 0 {
+		return diag, fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return diag, nil
+}
+
+// nicState reads a device's carrier + operstate + speed for diagnostics.
+func nicState(dev string) string {
+	if dev == "" {
+		return "no-dev"
+	}
+	rd := func(f string) string {
+		b, _ := os.ReadFile("/sys/class/net/" + dev + "/" + f)
+		return strings.TrimSpace(string(b))
+	}
+	return fmt.Sprintf("car=%s,op=%s,spd=%s", rd("carrier"), rd("operstate"), rd("speed"))
+}
+
+// allNICStates lists every physical NIC (PCI-ordered) with driver + carrier, so
+// we can see the full enumeration the agent sees vs what CubeCOS expects.
+func allNICStates() []string {
+	var out []string
+	for i, dev := range physIFs() {
+		drv := ""
+		if l, err := os.Readlink("/sys/class/net/" + dev + "/device/driver"); err == nil {
+			drv = filepath.Base(l)
+		}
+		car, _ := os.ReadFile("/sys/class/net/" + dev + "/carrier")
+		out = append(out, fmt.Sprintf("#%d=%s(%s,car=%s)", i, dev, drv, strings.TrimSpace(string(car))))
+	}
+	return out
 }
 
 // carrier reports whether every physical NIC that a bond enslaves has link
@@ -214,4 +264,47 @@ func writeSEL(phase, result, detail string) error {
 	}
 	_, err = client.AddSELEntry(ctx, sel)
 	return err
+}
+
+// selGatePresent reports whether the server's "go" record (written to this
+// node's BMC over LAN once the master's apply finished) is in the local SEL,
+// read out-of-band over KCS — no in-band network required.
+func selGatePresent() bool {
+	client, err := goipmi.NewOpenClient()
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Connect(ctx); err != nil {
+		return false
+	}
+	defer client.Close(ctx)
+	entries, err := client.GetSELEntries(ctx, 0)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		o := e.OEMTimestamped
+		if o != nil && o.ManufacturerID == cubeManufacturerID &&
+			o.OEMDefined[0] == selGateGo[0] && o.OEMDefined[1] == selGateGo[1] {
+			return true
+		}
+	}
+	return false
+}
+
+// waitSELGate blocks until the go record appears in the local SEL or ctx ends.
+func waitSELGate(ctx context.Context, poll time.Duration) bool {
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
+		if selGatePresent() {
+			return true
+		}
+		time.Sleep(poll)
+	}
 }

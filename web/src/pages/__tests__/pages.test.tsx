@@ -70,7 +70,8 @@ describe('ClusterPage', () => {
     renderClusterPage(shortId(ha3.clusterInfo.id))
 
     expect(screen.getByText('sky-lab')).toBeTruthy()
-    expect(screen.getByText('cube-1')).toBeTruthy()
+    // Hostname renders in both the node table and the cluster diagram.
+    expect(screen.getAllByText('cube-1').length).toBeGreaterThan(0)
 
     const save = screen.getByRole('button', { name: 'Save to server' })
     expect(save.hasAttribute('disabled')).toBe(false)

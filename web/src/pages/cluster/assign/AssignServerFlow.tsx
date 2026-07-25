@@ -3,7 +3,12 @@
 // picks with real hardware info). Binds the machine to the node and applies
 // any interface-label corrections back onto the node config.
 import { useEffect, useMemo, useState } from 'react'
-import { formatBytes, Machine, NIC } from '../../../model/machine'
+import {
+  formatBytes,
+  Machine,
+  NIC,
+  osEligibleDisks,
+} from '../../../model/machine'
 import { NodeConfig } from '../../../model/types'
 import { Select } from '../../../components/form/Select'
 import { WizardModal, WizardStep } from '../../../components/WizardModal'
@@ -27,15 +32,11 @@ export type AssignServerFlowProps = {
 export const AssignServerFlow = (props: AssignServerFlowProps) => {
   const { isOpen, node, machines, currentMachineId, onCancel, onFinish } = props
 
+  // A server may be assigned to multiple nodes/clusters, so any inventoried
+  // machine is selectable (a same-cluster duplicate is flagged, not blocked).
   const selectable = useMemo(
-    () =>
-      machines.filter(
-        (m) =>
-          m.fetchState === 'ok' &&
-          m.inventory &&
-          (!m.assignment || m.id === currentMachineId),
-      ),
-    [machines, currentMachineId],
+    () => machines.filter((m) => m.fetchState === 'ok' && m.inventory),
+    [machines],
   )
 
   const [machineId, setMachineId] = useState<string | undefined>()
@@ -57,8 +58,12 @@ export const AssignServerFlow = (props: AssignServerFlowProps) => {
       return
     }
     setPorts(machine.inventory.nics ?? [])
+    // Default to the assigned disk, else the first OS-eligible (local physical)
+    // disk — never a SAN LUN or virtual media.
     setOsDisk(
-      machine.assignment?.osDisk ?? machine.inventory.disks?.[0]?.name ?? '',
+      machine.assignment?.osDisk ??
+        osEligibleDisks(machine.inventory)[0]?.name ??
+        '',
     )
   }, [machineId]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -91,7 +96,7 @@ export const AssignServerFlow = (props: AssignServerFlowProps) => {
               {`${machine.inventory.cpuModel ?? 'CPU'} ×${machine.inventory.cpuCount ?? 1}, ` +
                 `${formatBytes(machine.inventory.memoryBytes)}, ` +
                 `${machine.inventory.nics?.length ?? 0} NIC(s), ` +
-                `${machine.inventory.disks?.length ?? 0} disk(s)`}
+                `${osEligibleDisks(machine.inventory).length} local disk(s)`}
             </p>
           )}
         </div>
@@ -105,29 +110,49 @@ export const AssignServerFlow = (props: AssignServerFlowProps) => {
           <span className="primary-body3 font-semibold">
             CubeCOS install disk
           </span>
-          {(machine?.inventory?.disks ?? []).length === 0 ? (
-            <p className="secondary-body4 text-functional-text-light">
-              No disks discovered on this machine.
-            </p>
-          ) : (
-            (machine?.inventory?.disks ?? []).map((d, i) => {
-              const name = d.name || d.model || `disk-${i}`
+          {(() => {
+            const eligible = osEligibleDisks(machine?.inventory)
+            const total = machine?.inventory?.disks?.length ?? 0
+            const excluded = total - eligible.length
+            if (eligible.length === 0) {
               return (
-                <label
-                  key={i}
-                  className="primary-body4 flex items-center gap-x-2"
-                >
-                  <input
-                    type="radio"
-                    name="os-disk"
-                    checked={osDisk === name}
-                    onChange={() => setOsDisk(name)}
-                  />
-                  {`${name}${d.type ? ` · ${d.type}` : ''}${d.sizeBytes ? ` · ${formatBytes(d.sizeBytes)}` : ''}`}
-                </label>
+                <p className="secondary-body4 text-functional-text-light">
+                  No local install disks discovered
+                  {total > 0
+                    ? ` (${total} SAN/virtual device(s) excluded — not valid OS targets)`
+                    : ''}
+                  .
+                </p>
               )
-            })
-          )}
+            }
+            return (
+              <>
+                {eligible.map((d, i) => {
+                  const name = d.name || d.model || `disk-${i}`
+                  return (
+                    <label
+                      key={i}
+                      className="primary-body4 flex items-center gap-x-2"
+                    >
+                      <input
+                        type="radio"
+                        name="os-disk"
+                        checked={osDisk === name}
+                        onChange={() => setOsDisk(name)}
+                      />
+                      {`${name}${d.type ? ` · ${d.type}` : ''}${d.sizeBytes ? ` · ${formatBytes(d.sizeBytes)}` : ''}`}
+                    </label>
+                  )
+                })}
+                {excluded > 0 && (
+                  <p className="secondary-body5 text-functional-text-light">
+                    {excluded} SAN / virtual device(s) hidden — only local
+                    physical disks can host the OS.
+                  </p>
+                )}
+              </>
+            )
+          })()}
         </div>
       ),
     },

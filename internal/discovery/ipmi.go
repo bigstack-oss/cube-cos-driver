@@ -52,20 +52,27 @@ func (IPMIDiscoverer) Discover(ctx context.Context, t Target) (inventory.Invento
 		Source:    "ipmi",
 	}
 	if p := fru.ProductInfoArea; p != nil {
-		inv.Manufacturer = strings.TrimSpace(string(p.Manufacturer))
-		inv.Model = strings.TrimSpace(string(p.Name))
-		inv.Serial = strings.TrimSpace(string(p.SerialNumber))
+		inv.Manufacturer = fruStr(p.Manufacturer)
+		inv.Model = fruStr(p.Name)
+		inv.Serial = fruStr(p.SerialNumber)
 	}
 	if inv.Serial == "" {
 		if b := fru.BoardInfoArea; b != nil {
 			if inv.Manufacturer == "" {
-				inv.Manufacturer = strings.TrimSpace(string(b.Manufacturer))
+				inv.Manufacturer = fruStr(b.Manufacturer)
 			}
 			if inv.Model == "" {
-				inv.Model = strings.TrimSpace(string(b.ProductName))
+				inv.Model = fruStr(b.ProductName)
 			}
-			inv.Serial = strings.TrimSpace(string(b.SerialNumber))
+			inv.Serial = fruStr(b.SerialNumber)
 		}
 	}
 	return inv, nil
+}
+
+// fruStr cleans an IPMI FRU field: these are fixed-width and padded with trailing
+// NUL bytes that TrimSpace leaves behind, which then break exact serial matching
+// and show as garbage in the UI. Strip NULs, then trim surrounding whitespace.
+func fruStr[T ~[]byte | ~string](v T) string {
+	return strings.TrimSpace(strings.ReplaceAll(string(v), "\x00", ""))
 }

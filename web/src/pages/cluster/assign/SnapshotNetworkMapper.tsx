@@ -4,9 +4,15 @@
 // drawn with connector lines and each role's IP. Dragging a real NIC onto a
 // base interface corrects which IF.N the topology uses (e.g. IF.4 -> IF.5),
 // rewriting the snapshot's interface labels.
+import { CosTag } from '@cube-frontend/ui-library'
 import { useLayoutEffect, useRef, useState } from 'react'
 import { roleIFPrompts } from '../../../model/roles'
-import { NIC } from '../../../model/machine'
+import { formatSpeed, NIC, pciLabel } from '../../../model/machine'
+
+const linkColor = (n: NIC): 'cyan' | 'dark' | 'default' =>
+  n.carrier === true ? 'cyan' : n.carrier === false ? 'dark' : 'default'
+const linkText = (n: NIC): string =>
+  n.carrier === true ? 'link up' : n.carrier === false ? 'link down' : 'link ?'
 import { IF, NodeConfig } from '../../../model/types'
 import { baseInterfaces, bindPort, buildChains } from './snapshotTopology'
 
@@ -224,13 +230,26 @@ export const SnapshotNetworkMapper = (props: SnapshotNetworkMapperProps) => {
               setDragIndex(k)
             }}
             onDragEnd={() => setDragIndex(null)}
-            className="secondary-body4 flex cursor-grab items-center gap-x-2 rounded-md border border-functional-border-divider bg-grey-0 px-2 py-1.5"
+            className="secondary-body4 flex cursor-grab flex-col gap-y-0.5 rounded-md border border-functional-border-divider bg-grey-0 px-2 py-1.5"
           >
-            <span className="w-10 font-semibold">IF.{k + 1}</span>
-            <span className="flex-1 truncate">
-              {[p.name, p.mac, p.speedMbps ? `${p.speedMbps}Mbps` : '']
-                .filter(Boolean)
-                .join(' · ') || '(no data)'}
+            <div className="flex items-center justify-between gap-x-2">
+              <span className="font-semibold">
+                IF.{k + 1}
+                {p.name ? (
+                  <span className="ml-1 font-normal text-functional-text-light">
+                    {p.name}
+                  </span>
+                ) : null}
+              </span>
+              <CosTag variant="stroke" color={linkColor(p)}>
+                {linkText(p)}
+              </CosTag>
+            </div>
+            <span className="truncate font-mono text-functional-text-light">
+              {p.mac || '(no mac)'}
+            </span>
+            <span className="truncate text-functional-text-light">
+              {pciLabel(p)} · {formatSpeed(p.speedMbps)}
             </span>
           </div>
         ))}

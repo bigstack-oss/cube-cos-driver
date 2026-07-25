@@ -1,5 +1,13 @@
-import { CosModal } from '@cube-frontend/ui-library'
-import { formatBytes, Machine } from '../../model/machine'
+import { CosModal, CosTag } from '@cube-frontend/ui-library'
+import { Fragment } from 'react'
+import {
+  diskMediaType,
+  formatBytes,
+  formatSpeed,
+  isOsEligible,
+  Machine,
+  pciLabel,
+} from '../../model/machine'
 
 export type MachineDetailsProps = {
   machine: Machine | null
@@ -56,32 +64,86 @@ export const MachineDetails = (props: MachineDetailsProps) => {
 
           {inv.nics && inv.nics.length > 0 && (
             <Section title={`NICs (${inv.nics.length})`}>
-              <ul className="secondary-body4 flex flex-col gap-y-0.5">
+              <div className="secondary-body4 grid w-fit grid-cols-[auto_auto_auto_auto_auto_auto] items-center gap-x-6 gap-y-1">
+                {['Interface', 'PCI (vendor · bus)', 'MAC', 'Speed', 'Link', 'State'].map(
+                  (h) => (
+                    <span
+                      key={h}
+                      className="primary-body5 text-functional-text-light"
+                    >
+                      {h}
+                    </span>
+                  ),
+                )}
                 {inv.nics.map((n, i) => (
-                  <li key={i}>
-                    {(n.name || 'nic') + ' '}
-                    {n.mac && <span>· {n.mac}</span>}
-                    {n.speedMbps ? <span> · {n.speedMbps} Mbps</span> : null}
-                    {n.up ? <span> · up</span> : null}
-                  </li>
+                  <Fragment key={i}>
+                    <span className="font-medium">{n.name || 'nic'}</span>
+                    <span>{pciLabel(n)}</span>
+                    <span className="font-mono">{n.mac || '—'}</span>
+                    <span>{formatSpeed(n.speedMbps)}</span>
+                    <CosTag
+                      variant="stroke"
+                      color={
+                        n.carrier === true
+                          ? 'cyan'
+                          : n.carrier === false
+                            ? 'dark'
+                            : 'default'
+                      }
+                    >
+                      {n.carrier === true
+                        ? 'up'
+                        : n.carrier === false
+                          ? 'down'
+                          : '—'}
+                    </CosTag>
+                    <CosTag variant="stroke" color={n.up ? 'cyan' : 'dark'}>
+                      {n.up ? 'up' : 'down'}
+                    </CosTag>
+                  </Fragment>
                 ))}
-              </ul>
+              </div>
             </Section>
           )}
 
           {inv.disks && inv.disks.length > 0 && (
             <Section title={`Disks (${inv.disks.length})`}>
-              <ul className="secondary-body4 flex flex-col gap-y-0.5">
+              <div className="secondary-body4 grid w-fit grid-cols-[auto_auto_auto_auto] items-center gap-x-6 gap-y-1">
+                <span className="primary-body5 text-functional-text-light">
+                  Disk
+                </span>
+                <span className="primary-body5 text-functional-text-light">
+                  Type
+                </span>
+                <span className="primary-body5 text-functional-text-light">
+                  Size
+                </span>
+                <span className="primary-body5 text-functional-text-light">
+                  Media
+                </span>
                 {inv.disks.map((d, i) => (
-                  <li key={i}>
-                    {(d.name || d.model || 'disk') + ' '}
-                    {d.type && <span>· {d.type}</span>}
-                    {d.sizeBytes ? (
-                      <span> · {formatBytes(d.sizeBytes)}</span>
-                    ) : null}
-                  </li>
+                  <Fragment key={i}>
+                    <span className="flex flex-col">
+                      <span className="font-medium">
+                        {d.name || d.model || 'disk'}
+                      </span>
+                      {d.model && d.name && (
+                        <span className="text-functional-text-light">
+                          {d.model}
+                        </span>
+                      )}
+                    </span>
+                    <span>{d.type || '—'}</span>
+                    <span>{d.sizeBytes ? formatBytes(d.sizeBytes) : '—'}</span>
+                    <CosTag
+                      variant="stroke"
+                      color={isOsEligible(d) ? 'cyan' : 'dark'}
+                    >
+                      {diskMediaType(d)}
+                    </CosTag>
+                  </Fragment>
                 ))}
-              </ul>
+              </div>
             </Section>
           )}
 
