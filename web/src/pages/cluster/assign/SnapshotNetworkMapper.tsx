@@ -153,16 +153,29 @@ export const SnapshotNetworkMapper = (props: SnapshotNetworkMapperProps) => {
 
       const out: Path[] = []
 
-      // Port -> base bindings: simple grey elbow on the left.
-      bases.forEach((b) => {
-        const idx = portIndexOf(b)
-        if (idx < 0 || idx >= ports.length) return
-        const a = point(`port-${idx}`, 'r')
-        const bb = point(`base-${b.id}`, 'l')
-        if (!a || !bb) return
-        const mid = (a.x + bb.x) / 2
+      // Port -> base bindings: each gets its own staggered vertical channel
+      // (same routing idea as the role bus) so the elbows nest instead of
+      // stacking on one shared column and tangling.
+      const pbs = bases
+        .map((b) => {
+          const idx = portIndexOf(b)
+          if (idx < 0 || idx >= ports.length) return null
+          const a = point(`port-${idx}`, 'r')
+          const bb = point(`base-${b.id}`, 'l')
+          return a && bb ? { ax: a.x, ay: a.y, bx: bb.x, by: bb.y } : null
+        })
+        .filter((p): p is { ax: number; ay: number; bx: number; by: number } => !!p)
+      const pbLeft = pbs.length ? Math.max(...pbs.map((p) => p.ax)) : 0
+      const pbGeo = pbs.map((p, i) => ({ ...p, chanX: pbLeft + 12 + i * 8 }))
+      const pbVerts: Vert[] = pbGeo.map((g) => ({ x: g.chanX, y0: g.ay, y1: g.by }))
+      pbGeo.forEach((g) => {
+        const own = [g.chanX]
         out.push({
-          d: `M ${a.x} ${a.y} L ${mid} ${a.y} L ${mid} ${bb.y} L ${bb.x} ${bb.y}`,
+          d:
+            `M ${g.ax} ${g.ay}` +
+            hHops(g.ay, g.ax, g.chanX, pbVerts, own) +
+            ` L ${g.chanX} ${g.by}` +
+            hHops(g.by, g.chanX, g.bx, pbVerts, own),
           color: PORT_COLOR,
           lx: 0,
           ly: 0,

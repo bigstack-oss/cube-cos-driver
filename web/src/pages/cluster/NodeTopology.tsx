@@ -50,19 +50,23 @@ const Chip = ({ label, sub }: { label: string; sub?: string }) => (
   </div>
 )
 
-const ChainRow = ({ chain, gateway, defaultIfId }: { chain: RoleChain; gateway: string; defaultIfId?: string }) => {
+const ChainRow = ({ chain, node, gateway, defaultIfId }: { chain: RoleChain; node: NodeConfig; gateway: string; defaultIfId?: string }) => {
   const r = ROLE[chain.role]
   const base = chain.baseIf
   const isDefault = chain.roleIf?.id === defaultIfId
+  const members = (chain.bond?.slaves ?? [])
+    .map((sid) => node.initIFs.find((f) => f.id === sid)?.name)
+    .filter((x): x is string => !!x)
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-2 py-2.5">
-      {/* physical base NIC */}
-      <Chip label={base?.name ?? '—'} sub="physical NIC" />
-      {chain.bond && (
-        <>
-          <Arrow />
-          <Chip label={chain.bond.name} sub="bond" />
-        </>
+      {/* physical NIC(s): a bond shows its member ports (IF.2 + IF.3) */}
+      {chain.bond ? (
+        <Chip
+          label={`${chain.bond.name} (LACP)`}
+          sub={members.length ? members.join(' + ') : 'bond'}
+        />
+      ) : (
+        <Chip label={base?.name ?? '—'} sub="physical NIC" />
       )}
       {chain.vlan && (
         <>
@@ -124,7 +128,7 @@ export const NodeTopology = (props: NodeTopologyProps) => {
       {/* interface chains */}
       <div className="divide-y divide-functional-border-divider px-5">
         {chains.map((c) => (
-          <ChainRow key={c.role} chain={c} gateway={node.defaultGateway} defaultIfId={node.defaultIF?.id} />
+          <ChainRow key={c.role} chain={c} node={node} gateway={node.defaultGateway} defaultIfId={node.defaultIF?.id} />
         ))}
       </div>
 
