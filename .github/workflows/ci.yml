@@ -43,5 +43,5 @@ jobs:
         with:
           name: binaries
           path: |
-            bin/cube-cos-snapshot
+            bin/cube-cos-driver
             bin/phone-home-agent

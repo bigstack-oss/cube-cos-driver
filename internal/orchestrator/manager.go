@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -41,6 +42,9 @@ type Manager struct {
 	sel      SELObserver
 	gate     GateWriter
 	cfg      Config
+	// manualGate holds the peers at the apply gate: the master applying does NOT
+	// auto-release them; the operator releases each via ReleaseNode.
+	manualGate bool
 
 	mu      sync.Mutex
 	deploys map[string]*Deploy
@@ -228,6 +232,39 @@ func (m *Manager) SetSELObserver(o SELObserver) { m.sel = o }
 // (nil = disabled).
 func (m *Manager) SetGateWriter(g GateWriter) { m.gate = g }
 
+// SetManualGate enables operator-gated, one-node-at-a-time apply release: the
+// master applying no longer auto-releases the peers; each is released by hand
+// via ReleaseNode after the operator confirms.
+func (m *Manager) SetManualGate(b bool) { m.manualGate = b }
+
+// ReleaseNode writes the master-done "go" SEL to a single node's BMC, releasing
+// just that node to apply. Used for manual, sequential (one-by-one) reimage.
+func (m *Manager) ReleaseNode(clusterID, hostname string) error {
+	m.mu.Lock()
+	var target Node
+	found := false
+	if byHost := m.nodes[clusterID]; byHost != nil {
+		if n, ok := byHost[hostname]; ok {
+			target, found = n, true
+		}
+	}
+	gate := m.gate
+	m.mu.Unlock()
+	if !found {
+		return fmt.Errorf("node %s not in deploy %s", hostname, clusterID)
+	}
+	if gate == nil {
+		return errors.New("no gate writer configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := gate.WriteGate(ctx, target); err != nil {
+		return fmt.Errorf("release %s via SEL go: %w", hostname, err)
+	}
+	log.Printf("manual release %s: wrote 'go' SEL to %s", hostname, target.BMCAddress)
+	return nil
+}
+
 // HasActiveDeploy reports whether a cluster has a non-terminal deploy running —
 // used to resolve which of a multi-assigned machine's clusters is deploying.
 func (m *Manager) HasActiveDeploy(clusterID string) bool {
@@ -261,6 +298,10 @@ func (m *Manager) Master(clusterID string) string {
 func (m *Manager) Applied(clusterID, hostname string, isMaster bool) {
 	m.set(clusterID, hostname, func(nd *NodeDeploy) { nd.State = StateDone })
 	if !isMaster {
+		return
+	}
+	if m.manualGate {
+		log.Printf("master %s applied; manual gate on — peers held for operator release", hostname)
 		return
 	}
 	m.mu.Lock()

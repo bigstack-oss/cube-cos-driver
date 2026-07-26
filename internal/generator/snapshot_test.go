@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/model"
+	"github.com/bigstack-oss/cube-cos-driver/internal/model"
 )
 
 func readZip(t *testing.T, data []byte) map[string]string {

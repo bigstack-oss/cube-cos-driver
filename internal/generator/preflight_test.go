@@ -3,7 +3,7 @@ package generator
 import (
 	"testing"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/model"
+	"github.com/bigstack-oss/cube-cos-driver/internal/model"
 )
 
 func TestMaskToPrefixAndCIDR(t *testing.T) {

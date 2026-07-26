@@ -1,4 +1,4 @@
-# cube-cos-snapshot Implementation Plan
+# cube-cos-driver Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -69,8 +69,8 @@ Cluster id used on disk/API = `id[len-12:]` ("short id").
 ### Task 1: Go scaffold — module, healthz server, Makefile
 
 **Files:**
-- Create: `go.mod` (module `github.com/bigstack-oss/cube-cos-snapshot`, `go 1.24`)
-- Create: `cmd/cube-cos-snapshot/main.go`
+- Create: `go.mod` (module `github.com/bigstack-oss/cube-cos-driver`, `go 1.24`)
+- Create: `cmd/cube-cos-driver/main.go`
 - Create: `internal/api/server.go`
 - Create: `Makefile`, `.gitignore`
 - Test: `internal/api/server_test.go`
@@ -126,7 +126,7 @@ func New(cfg Config) http.Handler {
 ```
 
 `main.go`: parse flags (also honor env `PORT`, `DATA_DIR`, `EXPORT_DIR` if set), `os.MkdirAll(dataDir, 0o755)`, `http.ListenAndServe(":"+port, api.New(...))`, log listen address.
-`Makefile` targets: `build` (`CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o bin/cube-cos-snapshot ./cmd/cube-cos-snapshot`), `test` (`go vet ./... && go test ./...`).
+`Makefile` targets: `build` (`CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o bin/cube-cos-driver ./cmd/cube-cos-driver`), `test` (`go vet ./... && go test ./...`).
 `.gitignore`: `bin/`, `storage/`, `node_modules/`, `web/dist/`, `internal/webui/dist/`.
 
 - [ ] **Step 4:** `go test ./...` → PASS; `make build` → binary exists
@@ -213,13 +213,13 @@ Fixtures: `single-cc` = 1 non-HA control-converged node, plain init IFs; `ha3` =
 - [ ] **Step 2:** `tools/gen-golden.mjs` — runs **inside the legacy repo** so it can import its modules:
 
 ```js
-// usage: cd /root/cube-snapshot-generator && node /root/cube-cos-snapshot/tools/gen-golden.mjs
+// usage: cd /root/cube-snapshot-generator && node /root/cube-cos-driver/tools/gen-golden.mjs
 import fs from 'fs'; import path from 'path';
 import { createRequire } from 'module';
 const require = createRequire('/root/cube-snapshot-generator/');
 const { getCubsysYaml, getNetworkYaml, getTimeYaml } = require('./server/routers/getYaml.js');
 const { getControlInfo } = require('./server/routers/utils.js');
-const SRC = '/root/cube-cos-snapshot/internal/generator/testdata';
+const SRC = '/root/cube-cos-driver/internal/generator/testdata';
 for (const f of fs.readdirSync(path.join(SRC, 'fixtures'))) {
   const d = JSON.parse(fs.readFileSync(path.join(SRC, 'fixtures', f)));
   const ctl = getControlInfo(d.nodeData);
@@ -372,7 +372,7 @@ On-disk layout (same as legacy): `<DataDir>/<shortID>/{clusterDetail.json, <host
 ### Task 8: SPA embedding & static serving
 
 **Files:**
-- Create: `internal/webui/webui.go`, `internal/webui/dist/index.html` (committed placeholder: `<!doctype html><title>cube-cos-snapshot</title><p>UI not built — run make web`)
+- Create: `internal/webui/webui.go`, `internal/webui/dist/index.html` (committed placeholder: `<!doctype html><title>cube-cos-driver</title><p>UI not built — run make web`)
 - Modify: `internal/api/server.go`, `Makefile`
 - Test: `internal/api/static_test.go`
 
@@ -405,7 +405,7 @@ Key contents:
 
 - [ ] **Step 1:** add submodule; write workspace + package files.
 - [ ] **Step 2 (verify):** `source /root/.nvm/nvm.sh && nvm use 24 && corepack enable && pnpm install` → succeeds; `pnpm -C web build` → dist with hashed assets; `pnpm -C web dev` briefly + curl HTML.
-- [ ] **Step 3:** `make all` → binary; `./bin/cube-cos-snapshot --port 3199 &` → `curl localhost:3199/` returns built index (contains `/assets/`), `curl localhost:3199/healthz` ok; kill it.
+- [ ] **Step 3:** `make all` → binary; `./bin/cube-cos-driver --port 3199 &` → `curl localhost:3199/` returns built index (contains `/assets/`), `curl localhost:3199/healthz` ok; kill it.
 - [ ] **Step 4:** commit `feat: web workspace consuming cube-cos-ui via submodule`
 
 ---
@@ -528,7 +528,7 @@ Key contents:
 **Files:**
 - Create: `.github/workflows/ci.yml`
 
-- [ ] **Step 1:** workflow on push/PR: checkout with `submodules: recursive`; setup-go (from go.mod) → `make test`; setup-node 24 + corepack pnpm → `pnpm install`, `pnpm -C web tsc`, `pnpm -C web test`, `pnpm -C web build`; then `make build` (with real dist copied) + `bash scripts/smoke.sh`; upload `bin/cube-cos-snapshot` artifact.
+- [ ] **Step 1:** workflow on push/PR: checkout with `submodules: recursive`; setup-go (from go.mod) → `make test`; setup-node 24 + corepack pnpm → `pnpm install`, `pnpm -C web tsc`, `pnpm -C web test`, `pnpm -C web build`; then `make build` (with real dist copied) + `bash scripts/smoke.sh`; upload `bin/cube-cos-driver` artifact.
 - [ ] **Step 2:** push branch, open **draft** PR (repo has no template yet — write what/why + link spec), watch checks green.
 - [ ] **Step 3:** commit fixes until green.
 

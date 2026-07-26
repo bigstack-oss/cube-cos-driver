@@ -1,5 +1,5 @@
 {
-  "name": "cube-cos-snapshot",
+  "name": "cube-cos-driver",
   "private": true,
   "license": "Apache-2.0",
   "engines": {

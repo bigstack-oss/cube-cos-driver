@@ -9,7 +9,7 @@ import (
 
 	goipmi "github.com/bougou/go-ipmi"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/inventory"
+	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
 )
 
 var errRedfishNoSystems = errors.New("redfish: no systems returned")

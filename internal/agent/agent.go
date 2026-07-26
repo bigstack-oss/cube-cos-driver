@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/model"
+	"github.com/bigstack-oss/cube-cos-driver/internal/model"
 )
 
 type CheckinRequest struct {

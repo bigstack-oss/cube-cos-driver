@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/generator"
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/model"
+	"github.com/bigstack-oss/cube-cos-driver/internal/generator"
+	"github.com/bigstack-oss/cube-cos-driver/internal/model"
 )
 
 var ErrNotFound = errors.New("not found")

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/inventory"
+	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
 )
 
 type fake struct {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/inventory"
+	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
 	"github.com/stmcginnis/gofish"
 	"github.com/stmcginnis/gofish/schemas"
 )

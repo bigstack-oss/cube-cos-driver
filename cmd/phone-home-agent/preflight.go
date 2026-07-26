@@ -17,7 +17,7 @@ import (
 
 	goipmi "github.com/bougou/go-ipmi"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/model"
+	"github.com/bigstack-oss/cube-cos-driver/internal/model"
 )
 
 // cubeManufacturerID marks our OEM SEL records so the server's observer can

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/secret"
+	"github.com/bigstack-oss/cube-cos-driver/internal/secret"
 )
 
 func newStore(t *testing.T) *Store {

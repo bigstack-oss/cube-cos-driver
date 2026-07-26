@@ -16,7 +16,7 @@ the data-plane network is being reconfigured.
 
 ## Two binaries
 
-1. `cmd/cube-cos-snapshot` — the server (SPA + snapshot generator + inventory +
+1. `cmd/cube-cos-driver` — the server (SPA + snapshot generator + inventory +
    orchestrator API), runs on the pxeserver.
 2. `cmd/phone-home-agent` — one static binary that runs in **two contexts**:
    - `--preflight` inside the **PXE installer** (RAM), before `hex_install
@@ -183,7 +183,7 @@ Existing deploy plan/start/status/cancel endpoints unchanged.
   carries `iproute`, `iputils`, `hwclock` (util-linux) and loads `bonding`,
   `8021q`, `ipmi_si`, `ipmi_devintf`.
 - OS image: install the agent + a systemd unit gated on the `configured` marker
-  and a `snapshot_server=` kernel arg.
+  and a `driver_server=` kernel arg.
 
 ## Testing
 
