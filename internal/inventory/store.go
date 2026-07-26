@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/secret"
+	"github.com/bigstack-oss/cube-cos-driver/internal/secret"
 )
 
 var ErrNotFound = errors.New("machine not found")

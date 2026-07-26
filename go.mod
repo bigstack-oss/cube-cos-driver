@@ -1,4 +1,4 @@
-module github.com/bigstack-oss/cube-cos-snapshot
+module github.com/bigstack-oss/cube-cos-driver
 
 go 1.25.0
 

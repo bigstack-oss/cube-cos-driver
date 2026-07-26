@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/agent"
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/generator"
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/inventory"
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/orchestrator"
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/storage"
+	"github.com/bigstack-oss/cube-cos-driver/internal/agent"
+	"github.com/bigstack-oss/cube-cos-driver/internal/generator"
+	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
+	"github.com/bigstack-oss/cube-cos-driver/internal/orchestrator"
+	"github.com/bigstack-oss/cube-cos-driver/internal/storage"
 )
 
 type deployHandlers struct {
@@ -26,6 +26,7 @@ func (h *deployHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/clusters/{id}/deploy", h.start)
 	mux.HandleFunc("GET /api/v1/clusters/{id}/deploy", h.status)
 	mux.HandleFunc("POST /api/v1/clusters/{id}/deploy/cancel", h.cancel)
+	mux.HandleFunc("POST /api/v1/clusters/{id}/deploy/release/{hostname}", h.release)
 	mux.HandleFunc("POST /api/v1/agents/checkin", h.checkin)
 	mux.HandleFunc("POST /api/v1/agents/report", h.report)
 	mux.HandleFunc("POST /api/v1/agents/preflight/checkin", h.preflightCheckin)
@@ -287,6 +288,24 @@ func (h *deployHandlers) cancel(w http.ResponseWriter, r *http.Request) {
 	}
 	h.mgr.Cancel(id)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "cancelled"})
+}
+
+// release manually releases one node's apply gate (manual one-by-one reimage):
+// writes the master-done "go" SEL to that node's BMC so it applies.
+func (h *deployHandlers) release(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathValue(w, r, "id")
+	if !ok {
+		return
+	}
+	host, ok := pathValue(w, r, "hostname")
+	if !ok {
+		return
+	}
+	if err := h.mgr.ReleaseNode(id, host); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "released", "hostname": host})
 }
 
 // checkin matches an agent's MACs to an appointment and returns its snapshot

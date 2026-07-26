@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"regexp"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/inventory"
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/model"
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/storage"
+	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
+	"github.com/bigstack-oss/cube-cos-driver/internal/model"
+	"github.com/bigstack-oss/cube-cos-driver/internal/storage"
 )
 
 var namePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/model"
+	"github.com/bigstack-oss/cube-cos-driver/internal/model"
 )
 
 func diff(want, got string) string {

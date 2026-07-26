@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/discovery"
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/inventory"
+	"github.com/bigstack-oss/cube-cos-driver/internal/discovery"
+	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
 )
 
 type fakeDiscoverer struct {

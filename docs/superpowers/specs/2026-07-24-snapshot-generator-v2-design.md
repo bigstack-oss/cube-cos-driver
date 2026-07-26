@@ -1,4 +1,4 @@
-# cube-cos-snapshot (Cube Snapshot Generator v2) — Design
+# cube-cos-driver (Cube Snapshot Generator v2) — Design
 
 Date: 2026-07-24
 Status: Approved (Travis, 2026-07-24)
@@ -44,15 +44,15 @@ Two deployment targets:
 | Decision | Choice |
 | --- | --- |
 | Backend / artifact | Go single binary, SPA embedded via `go:embed` |
-| Code location | New repo `bigstack-oss/cube-cos-snapshot` (this repo); `cube-cos-ui` as git submodule; legacy `cube-snapshot-generator` left untouched (archive later) |
+| Code location | New repo `bigstack-oss/cube-cos-driver` (this repo); `cube-cos-ui` as git submodule; legacy `cube-snapshot-generator` left untouched (archive later) |
 | Scope | Feature parity minus the Swagger UI page (+ its basic-auth) |
 | API compatibility | Not required — clean redesign; `clusterDetail` JSON schema kept unchanged |
 
 ## Repo layout
 
 ```
-cube-cos-snapshot/
-├── cmd/cube-cos-snapshot/main.go
+cube-cos-driver/
+├── cmd/cube-cos-driver/main.go
 ├── internal/
 │   ├── api/          # REST handlers, SPA serving
 │   ├── generator/    # YAML render + zip assembly; template embedded (go:embed)

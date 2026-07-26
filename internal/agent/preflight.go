@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/model"
+	"github.com/bigstack-oss/cube-cos-driver/internal/model"
 )
 
 // PreflightDeps are the injected side effects of the installer-phase (pre-restore)

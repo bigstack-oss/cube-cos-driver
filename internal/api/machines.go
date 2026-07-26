@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/discovery"
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/inventory"
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/orchestrator"
+	"github.com/bigstack-oss/cube-cos-driver/internal/discovery"
+	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
+	"github.com/bigstack-oss/cube-cos-driver/internal/orchestrator"
 )
 
 type machineHandlers struct {

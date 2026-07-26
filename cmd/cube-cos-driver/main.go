@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/api"
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/orchestrator"
+	"github.com/bigstack-oss/cube-cos-driver/internal/api"
+	"github.com/bigstack-oss/cube-cos-driver/internal/orchestrator"
 )
 
 func envOr(key, def string) string {
@@ -50,7 +50,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("init: %v", err)
 	}
-	log.Printf("cube-cos-snapshot listening on :%s (data-dir=%s export-dir=%s)", *port, *dataDir, *exportDir)
+	log.Printf("cube-cos-driver listening on :%s (data-dir=%s export-dir=%s)", *port, *dataDir, *exportDir)
 	if err := http.ListenAndServe(":"+*port, handler); err != nil {
 		log.Fatal(err)
 	}

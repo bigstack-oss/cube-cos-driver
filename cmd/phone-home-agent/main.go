@@ -24,7 +24,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/agent"
+	"github.com/bigstack-oss/cube-cos-driver/internal/agent"
 )
 
 const configuredMarker = "/etc/appliance/state/configured"
@@ -62,14 +62,14 @@ func envOr(key, def string) string {
 	return def
 }
 
-// serverFromCmdline reads snapshot_server=<url> from /proc/cmdline, if present.
+// serverFromCmdline reads driver_server=<url> from /proc/cmdline, if present.
 func serverFromCmdline() string {
 	data, err := os.ReadFile("/proc/cmdline")
 	if err != nil {
 		return ""
 	}
 	for _, tok := range strings.Fields(string(data)) {
-		if v, ok := strings.CutPrefix(tok, "snapshot_server="); ok {
+		if v, ok := strings.CutPrefix(tok, "driver_server="); ok {
 			return v
 		}
 	}
@@ -316,7 +316,7 @@ func reportApplyFailed(srv, cluster, host, msg string) {
 }
 
 func main() {
-	server := flag.String("server", envOr("SNAPSHOT_SERVER", ""), "snapshot server URL (default: snapshot_server= from kernel cmdline)")
+	server := flag.String("server", envOr("DRIVER_SERVER", ""), "snapshot server URL (default: driver_server= from kernel cmdline)")
 	poll := flag.Duration("poll", 15*time.Second, "check-in poll interval")
 	preflight := flag.Bool("preflight", false, "installer-phase network preflight (pre-restore); blocks until green light 1")
 	restoreDone := flag.Bool("restore-done", false, "report restore-complete to the server (installer, just before reboot) and exit")

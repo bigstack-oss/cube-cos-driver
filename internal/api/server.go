@@ -3,14 +3,15 @@ package api
 
 import (
 	"net/http"
+	"os"
 	"path/filepath"
 
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/discovery"
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/inventory"
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/orchestrator"
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/secret"
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/storage"
-	"github.com/bigstack-oss/cube-cos-snapshot/internal/webui"
+	"github.com/bigstack-oss/cube-cos-driver/internal/discovery"
+	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
+	"github.com/bigstack-oss/cube-cos-driver/internal/orchestrator"
+	"github.com/bigstack-oss/cube-cos-driver/internal/secret"
+	"github.com/bigstack-oss/cube-cos-driver/internal/storage"
+	"github.com/bigstack-oss/cube-cos-driver/internal/webui"
 )
 
 type Config struct {
@@ -65,6 +66,9 @@ func New(cfg Config) (http.Handler, error) {
 		// release non-masters after the master applies by writing the "go" SEL.
 		mgr.SetSELObserver(orchestrator.IPMISELObserver{})
 		mgr.SetGateWriter(orchestrator.IPMIGateWriter{})
+		if os.Getenv("MANUAL_GATE") == "1" {
+			mgr.SetManualGate(true)
+		}
 	}
 
 	mux := http.NewServeMux()

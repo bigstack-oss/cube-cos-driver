@@ -1,4 +1,4 @@
-# cube-cos-snapshot
+# cube-cos-driver
 
 Cube Snapshot Generator v2 — a web tool that generates **CubeCOS cluster
 snapshots**: per-node configuration bundles (`<hostname>.snapshot`) that a
@@ -21,13 +21,13 @@ old tool import cleanly.
 Requirements (build-time only): Go ≥ 1.24, Node ≥ 24.15, pnpm ≥ 10.33.
 
 ```bash
-git clone --recurse-submodules https://github.com/bigstack-oss/cube-cos-snapshot.git
-cd cube-cos-snapshot
+git clone --recurse-submodules https://github.com/bigstack-oss/cube-cos-driver.git
+cd cube-cos-driver
 
 # Node 24 + pnpm via nvm/corepack if needed:
 #   nvm install 24 && corepack enable
 
-make all        # build SPA → embed → bin/cube-cos-snapshot
+make all        # build SPA → embed → bin/cube-cos-driver
 make test       # go vet + go tests
 bash scripts/smoke.sh   # full end-to-end check
 ```
@@ -37,7 +37,7 @@ bash scripts/smoke.sh   # full end-to-end check
 ### Team service
 
 ```bash
-./bin/cube-cos-snapshot --port 3001 --data-dir /var/lib/cube-cos-snapshot
+./bin/cube-cos-driver --port 3001 --data-dir /var/lib/cube-cos-driver
 ```
 
 Open `http://<host>:3001/`. Clusters saved in the UI are generated and
@@ -51,7 +51,7 @@ then the `phone-home-agent` on the freshly-imaged node checks in, syncs its
 clock, runs a network preflight, and applies its appointed snapshot — reporting
 progress live. Deploy is plan-first and confirm-gated (it powers real servers).
 
-Two binaries are built (`make all`): `bin/cube-cos-snapshot` (server) and
+Two binaries are built (`make all`): `bin/cube-cos-driver` (server) and
 `bin/phone-home-agent` (ships in the CubeCOS image). For demos without
 hardware, run the server with `--simulate` to use a fake executor.
 
@@ -73,8 +73,8 @@ no authentication yet, so run it on a trusted/isolated management network.
 ### pxeserver mode
 
 ```bash
-./bin/cube-cos-snapshot --port 3001 \
-  --data-dir /var/lib/cube-cos-snapshot \
+./bin/cube-cos-driver --port 3001 \
+  --data-dir /var/lib/cube-cos-driver \
   --export-dir /var/ftpboot
 ```
 
@@ -92,14 +92,14 @@ Flags can also be set via `PORT`, `DATA_DIR`, `EXPORT_DIR` env vars.
 ## Development
 
 ```bash
-go run ./cmd/cube-cos-snapshot                # API on :3001
+go run ./cmd/cube-cos-driver                # API on :3001
 pnpm install && pnpm -C web dev               # Vite dev server, proxies /api → :3001
 pnpm -C web test && pnpm -C web tsc           # web tests + typecheck
 ```
 
 ## Repo layout
 
-- `cmd/cube-cos-snapshot`, `internal/` — Go server: REST API
+- `cmd/cube-cos-driver`, `internal/` — Go server: REST API
   ([docs/api.md](docs/api.md)), snapshot generator (byte-parity with legacy;
   see `internal/generator/testdata/golden`), on-disk store, embedded SPA.
 - `web/` — the SPA (React 19 + TS + Vite + Tailwind + `@cube-frontend/ui-library`).

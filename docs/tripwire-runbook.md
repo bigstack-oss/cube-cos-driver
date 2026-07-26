@@ -11,7 +11,7 @@ ops + a first-ever end-to-end hardware run).
 
 ## What is done (software, validated here)
 
-- `cube-cos-snapshot` server + `phone-home-agent` build; `go test ./...`, 47 web
+- `cube-cos-driver` server + `phone-home-agent` build; `go test ./...`, 47 web
   tests, and `scripts/smoke.sh` (GL1 barrier → apply → done) all green.
 - cubecos integration committed: `core/snapshot-agent` (build + ship agent),
   `hex` `feat/zero-touch-orchestrator` (installer preflight + agent in PXE
@@ -31,7 +31,7 @@ The cubecos build clones the agent from GitHub. Until the work merges to the
 default branch, push the feature branch and build with `AGENT_BRANCH`:
 
 ```
-cd /root/cube-cos-snapshot && git push origin feat/orchestrator   # SSH remote
+cd /root/cube-cos-driver && git push origin feat/orchestrator   # SSH remote
 cd /root/cubecos && git push origin feat/zero-touch-orchestrator
 cd /root/cubecos/hex && git push origin feat/zero-touch-orchestrator
 ```
@@ -59,17 +59,17 @@ The lab already runs PXE/DHCP on the Synology NAS (10.32.0.200) on the flat
 where Synology serves them, and set the PXE entry's kernel cmdline to include:
 
 ```
-autoinstall snapshot_server=http://<dev-box-ip>:3299
+autoinstall driver_server=http://<dev-box-ip>:3299
 ```
 
-`autoinstall` arms `hex_autoinstall`; `snapshot_server=` tells the agent where
+`autoinstall` arms `hex_autoinstall`; `driver_server=` tells the agent where
 the SPA is (both the installer preflight and the OS-phase apply).
 
 ## Step 3 — run the SPA server on the dev box
 
 ```
-cd /root/cube-cos-snapshot && make all
-./bin/cube-cos-snapshot --port 3299 --data-dir /var/lib/cube-cos-snapshot
+cd /root/cube-cos-driver && make all
+./bin/cube-cos-driver --port 3299 --data-dir /var/lib/cube-cos-driver
 # real hardware mode (IPMI executor + SEL observer) is automatic when
 # --simulate is absent.
 ```
@@ -111,7 +111,7 @@ service group `ok`. Do 1cc first; only if it passes, repeat Steps 4–5 for
 The whole orchestration (minus real IPMI/apply) runs against a fake executor:
 
 ```
-./bin/cube-cos-snapshot --port 3299 --simulate
+./bin/cube-cos-driver --port 3299 --simulate
 bash scripts/smoke.sh    # scripted GL1 barrier → apply → done
 ```
 

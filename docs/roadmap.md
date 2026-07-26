@@ -73,7 +73,7 @@ insurance worth adding.
   network preflight + snapshot apply, reported back). Real IPMI/agent behind
   interfaces; `--simulate` for demos.
 - **Remaining enabler (cubecos)**: packaging that installs the agent's systemd
-  unit (gated on unconfigured) + `snapshot_server=` kernel arg into the image;
+  unit (gated on unconfigured) + `driver_server=` kernel arg into the image;
   per-MAC pxelinux binding. Until then, drive real hardware on the lab.
 
 ## Gaps to build (this repo)
@@ -91,7 +91,7 @@ insurance worth adding.
    exported; secrets must not ride along). Tight file perms at minimum; UI
    auth story needs revisiting once the app can power servers off.
 4. **Node↔snapshot binding on the PXE side**: per-MAC `pxelinux.cfg/01-<mac>`
-   entries and/or kernel args (`snapshot_server=…`, cluster token) written by
+   entries and/or kernel args (`driver_server=…`, cluster token) written by
    the app, same pattern as `--export-dir`.
 
 ## Enabler outside this repo (cubecos)

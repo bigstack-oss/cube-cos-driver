@@ -12,7 +12,7 @@ make all
 [ -x bin/phone-home-agent ] || { echo "SMOKE FAIL: phone-home-agent not built" >&2; exit 1; }
 
 # --simulate: deploy uses the fake executor (no real IPMI) so smoke is hermetic.
-./bin/cube-cos-snapshot --port "$PORT" --data-dir "$TMP/data" --export-dir "$TMP/export" --simulate &
+./bin/cube-cos-driver --port "$PORT" --data-dir "$TMP/data" --export-dir "$TMP/export" --simulate &
 SRV_PID=$!
 
 for i in $(seq 1 30); do
