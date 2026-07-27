@@ -62,3 +62,23 @@ func (c Combined) Discover(ctx context.Context, t Target) (inventory.Inventory, 
 func Default() Discoverer {
 	return Combined{Primary: RedfishDiscoverer{}, Secondary: IPMIDiscoverer{}}
 }
+
+// Simulated returns canned hardware facts without contacting a BMC — the
+// discovery counterpart to the fake deploy executor. Used under --simulate so
+// demos and the hermetic smoke test can register machines with no real IPMI.
+type Simulated struct{}
+
+func (Simulated) Discover(_ context.Context, t Target) (inventory.Inventory, error) {
+	return inventory.Inventory{
+		Source:       "simulated",
+		Manufacturer: "Simulated",
+		Model:        "cube-cos-driver-sim",
+		Serial:       "SIM-" + t.Address,
+		CPUModel:     "Simulated Xeon",
+		CPUCount:     2,
+		CPUCores:     32,
+		MemoryBytes:  128 * 1024 * 1024 * 1024,
+		NICs:         []inventory.NIC{{Name: "eth0", MAC: "02:00:00:00:00:01", SpeedMbps: 10000, Up: true}},
+		Disks:        []inventory.Disk{{Name: "sda", Model: "SIM-SSD", SizeBytes: 480 * 1024 * 1024 * 1024, Type: "SSD"}},
+	}, nil
+}
