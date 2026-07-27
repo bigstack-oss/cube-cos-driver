@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bigstack-oss/cube-cos-driver/internal/api"
+	"github.com/bigstack-oss/cube-cos-driver/internal/discovery"
 	"github.com/bigstack-oss/cube-cos-driver/internal/orchestrator"
 )
 
@@ -44,7 +45,8 @@ func main() {
 	if *simulate {
 		cfg.DeployExecutor = orchestrator.NewFakeExecutor()
 		cfg.DeployConfig = orchestrator.Config{PollInterval: 800 * time.Millisecond, StageTimeout: time.Minute, PowerStagger: 5 * time.Second}
-		log.Printf("deploy simulation mode: using fake executor (no real IPMI)")
+		cfg.Discoverer = discovery.Simulated{}
+		log.Printf("deploy simulation mode: using fake executor + simulated BMC discovery (no real IPMI)")
 	}
 	handler, err := api.New(cfg)
 	if err != nil {
