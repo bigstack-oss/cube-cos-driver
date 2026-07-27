@@ -1,20 +1,22 @@
 # cube-cos-driver
 
-Cube Snapshot Generator v2 — a web tool that generates **CubeCOS cluster
-snapshots**: per-node configuration bundles (`<hostname>.snapshot`) that a
-freshly imaged node applies in one step (`snapshot pull` + `snapshot apply`)
-instead of walking through first-time setup.
+**Zero-touch installer for CubeCOS clusters** — generate each node's config
+snapshot, inventory the bare metal over its BMC, then drive the whole fleet
+from power-on to a finalized, health-checked cluster with no per-node console
+work. Generic provisioners hand you a booted OS and stop; the driver runs
+CubeCOS's own `snapshot_apply` → `set_ready` → `cluster check` all-ok.
 
 The whole app ships as **one static Go binary** with the React SPA (built on
 [`cube-cos-ui`](https://github.com/bigstack-oss/cube-cos-ui)'s
-`@cube-frontend/ui-library`) embedded. No runtime dependencies — air-gap
-friendly, and small enough to embed in the CubeCOS **pxeserver** image.
+`@cube-frontend/ui-library`) embedded — no runtime dependencies, air-gap
+friendly, and small enough to embed in the CubeCOS **pxeserver** image
+alongside the `phone-home-agent` that runs on each node.
 
-This replaces the legacy
+It began as v2 of the
 [`cube-snapshot-generator`](https://github.com/bigstack-oss/cube-snapshot-generator)
-(React + Carbon + Express). The generated YAML is byte-identical (golden
-tests capture the legacy output), and `clusterDetail.json` exports from the
-old tool import cleanly.
+(React + Carbon + Express); snapshot generation stays byte-identical (golden
+tests capture the legacy YAML) and old `clusterDetail.json` exports import
+cleanly.
 
 ## Build
 
