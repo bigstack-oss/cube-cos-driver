@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -83,5 +84,40 @@ func TestDecodeCubeSELFiltersForeignRecords(t *testing.T) {
 	got := decodeCubeSEL(mkSEL(cubeManufacturerID, 0x21, 0x01, "d"))
 	if got == nil || got.Phase != "applied" || got.Result != "ok" || got.Detail != "d" {
 		t.Fatalf("decode = %+v", got)
+	}
+}
+
+// fakeSELObserver returns a canned status for every node.
+type fakeSELObserver struct{ s *SELStatus }
+
+func (f fakeSELObserver) Observe(context.Context, Node) (*SELStatus, error) { return f.s, nil }
+
+func TestPollSELIgnoresRecordsFromAPreviousDeploy(t *testing.T) {
+	m := newTestManager(t, NewFakeExecutor())
+	// A terminal record stamped an hour ago — i.e. left over from a prior run.
+	stale := &SELStatus{Phase: "done", Result: "ok", At: time.Now().Add(-time.Hour)}
+	m.SetSELObserver(fakeSELObserver{s: stale})
+	m.Start("cl1", []Node{{Hostname: "cube-1", MachineID: "m1"}}, "cube-1", nil)
+	waitFor(t, m, "cl1", "cube-1", StateImaged)
+
+	// Give pollSEL several ticks: the stale record must never complete the node.
+	time.Sleep(50 * time.Millisecond)
+	if got := m.state("cl1", "cube-1"); got == StateDone {
+		t.Fatal("stale SEL record from a previous deploy completed a fresh deploy")
+	}
+
+	// A fresh record (stamped now) must still merge.
+	m.MergeSEL("cl1", "cube-1", SELStatus{Phase: "applied", Result: "ok", At: time.Now()})
+	if got := m.state("cl1", "cube-1"); got != StateDone {
+		t.Fatalf("fresh SEL record did not merge, state = %s", got)
+	}
+	// Let the all-done verify goroutine finish so its store write can't race
+	// t.TempDir cleanup.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if d, _ := m.Status("cl1"); d.ClusterReady {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
