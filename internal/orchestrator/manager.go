@@ -493,6 +493,17 @@ func agentDriven(s State) bool {
 // if the in-band report is lost (e.g. mgmt moved off the flat L2 after apply).
 // Stops when the context is cancelled or every node is terminal.
 func (m *Manager) pollSEL(ctx context.Context, clusterID string, nodes []Node) {
+	// Ignore SEL records older than this deploy: a previous run's terminal
+	// record would otherwise replay into a fresh deploy and complete it
+	// instantly. 5min grace absorbs BMC clock skew (time-sync gate is ±5s).
+	var since time.Time
+	m.mu.Lock()
+	if d := m.deploys[clusterID]; d != nil {
+		if t, err := time.Parse(time.RFC3339, d.StartedAt); err == nil {
+			since = t.Add(-5 * time.Minute)
+		}
+	}
+	m.mu.Unlock()
 	ticker := time.NewTicker(m.cfg.PollInterval)
 	defer ticker.Stop()
 	for {
@@ -510,6 +521,9 @@ func (m *Manager) pollSEL(ctx context.Context, clusterID string, nodes []Node) {
 			s, err := m.sel.Observe(ctx, n)
 			if err != nil || s == nil {
 				continue
+			}
+			if !since.IsZero() && s.At.Before(since) {
+				continue // stale record from a previous deploy
 			}
 			m.MergeSEL(clusterID, n.Hostname, *s)
 		}
