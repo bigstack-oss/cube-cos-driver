@@ -1,5 +1,6 @@
 bin/
 /storage/
+vendor/
 node_modules/
 web/dist/
 internal/webui/dist/
