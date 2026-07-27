@@ -83,13 +83,14 @@ describe('HardwarePage', () => {
     })
   })
 
-  it('triggers a hardware fetch', async () => {
+  it('triggers a hardware inspect', async () => {
     const user = userEvent.setup()
-    fetchMock.mockImplementation(async (url: string) => {
-      if (typeof url === 'string' && url.endsWith('/fetch')) {
-        return new Response(JSON.stringify({ message: 'fetch started' }), {
-          status: 202,
-        })
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (typeof url === 'string' && url.endsWith('/machines/inspect')) {
+        if (init?.method === 'POST') {
+          return new Response('', { status: 202 })
+        }
+        return new Response(JSON.stringify([]), { status: 200 })
       }
       return new Response(JSON.stringify([machine({ fetchState: 'idle' })]), {
         status: 200,
@@ -101,12 +102,17 @@ describe('HardwarePage', () => {
       </MemoryRouter>,
     )
     await waitFor(() => screen.getByText('node-1'))
-    await user.click(screen.getByRole('button', { name: 'Fetch' }))
+    await user.click(screen.getByRole('checkbox', { name: 'select for inspect' }))
+    await user.click(screen.getByRole('button', { name: 'Inspect selected (1)' }))
+    await user.click(screen.getByRole('button', { name: 'Power-cycle & inspect' }))
     await waitFor(() => {
-      const called = fetchMock.mock.calls.some(
-        (c) => typeof c[0] === 'string' && c[0].endsWith('/fetch'),
+      const posted = fetchMock.mock.calls.some(
+        (c) =>
+          (c[1] as RequestInit | undefined)?.method === 'POST' &&
+          typeof c[0] === 'string' &&
+          c[0].endsWith('/machines/inspect'),
       )
-      expect(called).toBe(true)
+      expect(posted).toBe(true)
     })
   })
 })

@@ -38,7 +38,10 @@ describe('DeployModal', () => {
     await user.click(screen.getByRole('button', { name: 'Power on & deploy' }))
     await waitFor(() => {
       const posted = fetchMock.mock.calls.find(
-        (c) => (c[1] as RequestInit | undefined)?.method === 'POST',
+        (c) =>
+          (c[1] as RequestInit | undefined)?.method === 'POST' &&
+          typeof c[0] === 'string' &&
+          (c[0] as string).endsWith('/deploy'),
       )
       expect(posted).toBeTruthy()
       const body = JSON.parse((posted![1] as RequestInit).body as string)
