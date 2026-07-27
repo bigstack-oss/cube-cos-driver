@@ -116,7 +116,7 @@ func probe(target string) bool {
 const stagedSnapshot = "/run/appointed.snapshot"
 
 // stampEnv writes the node's OS-phase identity to RAM; hex_autoinstall appends
-// it to the restored OS's snapshot-agent.env so the daemon knows its role. It
+// it to the restored OS's phone-home-agent.env so the daemon knows its role. It
 // also drops the picked OS disk to /run/os-disk, which hex_autoinstall reads to
 // target the restore (overriding its auto-detect) so the OS lands on the
 // operator-chosen local disk, never a SAN LUN.
@@ -126,7 +126,7 @@ func stampEnv(host, cluster string, isMaster bool, osDisk string) {
 		m = "1"
 	}
 	content := fmt.Sprintf("CUBE_HOSTNAME=%s\nCUBE_CLUSTER_ID=%s\nIS_MASTER=%s\nCUBE_OS_DISK=%s\n", host, cluster, m, osDisk)
-	_ = os.WriteFile("/run/snapshot-agent.env", []byte(content), 0o644)
+	_ = os.WriteFile("/run/phone-home-agent.env", []byte(content), 0o644)
 	if osDisk != "" {
 		_ = os.WriteFile("/run/os-disk", []byte(osDisk+"\n"), 0o644)
 	}
