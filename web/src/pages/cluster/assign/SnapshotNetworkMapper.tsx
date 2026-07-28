@@ -14,7 +14,7 @@ const linkColor = (n: NIC): 'cyan' | 'dark' | 'default' =>
 const linkText = (n: NIC): string =>
   n.carrier === true ? 'link up' : n.carrier === false ? 'link down' : 'link ?'
 import { IF, NodeConfig } from '../../../model/types'
-import { baseInterfaces, bindPort, buildChains } from './snapshotTopology'
+import { baseGroups, baseInterfaces, bindPort, buildChains, RoleChain } from './snapshotTopology'
 
 export type SnapshotNetworkMapperProps = {
   node: NodeConfig
@@ -74,6 +74,7 @@ export const SnapshotNetworkMapper = (props: SnapshotNetworkMapperProps) => {
 
   const chains = buildChains(node)
   const bases = baseInterfaces(node)
+  const groups = baseGroups(node)
 
   const setAnchor = (key: string) => (el: HTMLElement | null) => {
     if (el) anchors.current.set(key, el)
@@ -108,21 +109,24 @@ export const SnapshotNetworkMapper = (props: SnapshotNetworkMapperProps) => {
       // the same box emit from staggered points along its right edge (no
       // overlap at the emitter).
       const withBase = chains.filter((ch) => ch.baseIf)
-      const groups = new Map<string, typeof withBase>()
+      // A bonded chain emits from its bond block; a plain chain from its base box.
+      const emitKey = (ch: RoleChain): string =>
+        ch.bond ? `bond-${ch.bond.id}` : `base-${ch.baseIf!.id}`
+      const emitGroups = new Map<string, typeof withBase>()
       withBase.forEach((ch) => {
-        const id = ch.baseIf!.id
-        if (!groups.has(id)) groups.set(id, [])
-        groups.get(id)!.push(ch)
+        const id = emitKey(ch)
+        if (!emitGroups.has(id)) emitGroups.set(id, [])
+        emitGroups.get(id)!.push(ch)
       })
       const emitY = new Map<(typeof withBase)[number], number>()
-      groups.forEach((list, id) => {
-        const r = rectOf(`base-${id}`)
+      emitGroups.forEach((list, id) => {
+        const r = rectOf(id)
         if (!r) return
         const m = list.length
         list.forEach((ch, k) => emitY.set(ch, r.top + ((k + 1) * (r.bottom - r.top)) / (m + 1)))
       })
       withBase.forEach((ch) => {
-        const r = rectOf(`base-${ch.baseIf!.id}`)
+        const r = rectOf(emitKey(ch))
         const rr = point(`role-${ch.role}`, 'l')
         const y1 = emitY.get(ch)
         if (r && rr && y1 !== undefined) {
@@ -271,33 +275,51 @@ export const SnapshotNetworkMapper = (props: SnapshotNetworkMapperProps) => {
       {/* Middle: base interfaces from the snapshot (drop targets). */}
       <div className="z-10 flex w-40 flex-col gap-y-3 self-center">
         <span className="primary-body3 font-semibold">From snapshot</span>
-        {bases.map((b) => {
-          const idx = portIndexOf(b)
-          const bound = idx >= 0 && idx < ports.length ? ports[idx] : undefined
-          return (
-            <div
-              key={b.id}
-              ref={setAnchor(`base-${b.id}`)}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => {
-                e.preventDefault()
-                const raw = e.dataTransfer.getData('text/plain')
-                const k = parseInt(raw, 10)
-                if (!Number.isNaN(k)) onChange(bindPort(node, b.id, k))
-                setDragIndex(null)
-              }}
-              className={`rounded-md border-2 px-2 py-2 ${
-                dragIndex !== null
-                  ? 'border-dashed border-primary'
-                  : 'border-functional-border-divider'
-              }`}
-            >
-              <div className="primary-body4 font-semibold">{b.name}</div>
-              <div className="secondary-body5 text-functional-text-light">
-                {bound ? (bound.mac ?? bound.name ?? 'bound') : 'drag a NIC here'}
+        {groups.map((g) => {
+          const boxes = g.bases.map((b) => {
+            const idx = portIndexOf(b)
+            const bound = idx >= 0 && idx < ports.length ? ports[idx] : undefined
+            return (
+              <div
+                key={b.id}
+                ref={setAnchor(`base-${b.id}`)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  const raw = e.dataTransfer.getData('text/plain')
+                  const k = parseInt(raw, 10)
+                  if (!Number.isNaN(k)) onChange(bindPort(node, b.id, k))
+                  setDragIndex(null)
+                }}
+                className={`rounded-md border-2 bg-grey-0 px-2 py-2 ${
+                  dragIndex !== null
+                    ? 'border-dashed border-primary'
+                    : 'border-functional-border-divider'
+                }`}
+              >
+                <div className="primary-body4 font-semibold">{b.name}</div>
+                <div className="secondary-body5 text-functional-text-light">
+                  {bound ? (bound.mac ?? bound.name ?? 'bound') : 'drag a NIC here'}
+                </div>
               </div>
-            </div>
-          )
+            )
+          })
+          // Bond: slaves rendered together as one labeled block.
+          if (g.label) {
+            return (
+              <div
+                key={g.key}
+                ref={setAnchor(g.key)}
+                className="flex flex-col gap-y-1.5 rounded-lg border border-functional-border-divider bg-functional-hover-grey p-1.5"
+              >
+                <span className="secondary-body5 px-0.5 font-semibold text-functional-text-secondary">
+                  {g.label}
+                </span>
+                {boxes}
+              </div>
+            )
+          }
+          return <div key={g.key} className="contents">{boxes}</div>
         })}
       </div>
 

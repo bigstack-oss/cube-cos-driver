@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { NodeConfig } from '../../../../model/types'
-import { baseInterfaces, bindPort, buildChains } from '../snapshotTopology'
+import { baseGroups, baseInterfaces, bindPort, buildChains } from '../snapshotTopology'
 
 // sky-like node: IF.1 = mgmt (plain); IF.5 carries provider (untagged) +
 // vlan80 -> overlay + vlan91 -> storage.
@@ -120,5 +120,21 @@ describe('bond slaves in the mapper', () => {
     const out = bindPort(bondNode(), 'p6', 6) // drop real port 7 onto IF.6
     const p6 = out.initIFs.find((f) => f.id === 'p6')
     expect(p6?.name).toBe('IF.7')
+  })
+})
+
+describe('baseGroups', () => {
+  it('groups bond slaves into one labeled block; plain bases stay singletons', () => {
+    const groups = baseGroups(bondNode())
+    expect(groups.map((g) => g.label ?? '-')).toEqual(['-', 'bond0'])
+    expect(groups[0].bases.map((f) => f.name)).toEqual(['IF.1'])
+    expect(groups[1].key).toBe('bond-b0')
+    expect(groups[1].bases.map((f) => f.name)).toEqual(['IF.5', 'IF.6'])
+  })
+
+  it('non-bonded node has only unlabeled singletons', () => {
+    const groups = baseGroups(skyNode())
+    expect(groups.every((g) => !g.label)).toBe(true)
+    expect(groups.flatMap((g) => g.bases.map((f) => f.name)).sort()).toEqual(['IF.1', 'IF.4'])
   })
 })

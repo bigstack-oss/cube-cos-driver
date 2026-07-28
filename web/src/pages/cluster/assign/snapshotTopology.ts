@@ -99,3 +99,28 @@ export const bindPort = (
     vlanIFs: node.vlanIFs.map(renameVlan),
   }
 }
+
+// A middle-column block of drop targets: a bond's slaves rendered together
+// under the bond's name, or a single plain base with no label.
+export type BaseGroup = { key: string; label?: string; bases: IF[] }
+
+// baseGroups arranges the drop targets for display: bond slaves grouped as one
+// labeled block, plain bases as unlabeled singletons, in chain order.
+export const baseGroups = (node: NodeConfig): BaseGroup[] => {
+  const seen = new Set<string>()
+  const out: BaseGroup[] = []
+  for (const c of buildChains(node)) {
+    if (c.bond) {
+      if (seen.has(c.bond.id)) continue
+      seen.add(c.bond.id)
+      out.push({ key: `bond-${c.bond.id}`, label: c.bond.name, bases: c.bases ?? [] })
+    } else {
+      for (const b of c.bases ?? (c.baseIf ? [c.baseIf] : [])) {
+        if (seen.has(b.id)) continue
+        seen.add(b.id)
+        out.push({ key: `base-${b.id}`, bases: [b] })
+      }
+    }
+  }
+  return out
+}
