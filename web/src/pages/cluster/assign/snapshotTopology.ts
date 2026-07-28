@@ -8,7 +8,10 @@ import { allIFs, IF, NodeConfig } from '../../../model/types'
 export type RoleChain = {
   role: RoleIFKey
   // The base physical interface (init IF) the chain roots on, if resolved.
+  // For a bond this is the first slave (line-drawing anchor); `bases` has all.
   baseIf?: IF
+  // Every base physical interface under the chain (all bond slaves).
+  bases?: IF[]
   // The bond sitting between base and role/vlan, if any.
   bond?: IF
   // The VLAN carrying this role, if any.
@@ -32,20 +35,30 @@ export const buildChains = (node: NodeConfig): RoleChain[] => {
       let base = roleIf
       let bond: IF | undefined
       let vlan: IF | undefined
+      let bases: IF[] = []
+      const slavesOf = (b: IF): IF[] =>
+        (b.slaves ?? [])
+          .map((id) => findIF(node, id))
+          .filter((f): f is IF => !!f)
       if (roleIf?.type === 'vlan') {
         vlan = roleIf
         const master = findIF(node, roleIf.master)
         if (master?.type === 'bond') {
           bond = master
-          base = master.slaves?.length ? findIF(node, master.slaves[0]) : undefined
+          bases = slavesOf(master)
+          base = bases[0]
         } else {
           base = master
+          bases = base ? [base] : []
         }
       } else if (roleIf?.type === 'bond') {
         bond = roleIf
-        base = roleIf.slaves?.length ? findIF(node, roleIf.slaves[0]) : undefined
+        bases = slavesOf(roleIf)
+        base = bases[0]
+      } else {
+        bases = base ? [base] : []
       }
-      return { role: key, baseIf: base, bond, vlan, roleIf, ip: roleIf?.IPAddr }
+      return { role: key, baseIf: base, bases, bond, vlan, roleIf, ip: roleIf?.IPAddr }
     })
 }
 
@@ -54,9 +67,11 @@ export const baseInterfaces = (node: NodeConfig): IF[] => {
   const seen = new Set<string>()
   const out: IF[] = []
   for (const c of buildChains(node)) {
-    if (c.baseIf && !seen.has(c.baseIf.id)) {
-      seen.add(c.baseIf.id)
-      out.push(c.baseIf)
+    for (const b of c.bases ?? (c.baseIf ? [c.baseIf] : [])) {
+      if (!seen.has(b.id)) {
+        seen.add(b.id)
+        out.push(b)
+      }
     }
   }
   return out

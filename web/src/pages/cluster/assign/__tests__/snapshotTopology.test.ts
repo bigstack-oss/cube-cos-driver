@@ -70,3 +70,55 @@ describe('bindPort', () => {
     expect(fixed.initIFs.find((f) => f.id === 'p1')!.name).toBe('IF.1')
   })
 })
+
+// Bonded node: IF.5 + IF.6 are slaves of bond0; overlay rides vlan80 on the
+// bond; provider is the bond untagged; mgmt stays plain IF.1.
+const bondNode = (): NodeConfig => ({
+  id: 'n2',
+  hostname: 'sky142',
+  initIFs: [
+    { id: 'p1', type: 'init', name: 'IF.1', enabled: true, IPAddr: '10.254.0.2', IPMask: '255.255.0.0' },
+    { id: 'p5', type: 'init', name: 'IF.5', enabled: true },
+    { id: 'p6', type: 'init', name: 'IF.6', enabled: true },
+  ],
+  bondIFs: [
+    { id: 'b0', type: 'bond', name: 'bond0', enabled: true, slaves: ['p5', 'p6'] },
+  ],
+  vlanIFs: [
+    { id: 'v80', type: 'vlan', name: 'bond0.80', master: 'b0', enabled: true, IPAddr: '10.80.0.2', IPMask: '255.255.0.0' },
+  ],
+  defaultIF: { id: 'p1', type: 'init' },
+  defaultGateway: '10.254.0.254',
+  role: 'control-converged',
+  roleSettings: {
+    mgmtIF: { id: 'p1', type: 'init' },
+    providerIF: { id: 'b0', type: 'bond' },
+    overlayIF: { id: 'v80', type: 'vlan' },
+    storIF: { id: 'v80', type: 'vlan' },
+    storIFBackend: {},
+  },
+})
+
+describe('bond slaves in the mapper', () => {
+  it('every bond slave is a drop target, not just slaves[0]', () => {
+    expect(baseInterfaces(bondNode()).map((f) => f.name).sort()).toEqual([
+      'IF.1',
+      'IF.5',
+      'IF.6',
+    ])
+  })
+
+  it('bond chains expose all slave bases', () => {
+    const chains = buildChains(bondNode())
+    const byRole = Object.fromEntries(chains.map((c) => [c.role, c]))
+    expect(byRole.providerIF.bond?.name).toBe('bond0')
+    expect((byRole.providerIF.bases ?? []).map((f) => f.name)).toEqual(['IF.5', 'IF.6'])
+    expect((byRole.overlayIF.bases ?? []).map((f) => f.name)).toEqual(['IF.5', 'IF.6'])
+  })
+
+  it('bindPort relabels an individual slave', () => {
+    const out = bindPort(bondNode(), 'p6', 6) // drop real port 7 onto IF.6
+    const p6 = out.initIFs.find((f) => f.id === 'p6')
+    expect(p6?.name).toBe('IF.7')
+  })
+})
