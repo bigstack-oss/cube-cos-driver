@@ -20,7 +20,8 @@ jobs:
         run: docker pull "$IMAGE"
 
       - name: Record current image for rollback
-        run: docker inspect -f '{{.Image}}' cube-cos-driver > /tmp/cd-prev-image 2>/dev/null || : > /tmp/cd-prev-image
+        run: |
+          docker inspect -f '{{.Image}}' cube-cos-driver > /tmp/cd-prev-image 2>/dev/null || true
 
       - name: Replace container
         run: |
