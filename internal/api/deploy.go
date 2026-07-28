@@ -39,6 +39,7 @@ func (h *deployHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/agents/ready", h.ready)
 	mux.HandleFunc("POST /api/v1/clusters/{id}/set-ready", h.submitSetReady)
 	mux.HandleFunc("GET /api/v1/clusters/{id}/set-ready", h.getSetReady)
+	mux.HandleFunc("POST /api/v1/clusters/{id}/deploy/preflight/rekick/{hostname}", h.rekickPreflight)
 	mux.HandleFunc("POST /api/v1/machines/inspect", h.startInspect)
 	mux.HandleFunc("GET /api/v1/machines/inspect", h.inspectStatus)
 }
@@ -717,7 +718,30 @@ func (h *deployHandlers) preflightReport(w http.ResponseWriter, r *http.Request)
 		Matrix:       matrix,
 		Passed:       req.Passed,
 	})
-	writeJSON(w, http.StatusOK, map[string]string{"message": "ok"})
+	// The response tells the parked agent whether the operator requested an
+	// in-place preflight re-run (seq bump) — no PXE reboot needed.
+	writeJSON(w, http.StatusOK, agent.PreflightReportResponse{
+		Message:   "ok",
+		RekickSeq: h.mgr.RekickSeq(req.ClusterID, req.Hostname),
+	})
+}
+
+// rekickPreflight asks a node's parked installer agent to redo preflight from
+// check-in — after the operator fixes the cluster config/snapshot.
+func (h *deployHandlers) rekickPreflight(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathValue(w, r, "id")
+	if !ok {
+		return
+	}
+	host, ok := pathValue(w, r, "hostname")
+	if !ok {
+		return
+	}
+	if err := h.mgr.RekickPreflight(id, host); err != nil {
+		writeError(w, http.StatusConflict, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"message": "preflight re-run requested", "rekickSeq": h.mgr.RekickSeq(id, host)})
 }
 
 // greenlight (installer phase): report whether green light 1 has cleared so the

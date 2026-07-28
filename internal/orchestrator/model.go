@@ -81,7 +81,11 @@ type NodeDeploy struct {
 	// InstallerPreflight is the pre-restore fabric-validation result (nil until
 	// the installer agent reports).
 	InstallerPreflight *NodePreflight `json:"installerPreflight,omitempty"`
-	UpdatedAt          string         `json:"updatedAt"`
+	// RekickSeq increments when the operator asks this node's parked installer
+	// agent to redo preflight from check-in (fresh bundle + snapshot) — no
+	// PXE reboot. The agent sees it in every report response.
+	RekickSeq int64  `json:"rekickSeq,omitempty"`
+	UpdatedAt string `json:"updatedAt"`
 	// Derived, read-only view for the UI (filled by snapshot()).
 	Light1   Light       `json:"light1"`
 	Light2   Light       `json:"light2"`

@@ -17,6 +17,7 @@ import (
 
 	goipmi "github.com/bougou/go-ipmi"
 
+	"github.com/bigstack-oss/cube-cos-driver/internal/agent"
 	"github.com/bigstack-oss/cube-cos-driver/internal/model"
 )
 
@@ -108,6 +109,9 @@ func ipCmd(args ...string) error {
 // continues past individual failures and returns a combined diagnostic string
 // (nil if everything succeeded) so the server can see exactly what happened.
 func configureTopology(b model.PreflightBundle) (string, error) {
+	// Teardown-first: remove links a previous round created so an
+	// operator-rekicked bundle applies cleanly (no "exists" failures).
+	teardownTopology()
 	labelDev := labelDevMap(b)
 	_ = exec.Command("modprobe", "bonding").Run()
 	_ = exec.Command("modprobe", "8021q").Run()
@@ -138,6 +142,7 @@ func configureTopology(b model.PreflightBundle) (string, error) {
 		if l.Type != "bond" {
 			continue
 		}
+		_ = ipCmd("link", "del", l.Name) // idempotent re-run
 		if err := ipCmd("link", "add", l.Name, "type", "bond"); err != nil {
 			note("bond %s add: %v", l.Name, err)
 		}
@@ -163,6 +168,7 @@ func configureTopology(b model.PreflightBundle) (string, error) {
 		if parent == "" {
 			parent = l.Parent
 		}
+		_ = ipCmd("link", "del", l.Name) // idempotent re-run
 		if err := ipCmd("link", "add", "link", parent, "name", l.Name, "type", "vlan", "id", strconv.Itoa(l.VLANID)); err != nil {
 			note("vlan %s: %v", l.Name, err)
 		}
@@ -175,11 +181,12 @@ func configureTopology(b model.PreflightBundle) (string, error) {
 		}
 		_ = ipCmd("link", "set", dev, "up")
 		if l.IP != "" {
-			if err := ipCmd("addr", "add", l.IP, "dev", dev); err != nil {
+			if err := ipCmd("addr", "replace", l.IP, "dev", dev); err != nil {
 				note("addr %s dev %s(%s): %v", l.IP, l.Name, dev, err)
 			}
 		}
 	}
+	recordCreatedLinks(b)
 	if len(errs) > 0 {
 		return diag, fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
@@ -307,4 +314,89 @@ func waitSELGate(ctx context.Context, poll time.Duration) bool {
 		}
 		time.Sleep(poll)
 	}
+}
+
+// teardownTopology removes the transient links a previous preflight round
+// created (bonds, VLANs) and flushes addresses, so an operator-rekicked bundle
+// applies cleanly. Best effort — reads the recorded link list.
+const createdLinksFile = "/run/preflight-links"
+
+func recordCreatedLinks(b model.PreflightBundle) {
+	labelDev := labelDevMap(b)
+	var lines []string
+	for _, l := range b.Links {
+		if l.Type == "bond" || l.Type == "vlan" {
+			lines = append(lines, "link:"+l.Name)
+		}
+		if l.IP != "" {
+			dev := l.Name
+			if l.Type == "init" {
+				dev = labelDev[l.Name]
+			}
+			if dev != "" {
+				lines = append(lines, "addr:"+dev)
+			}
+		}
+	}
+	_ = os.WriteFile(createdLinksFile, []byte(strings.Join(lines, "\n")), 0o644)
+}
+
+func teardownTopology() {
+	data, err := os.ReadFile(createdLinksFile)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		switch {
+		case strings.HasPrefix(line, "link:"):
+			_ = ipCmd("link", "del", strings.TrimPrefix(line, "link:"))
+		case strings.HasPrefix(line, "addr:"):
+			// Flush addresses this preflight added (plus the bootstrap DHCP one
+			// — the re-added role IP covers the driver route, same as the
+			// normal post-topology state).
+			_ = ipCmd("addr", "flush", "dev", strings.TrimPrefix(line, "addr:"))
+		}
+	}
+	_ = os.Remove(createdLinksFile)
+}
+
+// carrierChecks returns one report row per link the topology depends on: every
+// bond member (named — so the report shows exactly which port is down), each
+// bond device's operstate, and each non-bonded role link's carrier.
+func carrierChecks(b model.PreflightBundle) []agent.PreflightResult {
+	labelDev := labelDevMap(b)
+	var rows []agent.PreflightResult
+	for _, l := range b.Links {
+		switch l.Type {
+		case "bond":
+			for _, mLabel := range l.Members {
+				dev := labelDev[mLabel]
+				target := fmt.Sprintf("%s member %s (%s) link", l.Name, mLabel, dev)
+				if dev == "" {
+					rows = append(rows, agent.PreflightResult{Target: target, OK: false, Detail: "no device resolved for this IF label"})
+					continue
+				}
+				car, _ := os.ReadFile("/sys/class/net/" + dev + "/carrier")
+				up := strings.TrimSpace(string(car)) == "1"
+				rows = append(rows, agent.PreflightResult{Target: target, OK: up, Detail: nicState(dev)})
+			}
+			op, _ := os.ReadFile("/sys/class/net/" + l.Name + "/operstate")
+			bondUp := strings.TrimSpace(string(op)) == "up"
+			rows = append(rows, agent.PreflightResult{Target: l.Name + " bond device", OK: bondUp, Detail: "operstate " + strings.TrimSpace(string(op))})
+		case "init":
+			if len(l.Roles) == 0 {
+				continue
+			}
+			dev := labelDev[l.Name]
+			target := fmt.Sprintf("%s (%s) link [%s]", l.Name, dev, strings.Join(l.Roles, ","))
+			if dev == "" {
+				rows = append(rows, agent.PreflightResult{Target: target, OK: false, Detail: "no device resolved for this IF label"})
+				continue
+			}
+			car, _ := os.ReadFile("/sys/class/net/" + dev + "/carrier")
+			up := strings.TrimSpace(string(car)) == "1"
+			rows = append(rows, agent.PreflightResult{Target: target, OK: up, Detail: nicState(dev)})
+		}
+	}
+	return rows
 }

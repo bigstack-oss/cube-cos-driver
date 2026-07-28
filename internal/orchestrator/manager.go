@@ -681,6 +681,49 @@ func (m *Manager) ApplyFailed(clusterID, hostname, msg string) {
 	})
 }
 
+// RekickPreflight asks a parked installer agent to redo its preflight from
+// check-in (fresh bundle + snapshot) — used after the operator fixes the
+// cluster config. In-place: no PXE reboot. Valid only while the node is still
+// in the preflight phase.
+func (m *Manager) RekickPreflight(clusterID, hostname string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := m.deploys[clusterID]
+	if d == nil {
+		return fmt.Errorf("no active deploy for cluster %s", clusterID)
+	}
+	nd := d.Nodes[hostname]
+	if nd == nil {
+		return fmt.Errorf("node %s is not part of this deploy", hostname)
+	}
+	switch nd.State {
+	case StateNetbooting, StatePreflighting, StatePreflightOK:
+	default:
+		return fmt.Errorf("node %s is %s — past preflight, a re-run needs a re-image", hostname, nd.State)
+	}
+	nd.RekickSeq++
+	if nd.InstallerPreflight != nil {
+		nd.InstallerPreflight.Passed = false // re-blocks green light 1 until the re-run passes
+	}
+	nd.State = StatePreflighting
+	nd.Message = "preflight re-run requested"
+	nd.UpdatedAt = nowUTC()
+	m.persistLocked(d)
+	return nil
+}
+
+// RekickSeq returns the node's current preflight re-kick sequence (0 if none).
+func (m *Manager) RekickSeq(clusterID, hostname string) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if d := m.deploys[clusterID]; d != nil {
+		if nd := d.Nodes[hostname]; nd != nil {
+			return nd.RekickSeq
+		}
+	}
+	return 0
+}
+
 // GreenLight1 reports whether a node may proceed from preflight to restore.
 // It is a whole-cluster barrier: every node has passed its own preflight
 // (carrier + ping matrix) AND the fleet clock skew is within the limit. When

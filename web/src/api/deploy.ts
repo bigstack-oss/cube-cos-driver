@@ -167,3 +167,17 @@ export const submitSetReady = async (
     }),
   )
 }
+
+// rekickPreflight asks a parked node's installer agent to redo preflight in
+// place (fresh check-in + updated snapshot) — no PXE reboot.
+export const rekickPreflight = async (
+  id: string,
+  hostname: string,
+): Promise<void> => {
+  await throwOnError(
+    await fetch(
+      `/api/v1/clusters/${encodeURIComponent(id)}/deploy/preflight/rekick/${encodeURIComponent(hostname)}`,
+      { method: 'POST' },
+    ),
+  )
+}

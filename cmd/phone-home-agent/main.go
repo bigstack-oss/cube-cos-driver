@@ -322,7 +322,12 @@ func main() {
 	restoreDone := flag.Bool("restore-done", false, "report restore-complete to the server (installer, just before reboot) and exit")
 	inventory := flag.Bool("inventory", false, "hardware discovery (inspect boot): report CPU/mem/disk/NIC to the server, then halt")
 	inspectCheck := flag.Bool("inspect-check", false, "quick pre-fetch check: if the server marks this node for inspect, inventory + halt (skip the image fetch); else exit 0")
+	showReport := flag.Bool("report", false, "print this node's latest preflight report (works offline — for console/ssh when the driver is unreachable)")
 	flag.Parse()
+	if *showReport {
+		printPreflightReport()
+		return
+	}
 	setupLogging(*preflight)
 
 	// Already configured → nothing to do.
@@ -615,6 +620,8 @@ func runPreflight(srv string, poll time.Duration) {
 		FetchSnapshot:     fetchSnapshot,
 		StampEnv:          stampEnv,
 		Carrier:           carrier,
+		CarrierChecks:     carrierChecks,
+		SaveReport:        savePreflightReport,
 		Probe:             probe,
 		WriteSEL:          writeSEL,
 		HTTP:              &http.Client{Timeout: 30 * time.Second},
@@ -630,4 +637,82 @@ func runPreflight(srv string, poll time.Duration) {
 		log.Fatalf("preflight: %v", err)
 	}
 	log.Printf("phone-home-agent --preflight: green light 1 — proceeding to restore")
+}
+
+// ---- local preflight report (offline diagnostics) ----
+
+// preflightReportFile persists the latest full preflight round so an operator
+// can read it on the node (`phone-home-agent --report`) when the driver is
+// unreachable — e.g. the topology reconfig severed the route.
+const preflightReportFile = "/run/preflight-report.json"
+
+func savePreflightReport(r agent.PreflightReportRequest) {
+	type saved struct {
+		agent.PreflightReportRequest
+		SavedAt string `json:"savedAt"`
+	}
+	b, err := json.MarshalIndent(saved{r, time.Now().UTC().Format(time.RFC3339)}, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := preflightReportFile + ".tmp"
+	if os.WriteFile(tmp, b, 0o644) == nil {
+		_ = os.Rename(tmp, preflightReportFile)
+	}
+}
+
+// printPreflightReport renders the persisted report human-readable: problems
+// first (highlighted), then every check row.
+func printPreflightReport() {
+	data, err := os.ReadFile(preflightReportFile)
+	if err != nil {
+		fmt.Printf("no preflight report at %s — preflight has not run (or this node was never appointed).\n", preflightReportFile)
+		fmt.Println("see /run/autoinstall.log for the installer progress log.")
+		return
+	}
+	var r struct {
+		agent.PreflightReportRequest
+		SavedAt string `json:"savedAt"`
+	}
+	if err := json.Unmarshal(data, &r); err != nil {
+		fmt.Printf("unreadable report (%v); raw contents:\n%s\n", err, data)
+		return
+	}
+	red, green, bold, reset := "\033[31m", "\033[32m", "\033[1m", "\033[0m"
+	verdict := red + "NOT PASSED" + reset
+	if r.Passed {
+		verdict = green + "PASSED" + reset
+	}
+	fmt.Printf("%sPREFLIGHT REPORT%s  node %s  cluster %s  saved %s  %s\n",
+		bold, reset, r.Hostname, r.ClusterID, r.SavedAt, verdict)
+	fmt.Printf("clock skew vs driver: %+.2fs   carrier: %v\n\n", r.ClockSkewSec, r.CarrierOK)
+	var fails []agent.PreflightResult
+	for _, m := range r.Matrix {
+		if !m.OK {
+			fails = append(fails, m)
+		}
+	}
+	if len(fails) > 0 {
+		fmt.Printf("%s%sPROBLEMS (%d):%s\n", bold, red, len(fails), reset)
+		for _, m := range fails {
+			fmt.Printf("  %s✗ %s%s", red, m.Target, reset)
+			if m.Detail != "" {
+				fmt.Printf(" — %s", m.Detail)
+			}
+			fmt.Println()
+		}
+		fmt.Println()
+	}
+	fmt.Printf("%sALL CHECKS (%d):%s\n", bold, len(r.Matrix), reset)
+	for _, m := range r.Matrix {
+		mark, color := "✓", green
+		if !m.OK {
+			mark, color = "✗", red
+		}
+		fmt.Printf("  %s%s%s %s", color, mark, reset, m.Target)
+		if m.Detail != "" {
+			fmt.Printf(" — %s", m.Detail)
+		}
+		fmt.Println()
+	}
 }

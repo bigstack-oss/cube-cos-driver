@@ -85,6 +85,13 @@ type PreflightReportRequest struct {
 	Passed       bool              `json:"passed"`
 }
 
+// PreflightReportResponse acks a report round; RekickSeq increments when the
+// operator requests an in-place preflight re-run (fresh check-in + bundle).
+type PreflightReportResponse struct {
+	Message   string `json:"message"`
+	RekickSeq int64  `json:"rekickSeq"`
+}
+
 // GreenlightResponse tells the installer-phase agent whether green light 1 has
 // cleared (all nodes preflighted + skew ≤ gate) so it may restore.
 type GreenlightResponse struct {

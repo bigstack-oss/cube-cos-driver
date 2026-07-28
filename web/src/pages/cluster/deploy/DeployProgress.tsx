@@ -12,6 +12,7 @@ import {
   PhaseCell,
   CellStatus,
 } from '../../../api/deploy'
+import { PreflightReportModal } from './PreflightReportModal'
 
 export type DeployProgressProps = {
   clusterId: string
@@ -112,6 +113,7 @@ const ProgressStrip = ({ cells }: { cells: PhaseCell[] }) => (
 export const DeployProgress = (props: DeployProgressProps) => {
   const { clusterId, reloadSignal } = props
   const [deploy, setDeploy] = useState<Deploy | null>(null)
+  const [showReport, setShowReport] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const refresh = () => getDeployStatus(clusterId).then(setDeploy).catch(() => {})
@@ -149,6 +151,9 @@ export const DeployProgress = (props: DeployProgressProps) => {
     <div className="flex flex-col gap-y-3 rounded-md border border-functional-border-divider p-4">
       <div className="flex items-center gap-x-3">
         <span className="primary-h4">Deployment</span>
+        <CosButton type="secondary" size="sm" onClick={() => setShowReport(true)}>
+          Preflight report
+        </CosButton>
         {anyActive && (
           <CosButton
             type="warning"
@@ -159,6 +164,12 @@ export const DeployProgress = (props: DeployProgressProps) => {
           </CosButton>
         )}
       </div>
+      <PreflightReportModal
+        isOpen={showReport}
+        clusterId={clusterId}
+        deploy={deploy}
+        onClose={() => setShowReport(false)}
+      />
       <div className="flex flex-col gap-y-2">
         {nodes.map((n) => (
           <div key={n.hostname} className="flex flex-col gap-y-1">
