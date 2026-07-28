@@ -13,9 +13,14 @@ jobs:
   deploy:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, lab-snapshot]
+    permissions:
+      packages: read
     env:
       IMAGE: ghcr.io/${{ github.repository }}:develop
     steps:
+      - name: Login to ghcr (package is private)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
       - name: Pull image
         run: docker pull "$IMAGE"
 
