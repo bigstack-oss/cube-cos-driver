@@ -74,6 +74,8 @@ export type PlanRow = {
   bmcAddress?: string
   osDisk?: string
   macs?: string[]
+  /** Another cluster whose active deploy already claims this machine. */
+  conflict?: string
 }
 
 export type Plan = { allAssigned: boolean; nodes: PlanRow[] }

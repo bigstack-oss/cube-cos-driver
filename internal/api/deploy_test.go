@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -260,4 +261,127 @@ type agentPfReport struct {
 	CarrierOK    bool    `json:"carrierOk"`
 	ClockSkewSec float64 `json:"clockSkewSec"`
 	Passed       bool    `json:"passed"`
+}
+
+const dep2ClusterID = "aabbccddee02"
+
+// addSecondCluster saves a second cluster (ha3 with a different ID + name) and
+// assigns every machine to its same-named node there too, so machines hold
+// assignments in two clusters with dep2 as the NON-primary one.
+func addSecondCluster(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	raw, _ := os.ReadFile("../model/testdata/ha3.json")
+	mod := strings.Replace(string(raw), "aabbccddee01", "aabbccddee02", 1)
+	mod = strings.Replace(mod, `"name": "sky-lab"`, `"name": "sky-lab-b"`, 1)
+	resp := do(t, "PUT", srv.URL+"/api/v1/clusters/"+dep2ClusterID, []byte(mod))
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("save cluster2 = %d: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+	resp = do(t, "GET", srv.URL+"/api/v1/machines", nil)
+	var machines []struct {
+		ID         string `json:"id"`
+		Assignment *struct {
+			Hostname string `json:"hostname"`
+		} `json:"assignment"`
+	}
+	json.NewDecoder(resp.Body).Decode(&machines)
+	resp.Body.Close()
+	for _, m := range machines {
+		if m.Assignment == nil {
+			continue
+		}
+		body := []byte(`{"clusterId":"` + dep2ClusterID + `","hostname":"` + m.Assignment.Hostname + `","osDisk":"sda"}`)
+		ar := do(t, "PUT", srv.URL+"/api/v1/machines/"+m.ID+"/assignment", body)
+		if ar.StatusCode != 200 {
+			t.Fatalf("assign to cluster2 = %d", ar.StatusCode)
+		}
+		ar.Body.Close()
+	}
+}
+
+func waitNodeIn(t *testing.T, srv *httptest.Server, cluster, host, want string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		resp := do(t, "GET", srv.URL+"/api/v1/clusters/"+cluster+"/deploy", nil)
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		var dep struct {
+			Nodes map[string]struct {
+				State string `json:"state"`
+			} `json:"nodes"`
+		}
+		json.Unmarshal(body, &dep)
+		if dep.Nodes[host].State == want {
+			return
+		}
+		time.Sleep(3 * time.Millisecond)
+	}
+	t.Fatalf("node %s did not reach %s in %s", host, want, cluster)
+}
+
+// A machine assigned to two clusters must check in against the cluster whose
+// deploy is actively running — not blindly its primary (first) assignment.
+func TestCheckinResolvesActiveDeployCluster(t *testing.T) {
+	srv, _ := deployFixture(t, orchestrator.NewFakeExecutor())
+	addSecondCluster(t, srv)
+
+	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+dep2ClusterID+"/deploy", []byte(`{"confirm":true}`))
+	if resp.StatusCode != 202 {
+		t.Fatalf("deploy cluster2 = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	waitNodeIn(t, srv, dep2ClusterID, "cube-1", "imaged")
+
+	ci := do(t, "POST", srv.URL+"/api/v1/agents/checkin", []byte(`{"macs":["`+macFor(0)+`"],"serial":"S"}`))
+	var cr struct {
+		Appointed bool   `json:"appointed"`
+		ClusterID string `json:"clusterId"`
+		Hostname  string `json:"hostname"`
+	}
+	json.NewDecoder(ci.Body).Decode(&cr)
+	ci.Body.Close()
+	if !cr.Appointed || cr.ClusterID != dep2ClusterID || cr.Hostname != "cube-1" {
+		t.Fatalf("checkin should appoint to the actively-deploying cluster2, got %+v", cr)
+	}
+}
+
+// Starting a deploy whose machines are already claimed by another cluster's
+// active deploy must be refused (409), and the plan must pre-flag the conflict.
+func TestDeployStartConflictsWithActiveDeploy(t *testing.T) {
+	srv, _ := deployFixture(t, orchestrator.NewFakeExecutor())
+	addSecondCluster(t, srv)
+
+	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+depClusterID+"/deploy", []byte(`{"confirm":true}`))
+	if resp.StatusCode != 202 {
+		t.Fatalf("deploy cluster1 = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	pr := do(t, "GET", srv.URL+"/api/v1/clusters/"+dep2ClusterID+"/deploy/plan", nil)
+	var plan struct {
+		Nodes []struct {
+			Hostname string `json:"hostname"`
+			Conflict string `json:"conflict"`
+		} `json:"nodes"`
+	}
+	json.NewDecoder(pr.Body).Decode(&plan)
+	pr.Body.Close()
+	for _, n := range plan.Nodes {
+		if n.Conflict == "" {
+			t.Fatalf("plan row %s should flag the active-deploy conflict", n.Hostname)
+		}
+	}
+
+	dr := do(t, "POST", srv.URL+"/api/v1/clusters/"+dep2ClusterID+"/deploy", []byte(`{"confirm":true}`))
+	if dr.StatusCode != 409 {
+		t.Fatalf("deploy cluster2 while cluster1 active = %d, want 409", dr.StatusCode)
+	}
+	b, _ := io.ReadAll(dr.Body)
+	dr.Body.Close()
+	if !strings.Contains(string(b), "sky-lab") {
+		t.Fatalf("409 should name the conflicting cluster, got %s", b)
+	}
 }

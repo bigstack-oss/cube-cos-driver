@@ -70,6 +70,8 @@ export const DeployModal = (props: DeployModalProps) => {
 
   if (!isOpen) return null
 
+  const conflicts = plan?.nodes.filter((n) => n.conflict) ?? []
+
   const run = async () => {
     setStarting(true)
     setError('')
@@ -100,7 +102,7 @@ export const DeployModal = (props: DeployModalProps) => {
       size="md"
       actionText="Power on & deploy"
       actionButtonProps={{
-        disabled: !plan?.allAssigned || starting,
+        disabled: !plan?.allAssigned || conflicts.length > 0 || starting,
         loading: starting,
       }}
       onActionClick={run}
@@ -136,6 +138,19 @@ export const DeployModal = (props: DeployModalProps) => {
           </CosInlineNotification>
         )}
 
+        {conflicts.length > 0 && (
+          <CosInlineNotification
+            type="error"
+            isClosable={false}
+            title="Servers busy in another deploy"
+          >
+            {conflicts
+              .map((n) => `${n.machineLabel} (${n.hostname}) → ${n.conflict}`)
+              .join(', ')}{' '}
+            — wait for that deploy to finish or cancel it first.
+          </CosInlineNotification>
+        )}
+
         {plan && (
           <div className="flex flex-col gap-y-2">
             {plan.nodes.map((n) => (
@@ -148,6 +163,11 @@ export const DeployModal = (props: DeployModalProps) => {
                   <span className="flex-1 text-functional-text-light">
                     {n.machineLabel} · BMC {n.bmcAddress} · disk {n.osDisk} ·{' '}
                     {(n.macs ?? []).join(', ')}
+                    {n.conflict && (
+                      <span className="ml-2 rounded bg-status-negative/10 px-1.5 py-0.5 font-semibold text-status-negative">
+                        deploying in {n.conflict}
+                      </span>
+                    )}
                   </span>
                 ) : (
                   <span className="flex-1 text-status-negative">

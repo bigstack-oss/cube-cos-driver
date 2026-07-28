@@ -50,6 +50,28 @@ describe('DeployModal', () => {
     expect(onStarted).toHaveBeenCalled()
   })
 
+  it('blocks deploy when a machine is busy in another cluster deploy', async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          allAssigned: true,
+          nodes: [
+            { hostname: 'cube-1', assigned: true, machineLabel: 'sky141', bmcAddress: 'x', osDisk: 'sda', conflict: 'sky-lab-b' },
+          ],
+        }),
+        { status: 200 },
+      ),
+    )
+    render(<DeployModal isOpen clusterId="c1" onCancel={() => {}} onStarted={() => {}} />)
+    await waitFor(() =>
+      expect(screen.getByText(/Servers busy in another deploy/)).toBeTruthy(),
+    )
+    expect(screen.getByText(/deploying in sky-lab-b/)).toBeTruthy()
+    expect(
+      screen.getByRole('button', { name: 'Power on & deploy' }).hasAttribute('disabled'),
+    ).toBe(true)
+  })
+
   it('blocks deploy when not all nodes assigned', async () => {
     fetchMock.mockResolvedValue(
       new Response(

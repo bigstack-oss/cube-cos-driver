@@ -43,10 +43,16 @@ func (h *deployHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/machines/inspect", h.inspectStatus)
 }
 
-// matchByMAC finds the assigned machine whose discovered NICs include any of
-// the given MACs (case-insensitive).
-func (h *deployHandlers) matchByMAC(macs []string) (*inventory.Machine, error) {
-	return h.matchNode(macs, "")
+// resolveAssignment picks the machine's assignment in the cluster whose deploy
+// is actively running — the deploy that PXE-booted it. Falls back to the
+// primary (first) assignment when no assigned cluster is deploying.
+func (h *deployHandlers) resolveAssignment(m *inventory.Machine) *inventory.Assignment {
+	for i := range m.Assignments {
+		if h.mgr.HasActiveDeploy(m.Assignments[i].ClusterID) {
+			return &m.Assignments[i]
+		}
+	}
+	return m.Assignment
 }
 
 // normSerial normalizes a board/DMI serial for comparison. IPMI FRU reads pad
@@ -86,8 +92,9 @@ func (h *deployHandlers) matchAnyMachine(macs []string, serial string) *inventor
 // matchNode finds the assigned machine for a checking-in node by NIC MAC, and
 // falls back to the DMI/board serial. IPMI/Redfish inventory carries the board
 // serial but no NIC MACs, so serial is the only handle when that is the
-// discovery source.
-func (h *deployHandlers) matchNode(macs []string, serial string) (*inventory.Machine, error) {
+// discovery source. The returned assignment is resolved against the active
+// deploy (resolveAssignment) — callers must use it, not machine.Assignment.
+func (h *deployHandlers) matchNode(macs []string, serial string) (*inventory.Machine, *inventory.Assignment, error) {
 	want := map[string]bool{}
 	for _, m := range macs {
 		want[strings.ToLower(strings.TrimSpace(m))] = true
@@ -95,7 +102,7 @@ func (h *deployHandlers) matchNode(macs []string, serial string) (*inventory.Mac
 	serial = normSerial(serial)
 	machines, err := h.machines.List()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for i := range machines {
 		if machines[i].Assignment == nil {
@@ -103,15 +110,15 @@ func (h *deployHandlers) matchNode(macs []string, serial string) (*inventory.Mac
 		}
 		for _, mac := range macsOf(machines[i]) {
 			if want[strings.ToLower(mac)] {
-				return &machines[i], nil
+				return &machines[i], h.resolveAssignment(&machines[i]), nil
 			}
 		}
 		if serial != "" && machines[i].Inventory != nil &&
 			normSerial(machines[i].Inventory.Serial) == serial {
-			return &machines[i], nil
+			return &machines[i], h.resolveAssignment(&machines[i]), nil
 		}
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 
 type planRow struct {
@@ -121,6 +128,28 @@ type planRow struct {
 	BMCAddress   string   `json:"bmcAddress,omitempty"`
 	OSDisk       string   `json:"osDisk,omitempty"`
 	MACs         []string `json:"macs,omitempty"`
+	// Conflict names another cluster whose ACTIVE deploy already claims this
+	// row's machine — deploying now would race it, so start refuses (409).
+	Conflict string `json:"conflict,omitempty"`
+}
+
+// clusterName resolves a cluster's display name, falling back to its ID.
+func (h *deployHandlers) clusterName(id string) string {
+	if d, err := h.clusters.Detail(id); err == nil && d.ClusterInfo.Name != "" {
+		return d.ClusterInfo.Name
+	}
+	return id
+}
+
+// activeConflict returns the name of another cluster whose active deploy
+// claims this machine (empty if none).
+func (h *deployHandlers) activeConflict(m inventory.Machine, id string) string {
+	for _, a := range m.Assignments {
+		if a.ClusterID != id && h.mgr.HasActiveDeploy(a.ClusterID) {
+			return h.clusterName(a.ClusterID)
+		}
+	}
+	return ""
 }
 
 func macsOf(m inventory.Machine) []string {
@@ -177,6 +206,7 @@ func (h *deployHandlers) buildNodes(id string) (nodes []orchestrator.Node, rows 
 		row.BMCAddress = addr
 		row.OSDisk = osDisk
 		row.MACs = macs
+		row.Conflict = h.activeConflict(m, id)
 		rows = append(rows, row)
 		nodes = append(nodes, orchestrator.Node{
 			Hostname:   node.Hostname,
@@ -226,7 +256,7 @@ func (h *deployHandlers) start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "deploy requires confirm=true")
 		return
 	}
-	nodes, _, allAssigned, master, err := h.buildNodes(id)
+	nodes, rows, allAssigned, master, err := h.buildNodes(id)
 	if errors.Is(err, storage.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "cluster %s not found", id)
 		return
@@ -238,6 +268,16 @@ func (h *deployHandlers) start(w http.ResponseWriter, r *http.Request) {
 	if !allAssigned {
 		writeError(w, http.StatusConflict, "every node must be assigned a server before deploy")
 		return
+	}
+	// Refuse to race another cluster's active deploy for the same hardware —
+	// its check-ins would resolve to that deploy, not this one.
+	for _, row := range rows {
+		if row.Conflict != "" {
+			writeError(w, http.StatusConflict,
+				"machine %s (node %s) is in an active deploy for cluster %s — wait for it to finish or cancel it",
+				row.MachineLabel, row.Hostname, row.Conflict)
+			return
+		}
 	}
 	if len(body.Hostnames) > 0 {
 		want := map[string]bool{}
@@ -316,7 +356,7 @@ func (h *deployHandlers) checkin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
 		return
 	}
-	matched, err := h.matchNode(req.MACs, req.Serial)
+	matched, assn, err := h.matchNode(req.MACs, req.Serial)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
@@ -327,7 +367,7 @@ func (h *deployHandlers) checkin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cid := matched.Assignment.ClusterID
+	cid := assn.ClusterID
 	// Same safety gate as preflightCheckin: only appoint (→ download + apply)
 	// while a deploy is actively running for this cluster.
 	if !h.mgr.HasActiveDeploy(cid) {
@@ -335,7 +375,7 @@ func (h *deployHandlers) checkin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, agent.CheckinResponse{Appointed: false})
 		return
 	}
-	host := matched.Assignment.Hostname
+	host := assn.Hostname
 	scheme := "http://"
 	if r.TLS != nil {
 		scheme = "https://"
@@ -521,8 +561,8 @@ func (h *deployHandlers) applied(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cid, host := req.ClusterID, req.Hostname
-	if m, _ := h.matchNode(req.MACs, req.Serial); m != nil && m.Assignment != nil {
-		cid, host = m.Assignment.ClusterID, m.Assignment.Hostname
+	if m, a, _ := h.matchNode(req.MACs, req.Serial); m != nil && a != nil {
+		cid, host = a.ClusterID, a.Hostname
 	}
 	log.Printf("applied: host=%s cluster=%s master=%v", host, cid, req.IsMaster)
 	h.mgr.Applied(cid, host, req.IsMaster)
@@ -537,17 +577,17 @@ func (h *deployHandlers) restoreDone(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
 		return
 	}
-	matched, err := h.matchNode(req.MACs, req.Serial)
+	matched, assn, err := h.matchNode(req.MACs, req.Serial)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
 	}
-	if matched == nil || matched.Assignment == nil {
+	if matched == nil || assn == nil {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": false})
 		return
 	}
-	log.Printf("restore-done for %s (serial=%q)", matched.Assignment.Hostname, req.Serial)
-	h.mgr.RestoreDone(matched.Assignment.ClusterID, matched.Assignment.Hostname)
+	log.Printf("restore-done for %s (serial=%q)", assn.Hostname, req.Serial)
+	h.mgr.RestoreDone(assn.ClusterID, assn.Hostname)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -559,17 +599,17 @@ func (h *deployHandlers) applyStarted(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
 		return
 	}
-	matched, err := h.matchNode(req.MACs, req.Serial)
+	matched, assn, err := h.matchNode(req.MACs, req.Serial)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
 	}
-	if matched == nil || matched.Assignment == nil {
+	if matched == nil || assn == nil {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": false})
 		return
 	}
-	log.Printf("apply-started for %s (serial=%q)", matched.Assignment.Hostname, req.Serial)
-	h.mgr.ApplyStarted(matched.Assignment.ClusterID, matched.Assignment.Hostname)
+	log.Printf("apply-started for %s (serial=%q)", assn.Hostname, req.Serial)
+	h.mgr.ApplyStarted(assn.ClusterID, assn.Hostname)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -589,8 +629,8 @@ func (h *deployHandlers) applyFailed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cid, host := req.ClusterID, req.Hostname
-	if m, _ := h.matchNode(req.MACs, req.Serial); m != nil && m.Assignment != nil {
-		cid, host = m.Assignment.ClusterID, m.Assignment.Hostname
+	if m, a, _ := h.matchNode(req.MACs, req.Serial); m != nil && a != nil {
+		cid, host = a.ClusterID, a.Hostname
 	}
 	log.Printf("apply-failed: host=%s cluster=%s msg=%q", host, cid, req.Message)
 	h.mgr.ApplyFailed(cid, host, req.Message)
@@ -610,7 +650,7 @@ func (h *deployHandlers) preflightCheckin(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusOK, agent.PreflightCheckinResponse{Inspect: true})
 		return
 	}
-	matched, err := h.matchNode(req.MACs, req.Serial)
+	matched, assn, err := h.matchNode(req.MACs, req.Serial)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
@@ -620,7 +660,7 @@ func (h *deployHandlers) preflightCheckin(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusOK, agent.PreflightCheckinResponse{Appointed: false})
 		return
 	}
-	cid := matched.Assignment.ClusterID
+	cid := assn.ClusterID
 	// Safety gate: a node restores/reimages ONLY while a deploy is actively
 	// running for its cluster. An assigned node that PXE-boots for any other
 	// reason (an inspect, a stray netboot, a manual reboot) must never wipe
@@ -630,8 +670,8 @@ func (h *deployHandlers) preflightCheckin(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusOK, agent.PreflightCheckinResponse{Appointed: false})
 		return
 	}
-	log.Printf("preflight checkin matched %s: macs=%v serial=%q", matched.Assignment.Hostname, req.MACs, req.Serial)
-	host := matched.Assignment.Hostname
+	log.Printf("preflight checkin matched %s: macs=%v serial=%q", assn.Hostname, req.MACs, req.Serial)
+	host := assn.Hostname
 	detail, err := h.clusters.Detail(cid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
@@ -651,7 +691,7 @@ func (h *deployHandlers) preflightCheckin(w http.ResponseWriter, r *http.Request
 		Bundle:        bundle,
 		SnapshotURL:   scheme + r.Host + "/api/v1/clusters/" + cid + "/nodes/" + host + "/download",
 		IsMaster:      host == h.mgr.Master(cid),
-		OSDisk:        matched.Assignment.OSDisk,
+		OSDisk:        assn.OSDisk,
 	})
 }
 
