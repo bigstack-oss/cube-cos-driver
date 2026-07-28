@@ -1,0 +1,46 @@
+name: CD - lab deploy
+
+on:
+  workflow_run:
+    workflows: ["CD - OCI image"]
+    types: [completed]
+    branches: [develop]
+  workflow_dispatch:
+
+concurrency: lab-deploy
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, lab-snapshot]
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}:develop
+    steps:
+      - name: Pull image
+        run: docker pull "$IMAGE"
+
+      - name: Record current image for rollback
+        run: docker inspect -f '{{.Image}}' cube-cos-driver > /tmp/cd-prev-image 2>/dev/null || : > /tmp/cd-prev-image
+
+      - name: Replace container
+        run: |
+          docker rm -f cube-cos-driver 2>/dev/null || true
+          docker run -d --name cube-cos-driver --restart unless-stopped \
+            -p 80:3001 -v /mnt/cube-cos-driver:/var/lib/cube-cos-driver "$IMAGE"
+
+      - name: Health gate (roll back on failure)
+        run: |
+          for i in $(seq 1 30); do
+            curl -fsS -o /dev/null http://localhost:80/ && exit 0
+            sleep 2
+          done
+          echo "::error::new container unhealthy — rolling back"
+          docker logs cube-cos-driver | tail -50
+          docker rm -f cube-cos-driver
+          prev=$(cat /tmp/cd-prev-image)
+          [ -n "$prev" ] && docker run -d --name cube-cos-driver --restart unless-stopped \
+            -p 80:3001 -v /mnt/cube-cos-driver:/var/lib/cube-cos-driver "$prev"
+          exit 1
+
+      - name: Prune old images
+        run: docker image prune -f

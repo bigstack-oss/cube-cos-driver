@@ -1,0 +1,7 @@
+.git
+bin
+node_modules
+**/node_modules
+web/dist
+internal/webui/dist
+storage
