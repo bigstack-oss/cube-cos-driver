@@ -198,7 +198,36 @@ func writeApplyReboots(n int) {
 	_ = os.WriteFile(applyRebootFile, []byte(strconv.Itoa(n)), 0o644)
 }
 
+// waitBootstrapDone blocks until the boot-time hex bootstrap finishes
+// (bootstrap.post.sh touches /run/bootstrap_done). snapshot_apply must not
+// race it: both translate policies into the same /tmp/settings.apply, so a
+// concurrent bootstrap overwrites the snapshot's translation between
+// translate and commit — the commit then applies unconfigured settings and
+// stamps the configured marker anyway.
+func waitBootstrapDone(ctx context.Context) {
+	const marker = "/run/bootstrap_done"
+	for i := 0; ; i++ {
+		if _, err := os.Stat(marker); err == nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if i == 0 {
+			log.Printf("apply: waiting for the boot bootstrap to finish (%s) ...", marker)
+		}
+		if i >= 600 { // ~10 min — proceed rather than park forever
+			log.Printf("apply: %s never appeared — proceeding anyway", marker)
+			return
+		}
+		time.Sleep(time.Second)
+	}
+}
+
 func apply(ctx context.Context, snapshotURL string) error {
+	waitBootstrapDone(ctx)
 	dest := localSnapshot
 	if _, err := os.Stat(dest); err == nil {
 		log.Printf("applying pre-staged snapshot %s (local, no download)", dest)
