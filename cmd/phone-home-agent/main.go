@@ -412,7 +412,20 @@ func main() {
 		return
 	}
 
-	srv := *server
+	// Driver-server precedence: the endpoint the booting driver stamped into our
+	// BMC SEL wins over everything — it is the ground truth of which driver
+	// powered THIS boot, so a node inspected/deployed by a specific driver
+	// phones home to THAT driver regardless of the shared PXE entry's
+	// driver_server= (which hex_autoinstall passes as --server). Then --server,
+	// then the cmdline, then the pxeserver default.
+	srv := ""
+	if ep := driverEndpointFromSEL(); ep != "" {
+		log.Printf("using driver endpoint from BMC SEL: %s", ep)
+		srv = ep
+	}
+	if srv == "" {
+		srv = *server
+	}
 	if srv == "" {
 		srv = serverFromCmdline()
 	}

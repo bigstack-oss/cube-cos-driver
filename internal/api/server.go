@@ -2,6 +2,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,6 +30,10 @@ type Config struct {
 	DeployExecutor orchestrator.Executor
 	// DeployConfig tunes deploy timing (tests use small values).
 	DeployConfig orchestrator.Config
+	// Advertise is the driver's node-reachable "ip:port" stamped into each
+	// booting node's BMC SEL so the node phones home to THIS driver regardless
+	// of the PXE entry's driver_server=. Empty = don't stamp.
+	Advertise string
 }
 
 func New(cfg Config) (http.Handler, error) {
@@ -69,6 +74,13 @@ func New(cfg Config) (http.Handler, error) {
 		if os.Getenv("MANUAL_GATE") == "1" {
 			mgr.SetManualGate(true)
 		}
+	}
+	if cfg.Advertise != "" {
+		ip, port, err := orchestrator.ParseAdvertise(cfg.Advertise)
+		if err != nil {
+			return nil, fmt.Errorf("advertise %q: %w", cfg.Advertise, err)
+		}
+		mgr.SetAdvertise(ip, port)
 	}
 
 	mux := http.NewServeMux()

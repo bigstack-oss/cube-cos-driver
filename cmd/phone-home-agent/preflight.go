@@ -400,3 +400,49 @@ func carrierChecks(b model.PreflightBundle) []agent.PreflightResult {
 	}
 	return rows
 }
+
+// cubeEndpointManufacturerID marks the driver-endpoint OEM SEL record (must
+// match internal/orchestrator). Distinct from cubeManufacturerID (gate/status)
+// so the whole 6-byte payload is the driver's IPv4:port.
+const cubeEndpointManufacturerID uint32 = 0x0BC0DF
+
+// driverEndpointFromSEL reads the newest driver-endpoint record from the local
+// BMC SEL (KCS, no network) and returns "http://ip:port", or "" if none. The
+// driver stamps this when it powers the node for inspect/deploy.
+func driverEndpointFromSEL() string {
+	client, err := goipmi.NewOpenClient()
+	if err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Connect(ctx); err != nil {
+		return ""
+	}
+	defer client.Close(ctx)
+	entries, err := client.GetSELEntries(ctx, 0)
+	if err != nil {
+		return ""
+	}
+	var best string
+	var bestAt time.Time
+	for _, e := range entries {
+		o := e.OEMTimestamped
+		if o == nil || o.ManufacturerID != cubeEndpointManufacturerID {
+			continue
+		}
+		b := o.OEMDefined
+		if b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 {
+			continue // unset address
+		}
+		port := int(b[4])<<8 | int(b[5])
+		if port == 0 {
+			continue
+		}
+		if best == "" || o.Timestamp.After(bestAt) {
+			best = fmt.Sprintf("http://%d.%d.%d.%d:%d", b[0], b[1], b[2], b[3], port)
+			bestAt = o.Timestamp
+		}
+	}
+	return best
+}

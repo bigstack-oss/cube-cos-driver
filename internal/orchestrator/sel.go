@@ -2,6 +2,9 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -188,4 +191,88 @@ func (m *Manager) MergeSEL(clusterID, hostname string, s SELStatus) {
 	if target == StateDone {
 		m.maybeVerifyCluster(clusterID)
 	}
+}
+
+// cubeEndpointManufacturerID marks the OEM SEL record that carries the
+// driver's node-reachable endpoint (IPv4+port). Distinct from
+// cubeManufacturerID (gate/status) so all 6 OEM bytes are free for the
+// address — the record type is discriminated by this ID.
+const cubeEndpointManufacturerID uint32 = 0x0BC0DF
+
+// encodeEndpoint packs a node-reachable IPv4:port into the 6 OEM bytes:
+// bytes 0-3 = IPv4, bytes 4-5 = port (big-endian).
+func encodeEndpoint(ip [4]byte, port uint16) [6]byte {
+	var b [6]byte
+	copy(b[0:4], ip[:])
+	b[4] = byte(port >> 8)
+	b[5] = byte(port)
+	return b
+}
+
+// decodeEndpoint reverses encodeEndpoint. ok=false if the address is unset
+// (all-zero IPv4), so a stray/empty record never overrides the cmdline.
+func decodeEndpoint(b [6]byte) (ip [4]byte, port uint16, ok bool) {
+	copy(ip[:], b[0:4])
+	port = uint16(b[4])<<8 | uint16(b[5])
+	if ip == [4]byte{} {
+		return ip, port, false
+	}
+	return ip, port, true
+}
+
+// endpointSEL builds the driver-endpoint OEM SEL record (advertise address).
+func endpointSEL(ip [4]byte, port uint16) *goipmi.SEL {
+	return &goipmi.SEL{
+		RecordType: goipmi.SELRecordType(0xC0),
+		OEMTimestamped: &goipmi.SELOEMTimestamped{
+			Timestamp:      time.Now(),
+			ManufacturerID: cubeEndpointManufacturerID,
+			OEMDefined:     encodeEndpoint(ip, port),
+		},
+	}
+}
+
+// WriteEndpoint drops the driver-endpoint record on a node's BMC over LAN so
+// the agent (which may have no in-band route to a shared PXE server's default
+// driver) learns which driver actually booted it. Best-effort, same SEL-full
+// recovery as WriteGate.
+func (IPMIGateWriter) WriteEndpoint(ctx context.Context, n Node, ip [4]byte, port uint16) error {
+	client, err := goipmi.NewClient(n.BMCAddress, 623, n.BMCUser, n.BMCPass)
+	if err != nil {
+		return err
+	}
+	if err := client.Connect(ctx); err != nil {
+		return err
+	}
+	defer client.Close(ctx)
+	rec := endpointSEL(ip, port)
+	if _, err := client.AddSELEntry(ctx, rec); err != nil {
+		if res, rerr := client.ReserveSEL(ctx); rerr == nil {
+			if _, cerr := client.ClearSEL(ctx, res.ReservationID); cerr == nil {
+				time.Sleep(2 * time.Second)
+				_, err = client.AddSELEntry(ctx, rec)
+			}
+		}
+		return err
+	}
+	return nil
+}
+
+// ParseAdvertise parses an "ip:port" advertise address into the SEL-record
+// form (IPv4 bytes + uint16 port). Rejects non-IPv4 and out-of-range ports.
+func ParseAdvertise(s string) (ip [4]byte, port uint16, err error) {
+	host, portStr, err := net.SplitHostPort(s)
+	if err != nil {
+		return ip, 0, err
+	}
+	p, err := strconv.Atoi(portStr)
+	if err != nil || p < 1 || p > 65535 {
+		return ip, 0, fmt.Errorf("invalid port %q", portStr)
+	}
+	v4 := net.ParseIP(host).To4()
+	if v4 == nil {
+		return ip, 0, fmt.Errorf("not an IPv4 address: %q", host)
+	}
+	copy(ip[:], v4)
+	return ip, uint16(p), nil
 }

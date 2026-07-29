@@ -45,6 +45,11 @@ type Manager struct {
 	// manualGate holds the peers at the apply gate: the master applying does NOT
 	// auto-release them; the operator releases each via ReleaseNode.
 	manualGate bool
+	// advertise is the driver's node-reachable endpoint (IPv4:port), stamped
+	// into each booting node's BMC SEL so the agent phones home to THIS driver
+	// regardless of the shared PXE entry's driver_server=. Zero IP = disabled.
+	advertiseIP   [4]byte
+	advertisePort uint16
 
 	mu      sync.Mutex
 	deploys map[string]*Deploy
@@ -120,6 +125,7 @@ func (m *Manager) StartInspect(nodes []Node, labels map[string]string) {
 				m.setInspect(n.MachineID, "error", err.Error())
 				return
 			}
+			m.stampEndpoint(ctx, n) // tell the node which driver booted it
 			if err := m.exec.PowerCycle(ctx, n); err != nil {
 				m.setInspect(n.MachineID, "error", err.Error())
 				return
@@ -255,6 +261,30 @@ func (m *Manager) SetVerifier(v Verifier) { m.verifier = v }
 // SetSELObserver enables the out-of-band SEL status poll (nil = disabled, the
 // default, so CI never contacts a real BMC).
 func (m *Manager) SetSELObserver(o SELObserver) { m.sel = o }
+
+// SetAdvertise sets the driver's node-reachable endpoint (stamped into node
+// SEL at boot). ip zero-value disables stamping.
+func (m *Manager) SetAdvertise(ip [4]byte, port uint16) { m.advertiseIP, m.advertisePort = ip, port }
+
+// EndpointWriter stamps the driver's endpoint into a node's BMC SEL.
+type EndpointWriter interface {
+	WriteEndpoint(ctx context.Context, n Node, ip [4]byte, port uint16) error
+}
+
+// stampEndpoint writes the driver-endpoint SEL record to a node's BMC when an
+// advertise address is configured and the gate writer supports it. Best-effort.
+func (m *Manager) stampEndpoint(ctx context.Context, n Node) {
+	if m.advertiseIP == ([4]byte{}) {
+		return
+	}
+	ew, ok := m.gate.(EndpointWriter)
+	if !ok {
+		return
+	}
+	if err := ew.WriteEndpoint(ctx, n, m.advertiseIP, m.advertisePort); err != nil {
+		log.Printf("orchestrator: stamp endpoint on %s: %v", n.Hostname, err)
+	}
+}
 
 // SetGateWriter enables writing the master-done "go" SEL to non-master BMCs
 // (nil = disabled).
@@ -578,6 +608,7 @@ func (m *Manager) runNode(ctx context.Context, clusterID string, n Node) {
 		m.fail(clusterID, n.Hostname, ErrBMCBootdev, err)
 		return
 	}
+	m.stampEndpoint(ctx, n) // tell the node which driver booted it
 	m.advance(clusterID, n.Hostname, StatePowerCycle)
 	if err := m.exec.PowerCycle(ctx, n); err != nil {
 		m.fail(clusterID, n.Hostname, ErrBMCPower, err)

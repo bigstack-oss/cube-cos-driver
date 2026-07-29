@@ -32,6 +32,7 @@ jobs:
         run: |
           docker rm -f cube-cos-driver 2>/dev/null || true
           docker run -d --name cube-cos-driver --restart unless-stopped \
+            -e ADVERTISE=10.32.0.202:80 \
             -p 80:3001 -v /mnt/cube-cos-driver:/var/lib/cube-cos-driver "$IMAGE"
 
       - name: Health gate (roll back on failure)
@@ -45,6 +46,7 @@ jobs:
           docker rm -f cube-cos-driver
           prev=$(cat /tmp/cd-prev-image)
           [ -n "$prev" ] && docker run -d --name cube-cos-driver --restart unless-stopped \
+            -e ADVERTISE=10.32.0.202:80 \
             -p 80:3001 -v /mnt/cube-cos-driver:/var/lib/cube-cos-driver "$prev"
           exit 1
 

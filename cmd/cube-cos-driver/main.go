@@ -25,6 +25,7 @@ func main() {
 	exportDir := flag.String("export-dir", envOr("EXPORT_DIR", ""), "flat .snapshot export dir (pxeserver: /var/ftpboot)")
 	secretKeyFile := flag.String("secret-key-file", envOr("SECRET_KEY_FILE", ""), "file holding the AES key for BMC passwords (default: <data-dir>/.secret-key)")
 	simulate := flag.Bool("simulate", envOr("SIMULATE", "") != "", "simulate deploys with a fake executor (no real IPMI) — for demos/dev")
+	advertise := flag.String("advertise", envOr("ADVERTISE", ""), "node-reachable driver endpoint ip:port stamped into node BMC SEL (e.g. 10.32.0.202:80); empty = don't stamp")
 	flag.Parse()
 
 	if err := os.MkdirAll(*dataDir, 0o755); err != nil {
@@ -41,6 +42,7 @@ func main() {
 		ExportDir:     *exportDir,
 		SecretKey:     os.Getenv("SNAPSHOT_SECRET_KEY"),
 		SecretKeyFile: *secretKeyFile,
+		Advertise:     *advertise,
 	}
 	if *simulate {
 		cfg.DeployExecutor = orchestrator.NewFakeExecutor()
