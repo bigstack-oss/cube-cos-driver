@@ -194,17 +194,45 @@ func (m *Manager) SubmitSetReady(clusterID string, in SetReadyInput) {
 // GetSetReady returns the current set_ready input/status for a cluster, lazily
 // loading the persisted value (so it's pre-filled on a later reimage / after a
 // restart, not just within the session that submitted it).
+//
+// Trigger is gated on ALL cluster nodes having finished their snapshot apply:
+// the master polls this and runs `cluster set_ready` only when Trigger is set,
+// so finalize (external network, cluster start) runs against a COMPLETE
+// cluster — never on a lone master while peers are still applying.
 func (m *Manager) GetSetReady(clusterID string) SetReadyInput {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if in, ok := m.setReady[clusterID]; ok {
-		return in
+	in, ok := m.setReady[clusterID]
+	if !ok {
+		if loaded, lok := m.store.LoadSetReady(clusterID); lok {
+			m.setReady[clusterID] = loaded
+			in = loaded
+			ok = true
+		}
 	}
-	if in, ok := m.store.LoadSetReady(clusterID); ok {
-		m.setReady[clusterID] = in
-		return in
+	if !ok {
+		return SetReadyInput{}
 	}
-	return SetReadyInput{}
+	if in.Trigger && !m.allNodesAppliedLocked(clusterID) {
+		in.Trigger = false // hold set_ready until every node is done
+	}
+	return in
+}
+
+// allNodesAppliedLocked reports whether every node in the active deploy has
+// finished applying (reached done). No active deploy → true (nothing to wait
+// for, e.g. a standalone re-arm after a restart).
+func (m *Manager) allNodesAppliedLocked(clusterID string) bool {
+	d := m.deploys[clusterID]
+	if d == nil || len(d.Nodes) == 0 {
+		return true
+	}
+	for _, nd := range d.Nodes {
+		if nd.State != StateDone {
+			return false
+		}
+	}
+	return true
 }
 
 // MarkReady records the master's set_ready result (cluster ready or not).

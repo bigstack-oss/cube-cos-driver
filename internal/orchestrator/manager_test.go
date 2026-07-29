@@ -348,3 +348,29 @@ func TestAutoModeNoGates(t *testing.T) {
 		t.Fatal("AdvanceStep on an auto deploy should error")
 	}
 }
+
+// set_ready must not fire until EVERY node has finished applying. GetSetReady
+// withholds Trigger until all deploy nodes reach done.
+func TestSetReadyGatesOnAllNodesApplied(t *testing.T) {
+	m := newSettleManager(t)
+	nodes := []Node{{Hostname: "m", MachineID: "1"}, {Hostname: "p", MachineID: "2"}}
+	if _, err := m.Start("cm", nodes, "m", nil, false); err != nil {
+		t.Fatal(err)
+	}
+	m.SubmitSetReady("cm", SetReadyInput{CreateExternal: true, CIDR: "10.0.0.0/16"})
+
+	// Master done, peer not → Trigger withheld.
+	m.advance("cm", "m", StateDone)
+	if m.GetSetReady("cm").Trigger {
+		t.Fatal("set_ready Trigger should be withheld while a node is still applying")
+	}
+	// All done → Trigger armed.
+	m.advance("cm", "p", StateDone)
+	if !m.GetSetReady("cm").Trigger {
+		t.Fatal("set_ready Trigger should arm once all nodes are done")
+	}
+	// The stored values still surface (UI pre-fill).
+	if m.GetSetReady("cm").CIDR != "10.0.0.0/16" {
+		t.Fatal("set_ready values lost")
+	}
+}
