@@ -289,39 +289,86 @@ func download(ctx context.Context, url, dest string) error {
 
 // reportRestoreDone tells the server the image restore finished (installer,
 // just before reboot) so the deploy UI can show restore-complete / reboot.
+// reportRestoreDone reports restore-complete and, in manual mode, HOLDS the
+// installer here (polling) until the operator authorizes the reboot step. The
+// server returns proceed=false while the manual gate is closed.
 func reportRestoreDone(srv string) {
 	body, _ := json.Marshal(map[string]any{"macs": macs(), "serial": serial()})
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "POST", srv+"/api/v1/agents/restore-done", bytes.NewReader(body))
-	if err != nil {
-		log.Printf("restore-done: %v", err)
-		return
+	logged := false
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		req, err := http.NewRequestWithContext(ctx, "POST", srv+"/api/v1/agents/restore-done", bytes.NewReader(body))
+		if err != nil {
+			cancel()
+			log.Printf("restore-done: %v", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		cancel()
+		if err != nil {
+			log.Printf("restore-done post: %v (retrying)", err)
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		var out struct {
+			OK      bool `json:"ok"`
+			Proceed bool `json:"proceed"`
+		}
+		json.NewDecoder(resp.Body).Decode(&out)
+		resp.Body.Close()
+		if out.Proceed {
+			log.Printf("restore-done reported — reboot authorized")
+			return
+		}
+		if !logged {
+			log.Printf("restore-done reported — manual mode: holding for operator to authorize reboot ...")
+			logged = true
+		}
+		time.Sleep(3 * time.Second)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Printf("restore-done post: %v", err)
-		return
-	}
-	resp.Body.Close()
-	log.Printf("restore-done reported (HTTP %d)", resp.StatusCode)
 }
 
 // reportApplyStarted tells the server the OS-phase agent is up (reboot done) and
 // about to apply — so the deploy UI flips reboot→done, apply→active immediately,
 // rather than sitting on "rebooting" for the whole apply.
-func reportApplyStarted(srv string) {
+// reportApplyStarted reports the OS agent is up and returns the server's
+// proceed flag (manual mode gates the master's apply on the apply-master step).
+func reportApplyStarted(srv string) bool {
 	body, _ := json.Marshal(map[string]any{"macs": macs(), "serial": serial()})
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", srv+"/api/v1/agents/apply-started", bytes.NewReader(body))
 	if err != nil {
-		return
+		return true
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if resp, err := http.DefaultClient.Do(req); err == nil {
-		resp.Body.Close()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return true // server unreachable: don't block the apply
+	}
+	var out struct {
+		OK      bool `json:"ok"`
+		Proceed bool `json:"proceed"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	resp.Body.Close()
+	return out.Proceed
+}
+
+// waitApplyGate holds the master until the server authorizes its apply (manual
+// mode). Re-reports apply-started each poll; returns once proceed is true.
+func waitApplyGate(srv string) {
+	if reportApplyStarted(srv) {
+		return
+	}
+	log.Printf("local-apply: manual mode — holding for operator to authorize master apply ...")
+	for {
+		time.Sleep(3 * time.Second)
+		if reportApplyStarted(srv) {
+			log.Printf("local-apply: master apply authorized")
+			return
+		}
 	}
 }
 
@@ -440,9 +487,8 @@ func runLocalApply(srv string, poll time.Duration) {
 		return
 	}
 
-	reportApplyStarted(srv) // agent up (reboot done): flip UI to applying
-
 	if !isMaster {
+		reportApplyStarted(srv) // agent up (reboot done): flip UI to applying
 		log.Printf("local-apply: non-master — waiting for master 'go' via SEL (OOB) ...")
 		if !waitSELGate(ctx, poll) {
 			log.Printf("local-apply: gate wait ended without go signal")
@@ -450,7 +496,10 @@ func runLocalApply(srv string, poll time.Duration) {
 		}
 		log.Printf("local-apply: SEL 'go' seen — master finished, applying local snapshot")
 	} else {
-		log.Printf("local-apply: master — applying local snapshot immediately")
+		// Manual mode holds the master here until the operator authorizes the
+		// apply-master step; auto mode returns immediately. Also flips UI to applying.
+		waitApplyGate(srv)
+		log.Printf("local-apply: master — applying local snapshot")
 	}
 
 	err := apply(ctx, "") // empty URL: apply() uses localSnapshot

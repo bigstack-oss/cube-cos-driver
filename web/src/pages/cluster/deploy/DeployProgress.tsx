@@ -2,17 +2,58 @@
 import { CosButton, CosTag } from '@cube-frontend/ui-library'
 import { useEffect, useRef, useState } from 'react'
 import {
+  advanceStep,
   cancelDeploy,
   Deploy,
   DeployState,
   getDeployStatus,
   isTerminal,
   Light,
+  MANUAL_STEPS,
   Phase,
   PhaseCell,
   CellStatus,
 } from '../../../api/deploy'
 import { PreflightReportModal } from './PreflightReportModal'
+
+// ManualStepBar shows the 5 gated steps with the current one highlighted and a
+// Next button that clears the current gate. Disabled once past the last step.
+const ManualStepBar = (props: { step: number; onNext: () => void }) => {
+  const { step, onNext } = props // step is 1-based (1..5)
+  const atLast = step >= MANUAL_STEPS.length
+  return (
+    <div className="flex items-center gap-x-3 rounded-md border border-primary/40 bg-primary/5 px-3 py-2">
+      <span className="secondary-body5 font-semibold text-primary">Manual</span>
+      <div className="flex flex-1 flex-wrap items-center gap-1.5">
+        {MANUAL_STEPS.map((label, i) => {
+          const n = i + 1
+          const state = n < step ? 'done' : n === step ? 'current' : 'todo'
+          return (
+            <span key={label} className="flex items-center gap-1.5">
+              <span
+                className={`secondary-body5 rounded px-2 py-0.5 font-medium ${
+                  state === 'current'
+                    ? 'bg-primary text-grey-0'
+                    : state === 'done'
+                      ? 'bg-status-positive/15 text-status-positive'
+                      : 'bg-functional-hover-grey text-functional-text-light'
+                }`}
+              >
+                {n}. {label}
+              </span>
+              {i < MANUAL_STEPS.length - 1 && (
+                <span className="secondary-body6 text-functional-border-divider">›</span>
+              )}
+            </span>
+          )
+        })}
+      </div>
+      <CosButton type="primary" size="sm" disabled={atLast} onClick={onNext}>
+        {atLast ? 'Finishing' : 'Next'}
+      </CosButton>
+    </div>
+  )
+}
 
 export type DeployProgressProps = {
   clusterId: string
@@ -170,6 +211,12 @@ export const DeployProgress = (props: DeployProgressProps) => {
         deploy={deploy}
         onClose={() => setShowReport(false)}
       />
+      {deploy.manual && (
+        <ManualStepBar
+          step={deploy.manualStep ?? 1}
+          onNext={() => advanceStep(clusterId).then(refresh).catch(() => {})}
+        />
+      )}
       <div className="flex flex-col gap-y-2">
         {nodes.map((n) => (
           <div key={n.hostname} className="flex flex-col gap-y-1">
@@ -198,7 +245,8 @@ export const DeployProgress = (props: DeployProgressProps) => {
               )}
               {n.message && (
                 <span
-                  className={`secondary-body5 ${n.state === 'error' ? 'text-status-negative' : 'text-functional-text-light'}`}
+                  title={n.message}
+                  className={`secondary-body5 max-w-[28rem] truncate ${n.state === 'error' ? 'text-status-negative' : 'text-functional-text-light'}`}
                 >
                   {n.message}
                 </span>

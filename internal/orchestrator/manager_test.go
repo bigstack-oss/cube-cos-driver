@@ -1,10 +1,35 @@
 package orchestrator
 
 import (
+	"os"
 	"context"
 	"testing"
 	"time"
 )
+
+// newSettleManager builds a Manager whose store dir is cleaned only after
+// background runNode goroutines have exited (used by gate-logic tests that
+// don't drive nodes to a terminal state).
+func newSettleManager(t *testing.T) *Manager {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "orch-gate-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(store, NewFakeExecutor(), Config{PollInterval: time.Millisecond, StageTimeout: 2 * time.Second})
+	t.Cleanup(func() {
+		for _, id := range []string{"cm", "ca"} {
+			m.Cancel(id)
+		}
+		time.Sleep(50 * time.Millisecond) // let cancelled goroutines exit
+		os.RemoveAll(dir)
+	})
+	return m
+}
 
 func newTestManager(t *testing.T, exec Executor) *Manager {
 	t.Helper()
@@ -41,7 +66,7 @@ func TestDeployReachesImagedThenAgentApplies(t *testing.T) {
 		{Hostname: "cube-1", MachineID: "m1", MACs: []string{"aa:01"}},
 		{Hostname: "cube-2", MachineID: "m2", MACs: []string{"aa:02"}},
 	}
-	if _, err := m.Start("cl1", nodes, "cube-1", nil); err != nil {
+	if _, err := m.Start("cl1", nodes, "cube-1", nil, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,7 +103,7 @@ func TestDeployReachesImagedThenAgentApplies(t *testing.T) {
 
 func TestGreenLight1Barrier(t *testing.T) {
 	m := newTestManager(t, NewFakeExecutor())
-	m.Start("cl1", []Node{{Hostname: "a", MachineID: "m1"}, {Hostname: "b", MachineID: "m2"}}, "a", nil)
+	m.Start("cl1", []Node{{Hostname: "a", MachineID: "m1"}, {Hostname: "b", MachineID: "m2"}}, "a", nil, false)
 	waitFor(t, m, "cl1", "a", StateImaged)
 	waitFor(t, m, "cl1", "b", StateImaged)
 
@@ -124,7 +149,7 @@ func TestGreenLight2MasterFirst(t *testing.T) {
 	m.Start("cl1", []Node{
 		{Hostname: "master", MachineID: "m1"},
 		{Hostname: "worker", MachineID: "m2"},
-	}, "master", nil)
+	}, "master", nil, false)
 	waitFor(t, m, "cl1", "master", StateImaged)
 	waitFor(t, m, "cl1", "worker", StateImaged)
 
@@ -168,7 +193,7 @@ func TestClusterVerifyGatedOnAllDone(t *testing.T) {
 	m.Start("cl1", []Node{
 		{Hostname: "cube-1", MachineID: "m1"},
 		{Hostname: "cube-2", MachineID: "m2"},
-	}, "cube-1", []string{"10.254.0.100"})
+	}, "cube-1", []string{"10.254.0.100"}, false)
 	waitFor(t, m, "cl1", "cube-1", StateImaged)
 	waitFor(t, m, "cl1", "cube-2", StateImaged)
 
@@ -208,7 +233,7 @@ func TestPreflightFailureIsolatesNode(t *testing.T) {
 	m.Start("cl1", []Node{
 		{Hostname: "bad", MachineID: "m1"},
 		{Hostname: "good", MachineID: "m2"},
-	}, "good", nil)
+	}, "good", nil, false)
 	waitFor(t, m, "cl1", "bad", StateError)
 	waitFor(t, m, "cl1", "good", StateImaged) // unaffected
 	d, _ := m.Status("cl1")
@@ -220,7 +245,7 @@ func TestPreflightFailureIsolatesNode(t *testing.T) {
 func TestStatusPersists(t *testing.T) {
 	store, _ := NewStore(t.TempDir())
 	m := NewManager(store, NewFakeExecutor(), Config{PollInterval: time.Millisecond, StageTimeout: time.Second})
-	m.Start("cl9", []Node{{Hostname: "n1", MachineID: "m1"}}, "n1", nil)
+	m.Start("cl9", []Node{{Hostname: "n1", MachineID: "m1"}}, "n1", nil, false)
 	waitFor(t, m, "cl9", "n1", StateImaged)
 	// A fresh manager backed by the same store reads persisted status.
 	m2 := NewManager(store, NewFakeExecutor(), Config{})
@@ -235,7 +260,7 @@ func TestCancelStopsStepping(t *testing.T) {
 	exec := NewFakeExecutor()
 	exec.StepsToDone = 100000
 	m := newTestManager(t, exec)
-	m.Start("clc", []Node{{Hostname: "n1", MachineID: "m1"}}, "n1", nil)
+	m.Start("clc", []Node{{Hostname: "n1", MachineID: "m1"}}, "n1", nil, false)
 	waitFor(t, m, "clc", "n1", StateNetbooting)
 	m.Cancel("clc")
 	// State should stop advancing to imaged.
@@ -243,5 +268,83 @@ func TestCancelStopsStepping(t *testing.T) {
 	d, _ := m.Status("clc")
 	if d.Nodes["n1"].State == StateImaged || d.Nodes["n1"].State == StateDone {
 		t.Fatalf("cancel did not stop stepping: %s", d.Nodes["n1"].State)
+	}
+}
+
+// Manual mode gates each phase on the operator's step cursor.
+func TestManualStepGates(t *testing.T) {
+	m := newSettleManager(t)
+	nodes := []Node{{Hostname: "m", MachineID: "1"}, {Hostname: "p", MachineID: "2"}}
+	if _, err := m.Start("cm", nodes, "m", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	pass := NodePreflight{CarrierOK: true, Passed: true}
+	m.PreflightReport("cm", "m", pass)
+	m.PreflightReport("cm", "p", pass)
+
+	// Step 1 (preflight): GL1 must NOT clear despite fabric ready.
+	if m.GreenLight1("cm", "m") {
+		t.Fatal("GL1 cleared at preflight step — should hold for operator")
+	}
+	// Reboot + master apply gates also closed.
+	if m.RebootProceed("cm") {
+		t.Fatal("reboot proceeded at preflight step")
+	}
+	if m.ApplyProceed("cm", "m") {
+		t.Fatal("master apply proceeded at preflight step")
+	}
+
+	// Next → restore authorized: GL1 clears now.
+	if s, _ := m.AdvanceStep("cm"); s != StepRestore {
+		t.Fatalf("step = %d, want %d", s, StepRestore)
+	}
+	if !m.GreenLight1("cm", "m") {
+		t.Fatal("GL1 should clear once restore authorized")
+	}
+	if m.RebootProceed("cm") {
+		t.Fatal("reboot should still hold at restore step")
+	}
+
+	// Next → reboot authorized.
+	m.AdvanceStep("cm")
+	if !m.RebootProceed("cm") {
+		t.Fatal("reboot should proceed once authorized")
+	}
+	if m.ApplyProceed("cm", "m") {
+		t.Fatal("master apply should still hold at reboot step")
+	}
+
+	// Next → apply-master authorized (master only; peer still held).
+	m.AdvanceStep("cm")
+	if !m.ApplyProceed("cm", "m") {
+		t.Fatal("master apply should proceed once authorized")
+	}
+	if m.ApplyProceed("cm", "p") {
+		t.Fatal("peer apply should hold until apply-rest")
+	}
+
+	// Next → apply-rest: peer proceeds; step caps at 5.
+	m.AdvanceStep("cm")
+	if !m.ApplyProceed("cm", "p") {
+		t.Fatal("peer apply should proceed at apply-rest")
+	}
+	if s, _ := m.AdvanceStep("cm"); s != StepApplyRest {
+		t.Fatalf("step should cap at %d, got %d", StepApplyRest, s)
+	}
+}
+
+// Auto mode never gates (all proceed immediately).
+func TestAutoModeNoGates(t *testing.T) {
+	m := newSettleManager(t)
+	m.Start("ca", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false)
+	m.PreflightReport("ca", "m", NodePreflight{CarrierOK: true, Passed: true})
+	if !m.GreenLight1("ca", "m") {
+		t.Fatal("auto GL1 should clear when fabric ready")
+	}
+	if !m.RebootProceed("ca") || !m.ApplyProceed("ca", "m") {
+		t.Fatal("auto mode must never gate reboot/apply")
+	}
+	if _, err := m.AdvanceStep("ca"); err == nil {
+		t.Fatal("AdvanceStep on an auto deploy should error")
 	}
 }

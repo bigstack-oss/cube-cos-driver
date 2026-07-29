@@ -40,6 +40,7 @@ func (h *deployHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/clusters/{id}/set-ready", h.submitSetReady)
 	mux.HandleFunc("GET /api/v1/clusters/{id}/set-ready", h.getSetReady)
 	mux.HandleFunc("POST /api/v1/clusters/{id}/deploy/preflight/rekick/{hostname}", h.rekickPreflight)
+	mux.HandleFunc("POST /api/v1/clusters/{id}/deploy/step/next", h.advanceStep)
 	mux.HandleFunc("POST /api/v1/machines/inspect", h.startInspect)
 	mux.HandleFunc("GET /api/v1/machines/inspect", h.inspectStatus)
 }
@@ -251,6 +252,7 @@ func (h *deployHandlers) start(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Confirm   bool     `json:"confirm"`
 		Hostnames []string `json:"hostnames"`
+		Manual    bool     `json:"manual"`
 	}
 	json.NewDecoder(r.Body).Decode(&body)
 	if !body.Confirm {
@@ -297,7 +299,7 @@ func (h *deployHandlers) start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no matching nodes to deploy")
 		return
 	}
-	dep, err := h.mgr.Start(id, nodes, master, h.verifyTargets(id))
+	dep, err := h.mgr.Start(id, nodes, master, h.verifyTargets(id), body.Manual)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
@@ -589,7 +591,7 @@ func (h *deployHandlers) restoreDone(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("restore-done for %s (serial=%q)", assn.Hostname, req.Serial)
 	h.mgr.RestoreDone(assn.ClusterID, assn.Hostname)
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proceed": h.mgr.RebootProceed(assn.ClusterID)})
 }
 
 // applyStarted is reported by the OS-phase agent the moment it comes up (reboot
@@ -611,7 +613,7 @@ func (h *deployHandlers) applyStarted(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("apply-started for %s (serial=%q)", assn.Hostname, req.Serial)
 	h.mgr.ApplyStarted(assn.ClusterID, assn.Hostname)
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proceed": h.mgr.ApplyProceed(assn.ClusterID, assn.Hostname)})
 }
 
 // applyFailed is reported by the OS-phase agent when the snapshot apply fails
@@ -728,6 +730,20 @@ func (h *deployHandlers) preflightReport(w http.ResponseWriter, r *http.Request)
 
 // rekickPreflight asks a node's parked installer agent to redo preflight from
 // check-in — after the operator fixes the cluster config/snapshot.
+// advanceStep moves a manual deploy to the next gated step (operator "Next").
+func (h *deployHandlers) advanceStep(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathValue(w, r, "id")
+	if !ok {
+		return
+	}
+	step, err := h.mgr.AdvanceStep(id)
+	if err != nil {
+		writeError(w, http.StatusConflict, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"message": "advanced", "manualStep": step})
+}
+
 func (h *deployHandlers) rekickPreflight(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathValue(w, r, "id")
 	if !ok {

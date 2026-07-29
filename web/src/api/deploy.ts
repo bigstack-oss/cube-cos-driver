@@ -65,7 +65,20 @@ export type Deploy = {
   clusterId: string
   startedAt: string
   nodes: Record<string, NodeDeploy>
+  // Manual step-gated deploy: manualStep is the current gate cursor
+  // (1=preflight 2=restore 3=reboot 4=apply-master 5=apply-rest+set_ready).
+  manual?: boolean
+  manualStep?: number
 }
+
+// Manual-deploy step labels, indexed by manualStep (1..5).
+export const MANUAL_STEPS = [
+  'Preflight check',
+  'Restore all',
+  'Reboot all',
+  'Applying master',
+  'Apply rest + set ready',
+] as const
 
 export type PlanRow = {
   hostname: string
@@ -108,13 +121,26 @@ const throwOnError = async (resp: Response): Promise<unknown> => {
 
 export const startDeploy = async (
   id: string,
-  hostnames?: string[],
+  opts?: { hostnames?: string[]; manual?: boolean },
 ): Promise<void> => {
   await throwOnError(
     await fetch(`/api/v1/clusters/${encodeURIComponent(id)}/deploy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ confirm: true, hostnames }),
+      body: JSON.stringify({
+        confirm: true,
+        hostnames: opts?.hostnames,
+        manual: opts?.manual ?? false,
+      }),
+    }),
+  )
+}
+
+// advanceStep clears the current manual-deploy gate (operator "Next").
+export const advanceStep = async (id: string): Promise<void> => {
+  await throwOnError(
+    await fetch(`/api/v1/clusters/${encodeURIComponent(id)}/deploy/step/next`, {
+      method: 'POST',
     }),
   )
 }

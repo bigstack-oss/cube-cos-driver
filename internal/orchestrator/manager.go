@@ -339,7 +339,7 @@ func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
 
 // Start begins (or restarts) a deploy of the given nodes for a cluster.
 // master is the hostname whose FTS must finish before other nodes apply.
-func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTargets []string) (*Deploy, error) {
+func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTargets []string, manual bool) (*Deploy, error) {
 	if len(nodes) == 0 {
 		return nil, errors.New("no nodes to deploy")
 	}
@@ -347,7 +347,11 @@ func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTar
 	if cancel, ok := m.cancels[clusterID]; ok {
 		cancel() // stop any prior run
 	}
-	d := &Deploy{ClusterID: clusterID, StartedAt: nowUTC(), Master: master, VerifyTargets: verifyTargets, Nodes: map[string]*NodeDeploy{}}
+	step := 0
+	if manual {
+		step = StepPreflight
+	}
+	d := &Deploy{ClusterID: clusterID, StartedAt: nowUTC(), Master: master, VerifyTargets: verifyTargets, Manual: manual, ManualStep: step, Nodes: map[string]*NodeDeploy{}}
 	byHost := map[string]Node{}
 	for _, n := range nodes {
 		d.Nodes[n.Hostname] = &NodeDeploy{
@@ -735,6 +739,10 @@ func (m *Manager) GreenLight1(clusterID, hostname string) (clear bool) {
 	if d == nil {
 		return false
 	}
+	// Manual mode: also hold until the operator advances past the preflight step.
+	if d.Manual && d.ManualStep < StepRestore {
+		return false
+	}
 	clear = m.fabricReadyLocked(d)
 	if clear {
 		if nd := d.Nodes[hostname]; nd != nil && (nd.State == StatePreflightOK || nd.State == StatePreflighting) {
@@ -744,6 +752,68 @@ func (m *Manager) GreenLight1(clusterID, hostname string) (clear bool) {
 		}
 	}
 	return clear
+}
+
+// RebootProceed gates the installer between restore-done and reboot. In manual
+// mode it holds until the operator advances past the restore step; otherwise
+// (and in auto mode) it always proceeds.
+func (m *Manager) RebootProceed(clusterID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := m.deploys[clusterID]
+	if d == nil {
+		return true
+	}
+	return !d.Manual || d.ManualStep >= StepReboot
+}
+
+// ApplyProceed gates the master's OS-phase snapshot apply. In manual mode it
+// holds until the operator advances to the apply-master step. Non-masters are
+// gated separately by the master-first SEL 'go'.
+func (m *Manager) ApplyProceed(clusterID, hostname string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := m.deploys[clusterID]
+	if d == nil {
+		return true
+	}
+	if !d.Manual {
+		return true
+	}
+	if hostname == d.Master {
+		return d.ManualStep >= StepApplyMaster
+	}
+	// Peers proceed once the operator authorizes apply-rest.
+	return d.ManualStep >= StepApplyRest
+}
+
+// AdvanceStep moves a manual deploy to the next step (operator "Next"). Returns
+// the new step. No-op for an auto deploy or when already at the final step.
+func (m *Manager) AdvanceStep(clusterID string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := m.deploys[clusterID]
+	if d == nil {
+		return 0, fmt.Errorf("no active deploy for cluster %s", clusterID)
+	}
+	if !d.Manual {
+		return 0, fmt.Errorf("deploy for cluster %s is not in manual mode", clusterID)
+	}
+	if d.ManualStep < StepApplyRest {
+		d.ManualStep++
+		m.persistLocked(d)
+	}
+	return d.ManualStep, nil
+}
+
+// ManualState returns whether the deploy is manual and its current step.
+func (m *Manager) ManualState(clusterID string) (manual bool, step int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if d := m.deploys[clusterID]; d != nil {
+		return d.Manual, d.ManualStep
+	}
+	return false, 0
 }
 
 // fabricReadyLocked is the green-light-1 barrier predicate.

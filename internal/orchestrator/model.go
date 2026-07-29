@@ -266,7 +266,21 @@ type Deploy struct {
 	// ClusterReady + Verify hold the Tier-2 whole-cluster check result.
 	ClusterReady bool              `json:"clusterReady"`
 	Verify       []PreflightResult `json:"verify,omitempty"`
+	// Manual gates the deploy step-by-step: the operator advances ManualStep
+	// via AdvanceStep, and each phase barrier holds until the step reaches it.
+	// 1=preflight 2=restore 3=reboot 4=apply-master 5=apply-rest+set_ready.
+	Manual     bool `json:"manual"`
+	ManualStep int  `json:"manualStep,omitempty"`
 }
+
+// Manual-deploy step cursor values (Deploy.ManualStep).
+const (
+	StepPreflight   = 1 // preflight running; Next authorizes restore
+	StepRestore     = 2 // restore authorized; Next authorizes reboot
+	StepReboot      = 3 // reboot authorized; Next authorizes master apply
+	StepApplyMaster = 4 // master apply authorized; Next authorizes apply-rest+set_ready
+	StepApplyRest   = 5 // peers apply + set_ready authorized (final)
+)
 
 // terminal reports whether a node state needs no further engine stepping.
 func terminal(s State) bool {

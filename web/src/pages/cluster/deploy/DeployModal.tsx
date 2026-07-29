@@ -47,6 +47,7 @@ export const DeployModal = (props: DeployModalProps) => {
   const [cidr, setCidr] = useState('')
   const [gateway, setGateway] = useState('')
   const [ipRange, setIpRange] = useState('')
+  const [manual, setManual] = useState(false)
 
   useEffect(() => {
     if (!isOpen) return
@@ -86,7 +87,7 @@ export const DeployModal = (props: DeployModalProps) => {
         gateway,
         ipRange,
       })
-      await startDeploy(clusterId)
+      await startDeploy(clusterId, { manual })
       onStarted()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -117,6 +118,25 @@ export const DeployModal = (props: DeployModalProps) => {
           Each node below will be set to one-time PXE boot and power-cycled over
           IPMI, then re-imaged. Make sure these are the right machines.
         </CosInlineNotification>
+
+        <label className="flex items-start gap-x-2 rounded-md border border-functional-border-divider px-3 py-2">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={manual}
+            onChange={(e) => setManual(e.target.checked)}
+          />
+          <span>
+            <span className="primary-body4 font-semibold">
+              Manual (step-by-step)
+            </span>
+            <span className="secondary-body5 block text-functional-text-light">
+              Gate each phase — preflight → restore → reboot → apply master →
+              apply rest + set ready — behind a Next button. Preflight can be
+              re-run per node before you proceed.
+            </span>
+          </span>
+        </label>
 
         {error && (
           <CosInlineNotification type="error" title="Error" isClosable={false}>
