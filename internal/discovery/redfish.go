@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
@@ -76,6 +77,16 @@ func (RedfishDiscoverer) Discover(ctx context.Context, t Target) (inventory.Inve
 
 	if storages, err := sys.Storage(); err == nil {
 		for _, st := range storages {
+			// RAID virtual disks first: on a HW-RAID controller (e.g. Dell PERC)
+			// the OS sees the virtual disk, not the member drives — so VDs are
+			// the OS-install candidates and the members are not.
+			hasVD := false
+			if vols, verr := st.Volumes(); verr == nil {
+				for _, v := range vols {
+					inv.Disks = append(inv.Disks, volumeDisk(v))
+					hasVD = true
+				}
+			}
 			drives, err := st.Drives()
 			if err != nil {
 				continue
@@ -88,6 +99,12 @@ func (RedfishDiscoverer) Discover(ctx context.Context, t Target) (inventory.Inve
 				}
 				if d.CapacityBytes != nil {
 					disk.SizeBytes = int64(*d.CapacityBytes)
+				}
+				if hasVD {
+					// Behind a RAID controller with volumes defined: the member
+					// drive is not OS-visible — never an install target.
+					no := false
+					disk.OSEligible = &no
 				}
 				inv.Disks = append(inv.Disks, disk)
 			}
@@ -104,4 +121,29 @@ func (RedfishDiscoverer) Discover(ctx context.Context, t Target) (inventory.Inve
 	}
 
 	return inv, nil
+}
+
+// volumeDisk maps a Redfish RAID volume (virtual disk) to an inventory disk.
+// Explicitly OS-eligible: the UI's model heuristic would otherwise exclude
+// names containing "virtual".
+func volumeDisk(v *schemas.Volume) inventory.Disk {
+	name := v.DisplayName
+	if name == "" {
+		name = v.Name
+	}
+	raid := string(v.RAIDType)
+	if raid == "" {
+		raid = string(v.VolumeType)
+	}
+	yes := true
+	d := inventory.Disk{
+		Name:       name,
+		Model:      strings.TrimSpace("RAID virtual disk " + raid),
+		Type:       raid,
+		OSEligible: &yes,
+	}
+	if v.CapacityBytes != nil {
+		d.SizeBytes = int64(*v.CapacityBytes)
+	}
+	return d
 }

@@ -119,7 +119,7 @@ export const AssignServerFlow = (props: AssignServerFlowProps) => {
                 <p className="secondary-body4 text-functional-text-light">
                   No local install disks discovered
                   {total > 0
-                    ? ` (${total} SAN/virtual device(s) excluded — not valid OS targets)`
+                    ? ` (${total} SAN/virtual/RAID-member device(s) excluded — not valid OS targets)`
                     : ''}
                   .
                 </p>
@@ -146,7 +146,7 @@ export const AssignServerFlow = (props: AssignServerFlowProps) => {
                 })}
                 {excluded > 0 && (
                   <p className="secondary-body5 text-functional-text-light">
-                    {excluded} SAN / virtual device(s) hidden — only local
+                    {excluded} SAN / virtual / RAID-member device(s) hidden — only OS-visible local
                     physical disks can host the OS.
                   </p>
                 )}

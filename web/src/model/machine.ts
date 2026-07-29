@@ -72,6 +72,11 @@ export const osEligibleDisks = (inv?: HardwareInventory): Disk[] =>
 export const diskMediaType = (d: Disk): string => {
   const tran = (d.tran ?? '').toLowerCase()
   const hay = `${d.model ?? ''} ${d.name ?? ''}`.toLowerCase()
+  // HW-RAID virtual disk (explicitly OS-eligible from discovery) — label it
+  // before the generic /virtual/ checks would call it virtual media.
+  if (d.osEligible === true && /raid virtual disk/.test(hay)) return 'RAID · virtual disk'
+  if (d.osEligible === false && (tran === '' || tran === 'sas' || tran === 'sata') && !/virtual|compellent|usb/.test(hay))
+    return 'RAID member'
   if (tran === 'iscsi') return 'SAN · iSCSI'
   if (tran === 'fc' || tran === 'fcoe') return 'SAN · FC'
   if (/virtual|vdvd|\bidrac\b|vdisk/.test(hay)) return 'Virtual media'

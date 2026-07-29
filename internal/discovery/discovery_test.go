@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
+	"github.com/stmcginnis/gofish/schemas"
 )
 
 type fake struct {
@@ -57,5 +58,25 @@ func TestCombinedReturnsErrorWhenBothFail(t *testing.T) {
 	}
 	if _, err := c.Discover(context.Background(), Target{}); err == nil {
 		t.Fatal("expected error when both fail")
+	}
+}
+
+func TestVolumeDiskMapsRAIDVirtualDisk(t *testing.T) {
+	cap := 800166076416 // ~745 GiB
+	v := &schemas.Volume{}
+	v.Name = "Virtual Disk 0"
+	v.DisplayName = "CubeCOS"
+	v.RAIDType = "RAID1"
+	v.CapacityBytes = &cap
+	d := volumeDisk(v)
+	if d.Name != "CubeCOS" {
+		t.Fatalf("name = %q, want display name", d.Name)
+	}
+	if d.Type != "RAID1" || d.SizeBytes != int64(cap) {
+		t.Fatalf("type/size = %q/%d", d.Type, d.SizeBytes)
+	}
+	// Explicit eligibility beats the UI's /virtual/ exclusion heuristic.
+	if d.OSEligible == nil || !*d.OSEligible {
+		t.Fatal("RAID virtual disk must be explicitly OS-eligible")
 	}
 }
