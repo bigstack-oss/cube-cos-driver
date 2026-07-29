@@ -26,6 +26,7 @@ func main() {
 	secretKeyFile := flag.String("secret-key-file", envOr("SECRET_KEY_FILE", ""), "file holding the AES key for BMC passwords (default: <data-dir>/.secret-key)")
 	simulate := flag.Bool("simulate", envOr("SIMULATE", "") != "", "simulate deploys with a fake executor (no real IPMI) — for demos/dev")
 	advertise := flag.String("advertise", envOr("ADVERTISE", ""), "node-reachable driver endpoint ip:port stamped into node BMC SEL (e.g. 10.32.0.202:80); empty = don't stamp")
+	pxeRoot := flag.String("pxe-root", envOr("PXE_ROOT", ""), "PXE server grub.cfg dir (local or NFS mount) enabling the image picker + default flip; empty = disabled")
 	flag.Parse()
 
 	if err := os.MkdirAll(*dataDir, 0o755); err != nil {
@@ -43,6 +44,7 @@ func main() {
 		SecretKey:     os.Getenv("SNAPSHOT_SECRET_KEY"),
 		SecretKeyFile: *secretKeyFile,
 		Advertise:     *advertise,
+		PXERoot:       *pxeRoot,
 	}
 	if *simulate {
 		cfg.DeployExecutor = orchestrator.NewFakeExecutor()

@@ -10,6 +10,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-driver/internal/discovery"
 	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
 	"github.com/bigstack-oss/cube-cos-driver/internal/orchestrator"
+	"github.com/bigstack-oss/cube-cos-driver/internal/pxe"
 	"github.com/bigstack-oss/cube-cos-driver/internal/secret"
 	"github.com/bigstack-oss/cube-cos-driver/internal/storage"
 	"github.com/bigstack-oss/cube-cos-driver/internal/webui"
@@ -34,6 +35,10 @@ type Config struct {
 	// booting node's BMC SEL so the node phones home to THIS driver regardless
 	// of the PXE entry's driver_server=. Empty = don't stamp.
 	Advertise string
+	// PXERoot is the PXE server's grub.cfg directory (local, or an NFS mount of
+	// the PXE export). Enables the deploy/inspect image picker + default flip.
+	// Empty = image selection disabled.
+	PXERoot string
 }
 
 func New(cfg Config) (http.Handler, error) {
@@ -82,6 +87,9 @@ func New(cfg Config) (http.Handler, error) {
 		}
 		mgr.SetAdvertise(ip, port)
 	}
+	if cfg.PXERoot != "" {
+		mgr.SetPXEFlipper(pxe.NewFlipper(cfg.PXERoot))
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +100,7 @@ func New(cfg Config) (http.Handler, error) {
 	h.register(mux)
 	mh := &machineHandlers{store: machineStore, discoverer: discoverer, mgr: mgr}
 	mh.register(mux)
-	dh := &deployHandlers{clusters: clusterStore, machines: machineStore, mgr: mgr}
+	dh := &deployHandlers{clusters: clusterStore, machines: machineStore, mgr: mgr, pxeRoot: cfg.PXERoot}
 	dh.register(mux)
 	mux.Handle("/", webui.Handler())
 	return mux, nil

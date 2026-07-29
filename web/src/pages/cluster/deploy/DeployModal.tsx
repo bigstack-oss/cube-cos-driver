@@ -4,6 +4,7 @@
 // value so a re-image reuses them.
 import { CosInlineNotification, CosModal } from '@cube-frontend/ui-library'
 import { useEffect, useState } from 'react'
+import { ImagePicker } from '../../../components/ImagePicker'
 import {
   getDeployPlan,
   getSetReady,
@@ -48,6 +49,7 @@ export const DeployModal = (props: DeployModalProps) => {
   const [gateway, setGateway] = useState('')
   const [ipRange, setIpRange] = useState('')
   const [manual, setManual] = useState(false)
+  const [image, setImage] = useState('')
 
   useEffect(() => {
     if (!isOpen) return
@@ -87,7 +89,7 @@ export const DeployModal = (props: DeployModalProps) => {
         gateway,
         ipRange,
       })
-      await startDeploy(clusterId, { manual })
+      await startDeploy(clusterId, { manual, image })
       onStarted()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -198,6 +200,8 @@ export const DeployModal = (props: DeployModalProps) => {
             ))}
           </div>
         )}
+
+        <ImagePicker onChange={setImage} />
 
         <div className="flex flex-col gap-y-3 rounded-md border border-functional-border-divider p-3">
           <span className="primary-body3 font-semibold">

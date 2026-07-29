@@ -121,7 +121,7 @@ const throwOnError = async (resp: Response): Promise<unknown> => {
 
 export const startDeploy = async (
   id: string,
-  opts?: { hostnames?: string[]; manual?: boolean },
+  opts?: { hostnames?: string[]; manual?: boolean; image?: string },
 ): Promise<void> => {
   await throwOnError(
     await fetch(`/api/v1/clusters/${encodeURIComponent(id)}/deploy`, {
@@ -131,6 +131,7 @@ export const startDeploy = async (
         confirm: true,
         hostnames: opts?.hostnames,
         manual: opts?.manual ?? false,
+        image: opts?.image ?? '',
       }),
     }),
   )
@@ -206,4 +207,15 @@ export const rekickPreflight = async (
       { method: 'POST' },
     ),
   )
+}
+
+// PxeImage is one bootable image on the PXE server (deploy/inspect picker).
+export type PxeImage = { name: string; default: boolean }
+
+// listPxeImages returns the PXE server's images (empty if selection disabled).
+export const listPxeImages = async (): Promise<PxeImage[]> => {
+  const resp = await fetch('/api/v1/pxe/images')
+  if (!resp.ok) return []
+  const body = (await resp.json()) as { images?: PxeImage[] }
+  return body.images ?? []
 }

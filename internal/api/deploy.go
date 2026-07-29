@@ -12,6 +12,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-driver/internal/generator"
 	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
 	"github.com/bigstack-oss/cube-cos-driver/internal/orchestrator"
+	"github.com/bigstack-oss/cube-cos-driver/internal/pxe"
 	"github.com/bigstack-oss/cube-cos-driver/internal/storage"
 )
 
@@ -19,6 +20,7 @@ type deployHandlers struct {
 	clusters *storage.Store
 	machines *inventory.Store
 	mgr      *orchestrator.Manager
+	pxeRoot  string // grub.cfg dir for the image picker; "" = selection disabled
 }
 
 func (h *deployHandlers) register(mux *http.ServeMux) {
@@ -42,6 +44,7 @@ func (h *deployHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/clusters/{id}/deploy/preflight/rekick/{hostname}", h.rekickPreflight)
 	mux.HandleFunc("POST /api/v1/clusters/{id}/deploy/step/next", h.advanceStep)
 	mux.HandleFunc("POST /api/v1/machines/inspect", h.startInspect)
+	mux.HandleFunc("GET /api/v1/pxe/images", h.pxeImages)
 	mux.HandleFunc("GET /api/v1/machines/inspect", h.inspectStatus)
 }
 
@@ -253,6 +256,7 @@ func (h *deployHandlers) start(w http.ResponseWriter, r *http.Request) {
 		Confirm   bool     `json:"confirm"`
 		Hostnames []string `json:"hostnames"`
 		Manual    bool     `json:"manual"`
+		Image     string   `json:"image"`
 	}
 	json.NewDecoder(r.Body).Decode(&body)
 	if !body.Confirm {
@@ -299,7 +303,7 @@ func (h *deployHandlers) start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no matching nodes to deploy")
 		return
 	}
-	dep, err := h.mgr.Start(id, nodes, master, h.verifyTargets(id), body.Manual)
+	dep, err := h.mgr.Start(id, nodes, master, h.verifyTargets(id), body.Manual, body.Image)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
@@ -472,7 +476,8 @@ func (h *deployHandlers) report(w http.ResponseWriter, r *http.Request) {
 // CPU/mem/disk/NIC to work with. Power-cycles the boxes.
 func (h *deployHandlers) startInspect(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		IDs []string `json:"ids"`
+		IDs   []string `json:"ids"`
+		Image string   `json:"image"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
@@ -497,7 +502,10 @@ func (h *deployHandlers) startInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("inspect: starting %d machine(s)", len(nodes))
-	h.mgr.StartInspect(nodes, labels)
+	if err := h.mgr.StartInspect(nodes, labels, req.Image); err != nil {
+		writeError(w, http.StatusConflict, "%v", err)
+		return
+	}
 	writeJSON(w, http.StatusAccepted, map[string]int{"started": len(nodes)})
 }
 
@@ -726,6 +734,20 @@ func (h *deployHandlers) preflightReport(w http.ResponseWriter, r *http.Request)
 		Message:   "ok",
 		RekickSeq: h.mgr.RekickSeq(req.ClusterID, req.Hostname),
 	})
+}
+
+// pxeImages lists the PXE server's bootable images for the deploy/inspect image
+// picker. Empty list when image selection is disabled (no --pxe-root).
+func (h *deployHandlers) pxeImages(w http.ResponseWriter, r *http.Request) {
+	imgs := []pxe.Entry{}
+	if h.pxeRoot != "" {
+		if e, err := pxe.ListEntries(h.pxeRoot); err == nil {
+			imgs = e
+		} else {
+			log.Printf("pxe images: %v", err)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"images": imgs})
 }
 
 // rekickPreflight asks a node's parked installer agent to redo preflight from

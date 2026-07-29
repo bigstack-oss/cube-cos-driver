@@ -62,12 +62,15 @@ export type InspectStatus = {
   updatedAt: string
 }
 
-export const startInspect = async (ids: string[]): Promise<void> => {
+export const startInspect = async (
+  ids: string[],
+  image?: string,
+): Promise<void> => {
   await jsonOrThrow(
     await fetch('/api/v1/machines/inspect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids }),
+      body: JSON.stringify({ ids, image: image ?? '' }),
     }),
   )
 }

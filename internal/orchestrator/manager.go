@@ -50,6 +50,9 @@ type Manager struct {
 	// regardless of the shared PXE entry's driver_server=. Zero IP = disabled.
 	advertiseIP   [4]byte
 	advertisePort uint16
+	// pxe flips the PXE default to an operator-picked image for a deploy/inspect
+	// and restores it after the nodes boot. nil = image selection disabled.
+	pxe PXEFlipper
 
 	mu      sync.Mutex
 	deploys map[string]*Deploy
@@ -107,7 +110,7 @@ const inspectCheckinTimeout = 15 * time.Minute
 // StartInspect force-PXEs + power-cycles each machine so it boots the installer
 // in inventory mode (agent --inventory: report hardware, then halt). Progress is
 // tracked per machine for the UI.
-func (m *Manager) StartInspect(nodes []Node, labels map[string]string) {
+func (m *Manager) StartInspect(nodes []Node, labels map[string]string, image string) error {
 	m.mu.Lock()
 	for _, n := range nodes {
 		m.inspects[n.MachineID] = &InspectStatus{
@@ -115,6 +118,18 @@ func (m *Manager) StartInspect(nodes []Node, labels map[string]string) {
 		}
 	}
 	m.mu.Unlock()
+	ids := make([]string, len(nodes))
+	for i, n := range nodes {
+		ids[i] = n.MachineID
+	}
+	// Repoint the PXE default to the picked inspect image; restore once every
+	// inspected machine has booted (reported) or errored. Abort if locked.
+	if err := m.flipForBoot(context.Background(), image, nil, func() bool { return m.inspectsBooted(ids) }); err != nil {
+		for _, n := range nodes {
+			m.setInspect(n.MachineID, "error", err.Error())
+		}
+		return err
+	}
 	for i, n := range nodes {
 		go func(n Node, idx int) {
 			// Stagger power-ons so a batch doesn't hit simultaneous inrush.
@@ -136,6 +151,24 @@ func (m *Manager) StartInspect(nodes []Node, labels map[string]string) {
 			m.expireInspect(n.MachineID)
 		}(n, i)
 	}
+	return nil
+}
+
+// inspectsBooted reports whether every listed machine has finished its inspect
+// boot — reported inventory or errored (so the PXE flip can be restored).
+func (m *Manager) inspectsBooted(machineIDs []string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, id := range machineIDs {
+		s := m.inspects[id]
+		if s == nil {
+			continue
+		}
+		if s.State != "reported" && s.State != "error" {
+			return false
+		}
+	}
+	return true
 }
 
 // expireInspect marks an inspect as errored only if it never reported — a node
@@ -265,6 +298,72 @@ func (m *Manager) SetSELObserver(o SELObserver) { m.sel = o }
 // SetAdvertise sets the driver's node-reachable endpoint (stamped into node
 // SEL at boot). ip zero-value disables stamping.
 func (m *Manager) SetAdvertise(ip [4]byte, port uint16) { m.advertiseIP, m.advertisePort = ip, port }
+
+// PXEFlipper repoints the PXE server's default boot entry to a chosen image
+// (guarded by the shared advisory lock) and returns a restore func that sets
+// the default back and releases the lock. image=="" is a no-op (nil restore).
+type PXEFlipper interface {
+	Flip(image string) (restore func(), err error)
+}
+
+// SetPXEFlipper enables operator image selection for deploy/inspect.
+func (m *Manager) SetPXEFlipper(p PXEFlipper) { m.pxe = p }
+
+// flipForBoot repoints the PXE default to image (if selection is enabled and an
+// image was picked) and starts a watcher that restores the default once every
+// node in nodes has booted the image (reached preflight or errored) or the
+// stage timeout elapses. Returns an error only if the flip itself fails (e.g.
+// the advisory lock is held) — the caller aborts the run so nodes don't boot a
+// stale default. A no-op (nil pxe / empty image) returns nil.
+func (m *Manager) flipForBoot(ctx context.Context, image string, hosts []string, booted func() bool) error {
+	if m.pxe == nil || image == "" {
+		return nil
+	}
+	restore, err := m.pxe.Flip(image)
+	if err != nil {
+		return err
+	}
+	if restore == nil {
+		return nil // image was already the default — nothing flipped
+	}
+	go func() {
+		deadline := time.Now().Add(m.cfg.StageTimeout + time.Minute)
+		t := time.NewTicker(m.cfg.PollInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				restore()
+				return
+			case <-t.C:
+			}
+			if booted() || time.Now().After(deadline) {
+				log.Printf("orchestrator: all nodes booted (or timeout) — restoring PXE default")
+				restore()
+				return
+			}
+		}
+	}()
+	return nil
+}
+
+// deployNodesBooted reports whether every node in a deploy has loaded the PXE
+// image — reached preflight (rank>=1) or terminally failed (won't reboot into
+// the picked image, so the flip can be released).
+func (m *Manager) deployNodesBooted(clusterID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := m.deploys[clusterID]
+	if d == nil {
+		return true
+	}
+	for _, nd := range d.Nodes {
+		if pipelineRank(nd.State) < 1 && nd.State != StateError {
+			return false
+		}
+	}
+	return true
+}
 
 // EndpointWriter stamps the driver's endpoint into a node's BMC SEL.
 type EndpointWriter interface {
@@ -397,7 +496,7 @@ func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
 
 // Start begins (or restarts) a deploy of the given nodes for a cluster.
 // master is the hostname whose FTS must finish before other nodes apply.
-func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTargets []string, manual bool) (*Deploy, error) {
+func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTargets []string, manual bool, image string) (*Deploy, error) {
 	if len(nodes) == 0 {
 		return nil, errors.New("no nodes to deploy")
 	}
@@ -426,6 +525,17 @@ func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTar
 	m.cancels[clusterID] = cancel
 	m.persistLocked(d)
 	m.mu.Unlock()
+
+	// Repoint the PXE default to the picked image before powering nodes; abort
+	// the run if the shared default is locked by another deploy.
+	if err := m.flipForBoot(ctx, image, nil, func() bool { return m.deployNodesBooted(clusterID) }); err != nil {
+		cancel()
+		m.mu.Lock()
+		delete(m.deploys, clusterID)
+		delete(m.cancels, clusterID)
+		m.mu.Unlock()
+		return nil, err
+	}
 
 	for i, n := range nodes {
 		go func(idx int, n Node) {

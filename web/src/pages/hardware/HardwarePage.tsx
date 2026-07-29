@@ -9,6 +9,7 @@ import {
   startInspect,
   updateMachine,
 } from '../../api/machines'
+import { ImagePicker } from '../../components/ImagePicker'
 import { formatBytes, Machine, MachineInput } from '../../model/machine'
 import { ImportMachinesModal } from './ImportMachinesModal'
 import { MachineDetails } from './MachineDetails'
@@ -55,6 +56,7 @@ export const HardwarePage = () => {
   const [importOpen, setImportOpen] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [inspectConfirm, setInspectConfirm] = useState(false)
+  const [inspectImage, setInspectImage] = useState('')
   const [inspects, setInspects] = useState<InspectStatus[]>([])
   const [modalError, setModalError] = useState('')
   const [deletingMachine, setDeletingMachine] = useState<Machine | null>(null)
@@ -147,7 +149,7 @@ export const HardwarePage = () => {
 
   const handleInspect = async () => {
     try {
-      await startInspect([...selected])
+      await startInspect([...selected], inspectImage)
       setInspectConfirm(false)
       setSelected(new Set())
       refreshInspects()
@@ -299,6 +301,9 @@ export const HardwarePage = () => {
             and NICs, then powers off. Only run on servers that are safe to
             reboot.
           </p>
+          <div className="mt-3">
+            <ImagePicker onChange={setInspectImage} />
+          </div>
         </CosModal>
       )}
 

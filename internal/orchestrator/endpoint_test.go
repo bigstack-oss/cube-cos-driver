@@ -2,7 +2,9 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 )
 
 func TestEndpointRoundTrip(t *testing.T) {
@@ -64,7 +66,7 @@ func TestDeployStampsEndpoint(t *testing.T) {
 	fg := &fakeGate{}
 	m.SetGateWriter(fg)
 	m.SetAdvertise([4]byte{10, 32, 0, 202}, 80)
-	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false); err != nil {
+	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, ""); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, m, "cm", "m", StateImaged)
@@ -82,11 +84,64 @@ func TestDeployNoStampWithoutAdvertise(t *testing.T) {
 	m := newSettleManager(t)
 	fg := &fakeGate{}
 	m.SetGateWriter(fg)
-	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false); err != nil {
+	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, ""); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, m, "cm", "m", StateImaged)
 	if len(fg.endpoints) != 0 {
 		t.Fatalf("stamped %d endpoints without advertise set", len(fg.endpoints))
 	}
+}
+
+// fakeFlipper records flip requests and lets a test force a lock conflict.
+type fakeFlipper struct {
+	flipped  []string
+	restored int
+	failWith error
+}
+
+func (f *fakeFlipper) Flip(image string) (func(), error) {
+	if f.failWith != nil {
+		return nil, f.failWith
+	}
+	f.flipped = append(f.flipped, image)
+	return func() { f.restored++ }, nil
+}
+
+// A picked image flips the PXE default at deploy start and restores once all
+// nodes have booted.
+func TestDeployFlipsAndRestoresImage(t *testing.T) {
+	m := newSettleManager(t)
+	ff := &fakeFlipper{}
+	m.SetPXEFlipper(ff)
+	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, "v3.1.0-rc6 (UEFI)"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ff.flipped) != 1 || ff.flipped[0] != "v3.1.0-rc6 (UEFI)" {
+		t.Fatalf("flipped = %v, want the picked image", ff.flipped)
+	}
+	// FakeExecutor drives the node to imaged then it awaits checkin; the restore
+	// watcher fires once nodes reach preflight — simulate by reporting preflight.
+	m.PreflightReport("cm", "m", NodePreflight{CarrierOK: true, Passed: true})
+	waitUntil(t, func() bool { m.mu.Lock(); defer m.mu.Unlock(); return ff.restored == 1 })
+}
+
+// A locked PXE default (another deploy booting) aborts the start.
+func TestDeployAbortsWhenPXELocked(t *testing.T) {
+	m := newSettleManager(t)
+	m.SetPXEFlipper(&fakeFlipper{failWith: errors.New("PXE default is busy")})
+	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, "other (UEFI)"); err == nil {
+		t.Fatal("Start should abort when the PXE default is locked")
+	}
+}
+
+func waitUntil(t *testing.T, cond func() bool) {
+	t.Helper()
+	for i := 0; i < 200; i++ {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition not met in time")
 }

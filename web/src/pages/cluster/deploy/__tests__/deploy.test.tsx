@@ -51,8 +51,10 @@ describe('DeployModal', () => {
   })
 
   it('blocks deploy when a machine is busy in another cluster deploy', async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
+    fetchMock.mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.endsWith('/pxe/images'))
+        return new Response(JSON.stringify({ images: [] }), { status: 200 })
+      return new Response(
         JSON.stringify({
           allAssigned: true,
           nodes: [
@@ -60,8 +62,8 @@ describe('DeployModal', () => {
           ],
         }),
         { status: 200 },
-      ),
-    )
+      )
+    })
     render(<DeployModal isOpen clusterId="c1" onCancel={() => {}} onStarted={() => {}} />)
     await waitFor(() =>
       expect(screen.getByText(/Servers busy in another deploy/)).toBeTruthy(),
@@ -73,8 +75,10 @@ describe('DeployModal', () => {
   })
 
   it('blocks deploy when not all nodes assigned', async () => {
-    fetchMock.mockResolvedValue(
-      new Response(
+    fetchMock.mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.endsWith('/pxe/images'))
+        return new Response(JSON.stringify({ images: [] }), { status: 200 })
+      return new Response(
         JSON.stringify({
           allAssigned: false,
           nodes: [
@@ -83,8 +87,8 @@ describe('DeployModal', () => {
           ],
         }),
         { status: 409 },
-      ),
-    )
+      )
+    })
     render(<DeployModal isOpen clusterId="c1" onCancel={() => {}} onStarted={() => {}} />)
     await waitFor(() => expect(screen.getByText(/Not all nodes assigned/)).toBeTruthy())
     expect(
