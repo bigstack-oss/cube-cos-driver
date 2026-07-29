@@ -105,19 +105,47 @@ const NodeSection = (props: {
   )
 }
 
+type Health = 'ok' | 'error' | 'warn' | 'pending'
+
+// nodeHealth derives a node's browsing color from its report: green passed,
+// red any failing check, yellow reported-but-not-passed, grey no report yet.
+const nodeHealth = (n: NodeDeploy): Health => {
+  const pf = n.installerPreflight
+  if (!pf) return 'pending'
+  if (pf.matrix?.some((m) => !m.ok)) return 'error'
+  if (pf.passed) return 'ok'
+  return 'warn'
+}
+
+// Tab colors keyed by health — selected tab is filled, others are tinted.
+const tabClass: Record<Health, { on: string; off: string }> = {
+  ok: { on: 'bg-status-positive text-grey-0', off: 'bg-status-positive/15 text-status-positive' },
+  error: { on: 'bg-status-negative text-grey-0', off: 'bg-status-negative/15 text-status-negative' },
+  warn: { on: 'bg-status-warning text-grey-0', off: 'bg-status-warning/20 text-status-warning' },
+  pending: { on: 'bg-grey-300 text-grey-0', off: 'bg-functional-hover-grey text-functional-text-light' },
+}
+const healthDot: Record<Health, string> = {
+  ok: 'bg-status-positive',
+  error: 'bg-status-negative',
+  warn: 'bg-status-warning',
+  pending: 'bg-grey-300',
+}
+
 export const PreflightReportModal = (props: PreflightReportModalProps) => {
   const { isOpen, clusterId, deploy, onClose } = props
   const [notice, setNotice] = useState('')
-  if (!isOpen) return null
+  const [selected, setSelected] = useState<string | null>(null)
 
   const nodes = Object.values(deploy.nodes).sort((a, b) =>
     a.hostname.localeCompare(b.hostname),
   )
-  const problems = nodes.flatMap((n) =>
-    (n.installerPreflight?.matrix ?? [])
-      .filter((m) => !m.ok)
-      .map((m) => ({ node: n.hostname, ...m })),
-  )
+  // Default to the first problematic node so the operator lands on what needs
+  // attention; fall back to the first node.
+  const attention = nodes.find((n) => nodeHealth(n) === 'error') ?? nodes[0]
+  const activeHost = selected ?? attention?.hostname
+  const active = nodes.find((n) => n.hostname === activeHost) ?? attention
+
+  if (!isOpen) return null
 
   return (
     <CosModal
@@ -129,41 +157,36 @@ export const PreflightReportModal = (props: PreflightReportModalProps) => {
       onCloseClick={onClose}
     >
       <div className="flex flex-col gap-y-3">
+        {/* Node tabs — health-colored, click to switch (like the diagram's node boxes). */}
+        <div className="flex flex-wrap gap-2">
+          {nodes.map((n) => {
+            const h = nodeHealth(n)
+            const on = n.hostname === activeHost
+            return (
+              <button
+                key={n.hostname}
+                type="button"
+                onClick={() => setSelected(n.hostname)}
+                className={`primary-body4 flex items-center gap-x-2 rounded-md px-3 py-1.5 font-semibold transition ${
+                  on ? tabClass[h].on : tabClass[h].off
+                }`}
+              >
+                <span className={`inline-block h-2 w-2 rounded-full ${on ? 'bg-grey-0' : healthDot[h]}`} />
+                {n.hostname}
+              </button>
+            )
+          })}
+        </div>
+
         {notice && (
           <CosInlineNotification type="neutral" isClosable={false} title="Re-run">
             {notice}
           </CosInlineNotification>
         )}
-        {problems.length > 0 ? (
-          <CosInlineNotification
-            type="error"
-            isClosable={false}
-            title={`${problems.length} failing check(s)`}
-          >
-            {problems.map((p, i) => (
-              <div key={i}>
-                <b>{p.node}</b> — {p.target}
-                {p.detail ? `: ${p.detail}` : ''}
-              </div>
-            ))}
-          </CosInlineNotification>
-        ) : (
-          <CosInlineNotification
-            type="positive"
-            isClosable={false}
-            title="All reported checks passing"
-          >
-            Every node that has reported shows a fully green matrix.
-          </CosInlineNotification>
+
+        {active && (
+          <NodeSection clusterId={clusterId} node={active} onRekicked={setNotice} />
         )}
-        {nodes.map((n) => (
-          <NodeSection
-            key={n.hostname}
-            clusterId={clusterId}
-            node={n}
-            onRekicked={setNotice}
-          />
-        ))}
       </div>
     </CosModal>
   )

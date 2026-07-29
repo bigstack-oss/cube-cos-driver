@@ -57,17 +57,27 @@ const deploy: Deploy = {
 }
 
 describe('PreflightReportModal', () => {
-  it('pins the failing checks and renders node-by-node detail', () => {
+  it('defaults to the problematic node and shows its failing checks', () => {
     render(
       <PreflightReportModal isOpen clusterId="c1" deploy={deploy} onClose={() => {}} />,
     )
-    expect(screen.getByText(/2 failing check\(s\)/)).toBeTruthy()
+    // sky142 (has failures) is auto-selected → its detail is shown.
+    expect(screen.getByText('not passed')).toBeTruthy()
     expect(screen.getAllByText(/bond0 member IF\.6/).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/peer sky143 mgmt 10\.32\.10\.143/).length).toBeGreaterThan(0)
-    // passing node section renders too
-    expect(screen.getAllByText(/bond0 member IF\.5/).length).toBeGreaterThan(0)
+    // both node tabs are present
+    expect(screen.getByRole('button', { name: /sky141/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /sky142/ })).toBeTruthy()
+  })
+
+  it('switches to a node when its tab is clicked', async () => {
+    const user = userEvent.setup()
+    render(
+      <PreflightReportModal isOpen clusterId="c1" deploy={deploy} onClose={() => {}} />,
+    )
+    await user.click(screen.getByRole('button', { name: /sky141/ }))
     expect(screen.getByText('passed')).toBeTruthy()
-    expect(screen.getByText('not passed')).toBeTruthy()
+    expect(screen.getAllByText(/bond0 member IF\.5/).length).toBeGreaterThan(0)
   })
 
   it('re-run preflight POSTs the rekick endpoint', async () => {
@@ -76,9 +86,8 @@ describe('PreflightReportModal', () => {
     render(
       <PreflightReportModal isOpen clusterId="c1" deploy={deploy} onClose={() => {}} />,
     )
-    const buttons = screen.getAllByRole('button', { name: 'Re-run preflight' })
-    expect(buttons.length).toBe(2)
-    await user.click(buttons[1]) // sky142
+    // sky142 (problematic) is auto-selected; its section shows the re-run button.
+    await user.click(screen.getByRole('button', { name: 'Re-run preflight' }))
     await waitFor(() => {
       const posted = fetchMock.mock.calls.find(
         (c) =>
