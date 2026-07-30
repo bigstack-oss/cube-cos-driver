@@ -5,6 +5,10 @@ on:
     types:
       - labeled
 
+permissions:
+  contents: write
+  actions: write
+
 jobs:
   merge:
     if: ${{ github.event.label.name == 'done' && github.event.pull_request.mergeable == true }}
@@ -22,3 +26,11 @@ jobs:
           git branch
           git merge --ff-only $TOPIC_BRANCH
           git push
+      # A GITHUB_TOKEN push does not trigger push workflows, so the develop
+      # merge never reached CD - OCI image. workflow_dispatch is exempt from
+      # that suppression — dispatch it explicitly.
+      - name: Dispatch CD
+        if: ${{ github.base_ref == 'develop' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run cd-oci.yml --repo ${{ github.repository }} --ref develop
