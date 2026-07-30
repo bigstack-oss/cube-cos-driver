@@ -71,6 +71,18 @@ type ClusterConfig struct {
 	RoleSettings ClusterRoleSettings `json:"roleSettings"`
 	HA           bool                `json:"HA"`
 	HASettings   HASettings          `json:"HASettings"`
+	// SetReady carries the FTS-finalize parameters with the cluster
+	// definition, so an exported/imported cluster keeps them (the live
+	// trigger/ready state stays in the orchestrator store).
+	SetReady *SetReadySettings `json:"setReady,omitempty"`
+}
+
+// SetReadySettings are the cluster set_ready (FTS finalize) parameters.
+type SetReadySettings struct {
+	CreateExternal bool   `json:"createExternal"`
+	CIDR           string `json:"cidr"`
+	Gateway        string `json:"gateway"`
+	IPRange        string `json:"ipRange"`
 }
 
 type ClusterInfo struct {

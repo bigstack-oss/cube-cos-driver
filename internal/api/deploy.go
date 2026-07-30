@@ -11,6 +11,7 @@ import (
 	"github.com/bigstack-oss/cube-cos-driver/internal/agent"
 	"github.com/bigstack-oss/cube-cos-driver/internal/generator"
 	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
+	"github.com/bigstack-oss/cube-cos-driver/internal/model"
 	"github.com/bigstack-oss/cube-cos-driver/internal/orchestrator"
 	"github.com/bigstack-oss/cube-cos-driver/internal/pxe"
 	"github.com/bigstack-oss/cube-cos-driver/internal/storage"
@@ -527,6 +528,19 @@ func (h *deployHandlers) submitSetReady(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	h.mgr.SubmitSetReady(id, in)
+	// Mirror the parameters into the cluster definition so exports/imports
+	// carry them (SubmitSetReady owns the live trigger/ready state).
+	if d, err := h.clusters.Detail(id); err == nil {
+		d.ClusterConfig.SetReady = &model.SetReadySettings{
+			CreateExternal: in.CreateExternal,
+			CIDR:           in.CIDR,
+			Gateway:        in.Gateway,
+			IPRange:        in.IPRange,
+		}
+		if err := h.clusters.Save(d); err != nil {
+			log.Printf("set-ready: mirror into cluster %s failed: %v", id, err)
+		}
+	}
 	log.Printf("set-ready submitted for %s (external=%v cidr=%q)", id, in.CreateExternal, in.CIDR)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
