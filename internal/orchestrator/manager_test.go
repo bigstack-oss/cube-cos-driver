@@ -374,3 +374,32 @@ func TestSetReadyGatesOnAllNodesApplied(t *testing.T) {
 		t.Fatal("set_ready values lost")
 	}
 }
+
+// A deploy served from disk (not in memory, e.g. after a driver restart) must
+// still carry the recomputed progress strip — otherwise the UI falls back to
+// the legacy 2-light display. Regression for the "only 2 stages" report.
+func TestStatusRecomputesProgressOnReload(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Persist a finished deploy with progress unset (as it is on disk —
+	// progress is computed, never stored).
+	if err := store.Save(&Deploy{
+		ClusterID: "cl1",
+		Nodes: map[string]*NodeDeploy{
+			"n1": {Hostname: "n1", State: StateDone},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Fresh manager: the deploy is only on disk, so Status() takes the Load path.
+	m := NewManager(store, NewFakeExecutor(), Config{})
+	d, err := m.Status("cl1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Nodes["n1"].Progress; len(got) != 4 {
+		t.Fatalf("reloaded deploy should have the 4-cell progress strip, got %v", got)
+	}
+}
