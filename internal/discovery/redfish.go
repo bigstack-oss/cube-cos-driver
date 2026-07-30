@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -81,11 +82,9 @@ func (RedfishDiscoverer) Discover(ctx context.Context, t Target) (inventory.Inve
 			// the OS sees the virtual disk, not the member drives — so VDs are
 			// the OS-install candidates and the members are not.
 			hasVD := false
-			if vols, verr := st.Volumes(); verr == nil {
-				for _, v := range vols {
-					inv.Disks = append(inv.Disks, volumeDisk(v))
-					hasVD = true
-				}
+			for _, vd := range fetchVirtualDisks(client, st.ODataID) {
+				inv.Disks = append(inv.Disks, vd)
+				hasVD = true
 			}
 			drives, err := st.Drives()
 			if err != nil {
@@ -123,27 +122,108 @@ func (RedfishDiscoverer) Discover(ctx context.Context, t Target) (inventory.Inve
 	return inv, nil
 }
 
-// volumeDisk maps a Redfish RAID volume (virtual disk) to an inventory disk.
-// Explicitly OS-eligible: the UI's model heuristic would otherwise exclude
-// names containing "virtual".
-func volumeDisk(v *schemas.Volume) inventory.Disk {
-	name := v.DisplayName
-	if name == "" {
-		name = v.Name
+// rfVolume is the subset of a Redfish Volume we need.
+type rfVolume struct {
+	ODataID       string `json:"@odata.id"`
+	Name          string `json:"Name"`
+	DisplayName   string `json:"DisplayName"`
+	Description   string `json:"Description"`
+	CapacityBytes *int64 `json:"CapacityBytes"`
+	VolumeType    string `json:"VolumeType"`
+	RAIDType      string `json:"RAIDType"`
+}
+
+func (v rfVolume) unresolved() bool {
+	return v.Name == "" && v.VolumeType == "" && v.RAIDType == ""
+}
+
+// fetchVirtualDisks returns a controller's RAID virtual disks as OS-install
+// candidates. It parses the Volumes collection from raw JSON (gofish's typed
+// Volume rejects Dell iDRAC8's "Encrypted":null and drops the whole set) and
+// skips Dell "RawDevice" pass-throughs (the physical drives, already reported).
+func fetchVirtualDisks(client *gofish.APIClient, storageURL string) []inventory.Disk {
+	var out []inventory.Disk
+	if storageURL == "" {
+		return out
 	}
-	raid := string(v.RAIDType)
-	if raid == "" {
-		raid = string(v.VolumeType)
+	// Volumes is a standard sub-resource of Storage. Ask the controller to
+	// inline the members ($expand) so a slow BMC (Dell iDRAC8 is ~5s/request)
+	// costs one round-trip, not one per volume. Fall back to the plain
+	// collection if $expand is unsupported; unexpanded members are fetched
+	// individually below.
+	var coll struct {
+		Members []rfVolume `json:"Members"`
 	}
-	yes := true
-	d := inventory.Disk{
-		Name:       name,
-		Model:      strings.TrimSpace("RAID virtual disk " + raid),
-		Type:       raid,
-		OSEligible: &yes,
+	if err := getJSON(client, storageURL+"/Volumes?$expand=*($levels=1)", &coll); err != nil || len(coll.Members) == 0 {
+		coll.Members = nil
+		if err := getJSON(client, storageURL+"/Volumes", &coll); err != nil {
+			return out // no Volumes resource (e.g. an AHCI passthrough controller)
+		}
 	}
-	if v.CapacityBytes != nil {
-		d.SizeBytes = int64(*v.CapacityBytes)
+	for _, v := range coll.Members {
+		if v.unresolved() && v.ODataID != "" {
+			_ = getJSON(client, v.ODataID, &v) // $expand ignored — resolve one by one
+		}
+		if strings.EqualFold(v.VolumeType, "RawDevice") {
+			continue // a pass-through of a single physical disk, not a VD
+		}
+		if v.unresolved() {
+			continue
+		}
+		name := firstNonEmpty(v.DisplayName, v.Name, v.Description)
+		raid := raidLabel(v.RAIDType, v.VolumeType)
+		yes := true
+		d := inventory.Disk{
+			Name:       name,
+			Model:      strings.TrimSpace("RAID virtual disk " + raid),
+			Type:       raid,
+			OSEligible: &yes,
+		}
+		if v.CapacityBytes != nil {
+			d.SizeBytes = *v.CapacityBytes
+		}
+		out = append(out, d)
 	}
-	return d
+	return out
+}
+
+// getJSON GETs a Redfish resource and decodes it into v.
+func getJSON(client *gofish.APIClient, url string, v any) error {
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+func firstNonEmpty(ss ...string) string {
+	for _, s := range ss {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// raidLabel prefers the modern RAIDType, falling back to the legacy VolumeType
+// (iDRAC8) mapped to a familiar RAID level.
+func raidLabel(raidType, volumeType string) string {
+	if raidType != "" {
+		return raidType
+	}
+	switch volumeType {
+	case "Mirrored":
+		return "RAID1"
+	case "NonRedundant":
+		return "RAID0"
+	case "StripedWithParity":
+		return "RAID5"
+	case "SpannedMirrors":
+		return "RAID10"
+	case "SpannedStripesWithParity":
+		return "RAID60"
+	default:
+		return volumeType
+	}
 }
