@@ -147,7 +147,7 @@ func strOrEmpty(p *string) string {
 }
 
 func (m *machineHandlers) verifyBMC(ctx context.Context, address, username, password string) (inventory.Inventory, error) {
-	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 240*time.Second)
 	defer cancel()
 	return m.discoverer.Discover(ctx, discovery.Target{
 		Address: address, Username: username, Password: password,
@@ -389,7 +389,7 @@ func (m *machineHandlers) importTemplate(w http.ResponseWriter, r *http.Request)
 
 func (m *machineHandlers) runFetch(id string, target discovery.Target) {
 	defer m.inflight.Delete(id)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
 	defer cancel()
 
 	inv, err := m.discoverer.Discover(ctx, target)
