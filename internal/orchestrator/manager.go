@@ -583,7 +583,25 @@ func (m *Manager) Status(clusterID string) (*Deploy, error) {
 	if ok {
 		return m.snapshot(clusterID)
 	}
-	return m.store.Load(clusterID)
+	// Reloaded from disk (e.g. after a driver restart): the derived fields
+	// (progress/phase/lights) are computed, not persisted, so recompute them
+	// too — otherwise the UI drops to the legacy 2-light fallback.
+	d, err := m.store.Load(clusterID)
+	if err != nil {
+		return nil, err
+	}
+	deriveNodeFields(d)
+	return d, nil
+}
+
+// deriveNodeFields recomputes each node's presentation-only fields from its
+// persisted state.
+func deriveNodeFields(d *Deploy) {
+	for _, nd := range d.Nodes {
+		nd.Light1, nd.Light2 = nd.lights()
+		nd.Phase = nd.phase()
+		nd.Progress = nd.progress()
+	}
 }
 
 // set mutates a node's deploy record under lock and persists it.
@@ -620,11 +638,7 @@ func (m *Manager) snapshot(clusterID string) (*Deploy, error) {
 	b, _ := json.Marshal(d)
 	var cp Deploy
 	json.Unmarshal(b, &cp)
-	for _, nd := range cp.Nodes {
-		nd.Light1, nd.Light2 = nd.lights()
-		nd.Phase = nd.phase()
-		nd.Progress = nd.progress()
-	}
+	deriveNodeFields(&cp)
 	return &cp, nil
 }
 
