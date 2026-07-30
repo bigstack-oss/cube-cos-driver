@@ -96,7 +96,7 @@ func New(cfg Config) (http.Handler, error) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
-	h := &handlers{store: clusterStore, machines: machineStore}
+	h := &handlers{store: clusterStore, machines: machineStore, mgr: mgr}
 	h.register(mux)
 	mh := &machineHandlers{store: machineStore, discoverer: discoverer, mgr: mgr}
 	mh.register(mux)

@@ -238,6 +238,18 @@ func (m *Manager) SubmitSetReady(clusterID string, in SetReadyInput) {
 // the master polls this and runs `cluster set_ready` only when Trigger is set,
 // so finalize (external network, cluster start) runs against a COMPLETE
 // cluster — never on a lone master while peers are still applying.
+// HasSetReady reports whether an operator set_ready spec exists for the
+// cluster (submitted this run or persisted by a previous one).
+func (m *Manager) HasSetReady(clusterID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.setReady[clusterID]; ok {
+		return true
+	}
+	_, ok := m.store.LoadSetReady(clusterID)
+	return ok
+}
+
 func (m *Manager) GetSetReady(clusterID string) SetReadyInput {
 	m.mu.Lock()
 	defer m.mu.Unlock()

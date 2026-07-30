@@ -9,6 +9,7 @@ import (
 
 	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
 	"github.com/bigstack-oss/cube-cos-driver/internal/model"
+	"github.com/bigstack-oss/cube-cos-driver/internal/orchestrator"
 	"github.com/bigstack-oss/cube-cos-driver/internal/storage"
 )
 
@@ -19,6 +20,9 @@ type handlers struct {
 	// machines, when set, has its node bindings cleared when a cluster is
 	// deleted.
 	machines *inventory.Store
+	// mgr, when set, is seeded with the cluster's setReady settings on save
+	// (so an imported cluster definition finalizes like its origin).
+	mgr *orchestrator.Manager
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -102,6 +106,16 @@ func (h *handlers) save(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.Save(d); err != nil {
 		writeError(w, http.StatusInternalServerError, "save failed: %v", err)
 		return
+	}
+	// Seed the finalize spec from the definition (import case) — never
+	// overwrite one an operator already submitted here.
+	if sr := d.ClusterConfig.SetReady; sr != nil && h.mgr != nil && !h.mgr.HasSetReady(id) {
+		h.mgr.SubmitSetReady(id, orchestrator.SetReadyInput{
+			CreateExternal: sr.CreateExternal,
+			CIDR:           sr.CIDR,
+			Gateway:        sr.Gateway,
+			IPRange:        sr.IPRange,
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "saved"})
 }
