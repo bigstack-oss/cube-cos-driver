@@ -2,6 +2,7 @@
 // bind its real NICs to the snapshot's network topology (correcting IF.N
 // picks with real hardware info). Binds the machine to the node and applies
 // any interface-label corrections back onto the node config.
+import { CosButton } from '@cube-frontend/ui-library'
 import { useEffect, useMemo, useState } from 'react'
 import {
   formatBytes,
@@ -12,6 +13,7 @@ import {
 import { NodeConfig } from '../../../model/types'
 import { Select } from '../../../components/form/Select'
 import { WizardModal, WizardStep } from '../../../components/WizardModal'
+import { NodeWizard } from '../../../components/wizards/node/NodeWizard'
 import { SnapshotNetworkMapper } from './SnapshotNetworkMapper'
 
 export type AssignResult = {
@@ -31,6 +33,11 @@ export type AssignServerFlowProps = {
 
 export const AssignServerFlow = (props: AssignServerFlowProps) => {
   const { isOpen, node, machines, currentMachineId, onCancel, onFinish } = props
+
+  // Edit-node-network sub-modal: opened from the mapper when the real NICs
+  // don't match the node's snapshot network. Saving returns to the mapper with
+  // the updated topology.
+  const [editNet, setEditNet] = useState(false)
 
   // A server may be assigned to multiple nodes/clusters, so any inventoried
   // machine is selectable (a same-cluster duplicate is flagged, not blocked).
@@ -160,11 +167,22 @@ export const AssignServerFlow = (props: AssignServerFlowProps) => {
       label: 'Network',
       canNext: true,
       content: machine?.inventory ? (
-        <SnapshotNetworkMapper
-          node={workingNode}
-          ports={ports}
-          onChange={setWorkingNode}
-        />
+        <div className="flex flex-col gap-y-3">
+          <div className="flex items-center justify-end">
+            <CosButton
+              type="secondary"
+              size="sm"
+              onClick={() => setEditNet(true)}
+            >
+              Edit node network
+            </CosButton>
+          </div>
+          <SnapshotNetworkMapper
+            node={workingNode}
+            ports={ports}
+            onChange={setWorkingNode}
+          />
+        </div>
       ) : (
         <p className="primary-body3">Select a fetched server first.</p>
       ),
@@ -172,16 +190,34 @@ export const AssignServerFlow = (props: AssignServerFlowProps) => {
   ]
 
   return (
-    <WizardModal
-      isOpen={isOpen}
-      title={`Assign server to ${node.hostname}`}
-      steps={steps}
-      finishText="Assign"
-      onCancel={onCancel}
-      onFinish={() => {
-        if (!machine) return
-        onFinish({ machineId: machine.id, osDisk, node: workingNode })
-      }}
-    />
+    <>
+      <WizardModal
+        isOpen={isOpen}
+        title={`Assign server to ${node.hostname}`}
+        steps={steps}
+        finishText="Assign"
+        onCancel={onCancel}
+        onFinish={() => {
+          if (!machine) return
+          onFinish({ machineId: machine.id, osDisk, node: workingNode })
+        }}
+      />
+      {/* On-the-fly node-network edit: Network + Role (role type locked), no
+          Hostname. Saving updates the working node so the mapper reflects the
+          new topology. */}
+      <NodeWizard
+        isOpen={editNet}
+        initial={workingNode}
+        takenHostnames={[]}
+        hideHostname
+        lockRole
+        title={`Edit node network — ${node.hostname}`}
+        onCancel={() => setEditNet(false)}
+        onFinish={(updated) => {
+          setWorkingNode(updated)
+          setEditNet(false)
+        }}
+      />
+    </>
   )
 }

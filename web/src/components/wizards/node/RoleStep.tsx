@@ -16,11 +16,20 @@ export type RoleStepProps = {
   roleSettings: NodeRoleSettings
   onRoleChange: (role: NodeRole, settings: NodeRoleSettings) => void
   onRoleSettingsChange: (settings: NodeRoleSettings) => void
+  // When set, the role type can't be changed (only its interface mapping) —
+  // e.g. editing network from the assign flow.
+  lockRole?: boolean
 }
 
 export const RoleStep = (props: RoleStepProps) => {
-  const { draft, role, roleSettings, onRoleChange, onRoleSettingsChange } =
-    props
+  const {
+    draft,
+    role,
+    roleSettings,
+    onRoleChange,
+    onRoleSettingsChange,
+    lockRole,
+  } = props
 
   return (
     <div className="flex flex-col gap-y-5">
@@ -33,12 +42,18 @@ export const RoleStep = (props: RoleStepProps) => {
               name="node-role"
               label={r}
               checked={role === r}
+              disabled={lockRole}
               onChange={() =>
                 onRoleChange(r, createDefaultRoleSettings(r, roleSettings))
               }
             />
           ))}
         </div>
+        {lockRole && (
+          <span className="secondary-body5 text-functional-text-light">
+            Role is fixed here — edit the interface mapping below only.
+          </span>
+        )}
       </div>
       <div className="flex flex-col gap-y-4">
         {roleOptions[role].map((key) => {

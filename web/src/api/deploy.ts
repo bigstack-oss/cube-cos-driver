@@ -212,6 +212,12 @@ export const rekickPreflight = async (
 // PxeImage is one bootable image on the PXE server (deploy/inspect picker).
 export type PxeImage = { name: string; default: boolean }
 
+// stripBootMode drops the trailing "(UEFI)"/"(BIOS)" from a grub entry name for
+// display — the firmware mode is noise to the operator. The raw name is kept as
+// the value sent to the API (it must match the grub menuentry exactly).
+export const stripBootMode = (name: string): string =>
+  name.replace(/\s*\((?:UEFI|BIOS)\)\s*$/i, '')
+
 // listPxeImages returns the PXE server's images (empty if selection disabled).
 export const listPxeImages = async (): Promise<PxeImage[]> => {
   const resp = await fetch('/api/v1/pxe/images')
