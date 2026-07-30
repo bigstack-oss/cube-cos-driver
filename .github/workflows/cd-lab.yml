@@ -28,12 +28,23 @@ jobs:
         run: |
           docker inspect -f '{{.Image}}' cube-cos-driver > /tmp/cd-prev-image 2>/dev/null || true
 
+      # The image dropdown reads/flips the shared PXE grub.cfg on the NAS.
+      # Mount it as a docker NFS volume so the container owns it directly — no
+      # host mount or sudo needed on the runner.
+      - name: Ensure PXE root volume
+        run: |
+          docker volume inspect pxe-root >/dev/null 2>&1 || \
+            docker volume create --driver local \
+              --opt type=nfs --opt o=addr=10.32.0.200,nolock,rw,vers=4.1 \
+              --opt device=:/volume1/pxe-server pxe-root
+
       - name: Replace container
         run: |
           docker rm -f cube-cos-driver 2>/dev/null || true
           docker run -d --name cube-cos-driver --restart unless-stopped \
-            -e ADVERTISE=10.32.0.202:80 \
-            -p 80:3001 -v /mnt/cube-cos-driver:/var/lib/cube-cos-driver "$IMAGE"
+            -e ADVERTISE=10.32.0.202:80 -e PXE_ROOT=/pxe \
+            -p 80:3001 -v /mnt/cube-cos-driver:/var/lib/cube-cos-driver \
+            -v pxe-root:/pxe "$IMAGE"
 
       - name: Health gate (roll back on failure)
         run: |
@@ -46,8 +57,9 @@ jobs:
           docker rm -f cube-cos-driver
           prev=$(cat /tmp/cd-prev-image)
           [ -n "$prev" ] && docker run -d --name cube-cos-driver --restart unless-stopped \
-            -e ADVERTISE=10.32.0.202:80 \
-            -p 80:3001 -v /mnt/cube-cos-driver:/var/lib/cube-cos-driver "$prev"
+            -e ADVERTISE=10.32.0.202:80 -e PXE_ROOT=/pxe \
+            -p 80:3001 -v /mnt/cube-cos-driver:/var/lib/cube-cos-driver \
+            -v pxe-root:/pxe "$prev"
           exit 1
 
       - name: Prune old images
