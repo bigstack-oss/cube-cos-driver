@@ -22,12 +22,26 @@ export type NodeWizardProps = {
   initial?: NodeConfig
   // Hostnames of the other nodes in the cluster (duplicate guard).
   takenHostnames: string[]
+  // Network-edit mode (from the assign flow): drop the Hostname step and lock
+  // the role type, so only network + role interface mapping can change.
+  hideHostname?: boolean
+  lockRole?: boolean
+  title?: string
   onCancel: () => void
   onFinish: (node: NodeConfig) => void
 }
 
 export const NodeWizard = (props: NodeWizardProps) => {
-  const { isOpen, initial, takenHostnames, onCancel, onFinish } = props
+  const {
+    isOpen,
+    initial,
+    takenHostnames,
+    hideHostname,
+    lockRole,
+    title,
+    onCancel,
+    onFinish,
+  } = props
 
   const [node, setNode] = useState<NodeConfig>(() => defaultNodeDraft(newId))
 
@@ -83,21 +97,22 @@ export const NodeWizard = (props: NodeWizardProps) => {
     return !!node.roleSettings[key]?.id
   })
 
+  const hostnameStep: WizardStep = {
+    label: 'Hostname',
+    canNext: hostnameError === undefined,
+    content: (
+      <CosInput
+        label="Hostname"
+        value={node.hostname}
+        onChange={(e) =>
+          setNode((prev) => ({ ...prev, hostname: e.target.value }))
+        }
+        errorMessage={hostnameError}
+      />
+    ),
+  }
   const steps: WizardStep[] = [
-    {
-      label: 'Hostname',
-      canNext: hostnameError === undefined,
-      content: (
-        <CosInput
-          label="Hostname"
-          value={node.hostname}
-          onChange={(e) =>
-            setNode((prev) => ({ ...prev, hostname: e.target.value }))
-          }
-          errorMessage={hostnameError}
-        />
-      ),
-    },
+    ...(hideHostname ? [] : [hostnameStep]),
     {
       label: 'Network',
       canNext: networkValid,
@@ -128,6 +143,7 @@ export const NodeWizard = (props: NodeWizardProps) => {
           draft={draft}
           role={node.role}
           roleSettings={node.roleSettings}
+          lockRole={lockRole}
           onRoleChange={(role: NodeRole, settings: NodeRoleSettings) =>
             setNode((prev) => ({ ...prev, role, roleSettings: settings }))
           }
@@ -142,7 +158,7 @@ export const NodeWizard = (props: NodeWizardProps) => {
   return (
     <WizardModal
       isOpen={isOpen}
-      title="Node Snapshot Configuration"
+      title={title ?? 'Node Snapshot Configuration'}
       steps={steps}
       finishText="Save"
       onCancel={onCancel}

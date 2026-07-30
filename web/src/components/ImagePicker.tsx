@@ -3,7 +3,7 @@
 // PXE default for that boot. Renders nothing when selection is unavailable
 // (driver has no --pxe-root) or there's only one image (nothing to choose).
 import { useEffect, useState } from 'react'
-import { listPxeImages, PxeImage } from '../api/deploy'
+import { listPxeImages, PxeImage, stripBootMode } from '../api/deploy'
 
 export type ImagePickerProps = {
   // onChange receives the picked image name, or '' when it's the default
@@ -45,7 +45,7 @@ export const ImagePicker = (props: ImagePickerProps) => {
       >
         {images.map((i) => (
           <option key={i.name} value={i.name}>
-            {i.name}
+            {stripBootMode(i.name)}
             {i.default ? ' (default)' : ''}
           </option>
         ))}
