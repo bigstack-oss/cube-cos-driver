@@ -267,6 +267,11 @@ func (m *Manager) GetSetReady(clusterID string) SetReadyInput {
 	if in.Trigger && !m.allNodesAppliedLocked(clusterID) {
 		in.Trigger = false // hold set_ready until every node is done
 	}
+	// Manual mode: also hold set_ready until the operator advances to its step
+	// (peers apply at StepApplyRest; set_ready is the separate final step).
+	if d := m.deploys[clusterID]; d != nil && d.Manual && d.ManualStep < StepSetReady {
+		in.Trigger = false
+	}
 	return in
 }
 
@@ -1030,7 +1035,7 @@ func (m *Manager) AdvanceStep(clusterID string) (int, error) {
 	if !d.Manual {
 		return 0, fmt.Errorf("deploy for cluster %s is not in manual mode", clusterID)
 	}
-	if d.ManualStep >= StepApplyRest {
+	if d.ManualStep >= StepSetReady {
 		return d.ManualStep, nil
 	}
 	if !m.canAdvance(d) {
@@ -1045,7 +1050,7 @@ func (m *Manager) AdvanceStep(clusterID string) (int, error) {
 // nodes have reached the state this step gates. Errored nodes (rank 0) block —
 // the operator rekicks or cancels rather than advancing past a failure.
 func (m *Manager) canAdvance(d *Deploy) bool {
-	if !d.Manual || d.ManualStep >= StepApplyRest {
+	if !d.Manual || d.ManualStep >= StepSetReady {
 		return false
 	}
 	switch d.ManualStep {
@@ -1058,6 +1063,8 @@ func (m *Manager) canAdvance(d *Deploy) bool {
 	case StepApplyMaster: // -> apply-rest: the master finished applying
 		nd := d.Nodes[d.Master]
 		return d.Master == "" || (nd != nil && nd.State == StateDone)
+	case StepApplyRest: // -> set-ready: every node finished applying
+		return allReached(d, 7) // all done
 	}
 	return false
 }
