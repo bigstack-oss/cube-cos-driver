@@ -189,7 +189,16 @@ export const DeployProgress = (props: DeployProgressProps) => {
 
   useEffect(() => {
     const nodes = deploy ? Object.values(deploy.nodes) : []
-    const active = nodes.length > 0 && nodes.some((n) => !isTerminal(n.state))
+    // Keep polling while set_ready is still running too: every node is already
+    // terminal (done) by then, so node state alone would stop the poll and the
+    // final set-ready green would only appear on a manual refresh.
+    const setReadyRunning =
+      !!deploy?.manual &&
+      (deploy?.manualStep ?? 0) >= MANUAL_STEPS.length &&
+      !deploy?.setReadyDone
+    const active =
+      (nodes.length > 0 && nodes.some((n) => !isTerminal(n.state))) ||
+      setReadyRunning
     if (active && !pollRef.current) {
       pollRef.current = setInterval(refresh, 1500)
     } else if (!active && pollRef.current) {
