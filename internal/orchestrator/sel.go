@@ -25,22 +25,35 @@ type SELStatus struct {
 
 // reverse maps of the agent's compact encoding.
 var selPhaseName = map[byte]string{
-	0x10: "preflight", 0x20: "applying", 0x21: "applied", 0x2f: "done", 0xff: "error",
+	0x10: "preflight", 0x16: "restore-done", 0x18: "rebooted",
+	0x20: "applying", 0x21: "applied", 0x2f: "done", 0xff: "error",
 }
+
+// Gate stages (OEM byte 2 of a gate/go record) — must match the agent.
+const (
+	gateStageRestore  byte = 1
+	gateStageReboot   byte = 2
+	gateStageApply    byte = 3
+	gateStageSetReady byte = 4
+)
+
 var selResultName = map[byte]string{
 	0x01: "ok", 0x02: "degraded", 0x03: "unreachable", 0x04: "topology-error", 0xff: "error",
 }
 
-// GateWriter drops the master-done "go" record on a node's BMC over LAN, so a
-// non-master agent (which has no in-band network yet) sees it via local KCS.
+// GateWriter drops a staged "go" record on a node's BMC over LAN, so an agent
+// (which may have no in-band network) sees it via local KCS. The stage byte
+// distinguishes restore / reboot / apply authorizations. ClearSEL wipes a
+// node's SEL at deploy start so a prior run's records can't replay.
 type GateWriter interface {
-	WriteGate(ctx context.Context, n Node) error
+	WriteGate(ctx context.Context, n Node, stage byte) error
+	ClearSEL(ctx context.Context, n Node) error
 }
 
 // IPMIGateWriter adds the cube "gate/go" OEM SEL record over IPMI LAN.
 type IPMIGateWriter struct{}
 
-func (IPMIGateWriter) WriteGate(ctx context.Context, n Node) error {
+func (IPMIGateWriter) WriteGate(ctx context.Context, n Node, stage byte) error {
 	client, err := goipmi.NewClient(n.BMCAddress, 623, n.BMCUser, n.BMCPass)
 	if err != nil {
 		return err
@@ -50,13 +63,13 @@ func (IPMIGateWriter) WriteGate(ctx context.Context, n Node) error {
 	}
 	defer client.Close(ctx)
 
-	if _, err := client.AddSELEntry(ctx, gateSEL()); err != nil {
+	if _, err := client.AddSELEntry(ctx, gateSEL(stage)); err != nil {
 		// SEL full ("out of space", cc 0xc4) — clear it and retry once. The SEL
 		// here only carries our coordination records, so clearing is safe.
 		if res, rerr := client.ReserveSEL(ctx); rerr == nil {
 			if _, cerr := client.ClearSEL(ctx, res.ReservationID); cerr == nil {
 				time.Sleep(2 * time.Second)
-				_, err = client.AddSELEntry(ctx, gateSEL())
+				_, err = client.AddSELEntry(ctx, gateSEL(stage))
 			}
 		}
 		return err
@@ -64,11 +77,31 @@ func (IPMIGateWriter) WriteGate(ctx context.Context, n Node) error {
 	return nil
 }
 
-// gateSEL builds the cube "gate/go" OEM SEL record (master-done handoff).
-func gateSEL() *goipmi.SEL {
+// ClearSEL wipes the node's SEL (reserve + clear) so a previous deploy's gate/
+// status records don't satisfy this run's gates or replay old status.
+func (IPMIGateWriter) ClearSEL(ctx context.Context, n Node) error {
+	client, err := goipmi.NewClient(n.BMCAddress, 623, n.BMCUser, n.BMCPass)
+	if err != nil {
+		return err
+	}
+	if err := client.Connect(ctx); err != nil {
+		return err
+	}
+	defer client.Close(ctx)
+	res, err := client.ReserveSEL(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = client.ClearSEL(ctx, res.ReservationID)
+	return err
+}
+
+// gateSEL builds the cube "gate/go" OEM SEL record for a stage (byte 2).
+func gateSEL(stage byte) *goipmi.SEL {
 	var oem [6]byte
-	oem[0] = 0x30 // gate phase
-	oem[1] = 0x05 // go result
+	oem[0] = 0x30  // gate phase
+	oem[1] = 0x05  // go result
+	oem[2] = stage // restore / reboot / apply
 	return &goipmi.SEL{
 		RecordType: goipmi.SELRecordType(0xC0),
 		OEMTimestamped: &goipmi.SELOEMTimestamped{
@@ -136,6 +169,10 @@ func decodeCubeSEL(e *goipmi.SEL) *SELStatus {
 // selState maps an OOB SEL phase/result to the orchestrator state it confirms.
 func selState(s SELStatus) State {
 	switch s.Phase {
+	case "restore-done":
+		return StateRebooting // installer finished restore; node is rebooting
+	case "rebooted":
+		return StateWaiting // OS-phase agent is up, holding for the apply gate
 	case "applying":
 		return StateApplying
 	case "applied", "done":
@@ -190,6 +227,7 @@ func (m *Manager) MergeSEL(clusterID, hostname string, s SELStatus) {
 	})
 	if target == StateDone {
 		m.maybeVerifyCluster(clusterID)
+		m.maybeAutoSetReady(clusterID) // auto mode: trigger set_ready once all done
 	}
 }
 

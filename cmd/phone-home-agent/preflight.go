@@ -27,14 +27,25 @@ const cubeManufacturerID uint32 = 0x0BC0DE
 
 // phaseCode maps a phase/result to a compact byte pair for the SEL OEM field.
 var phaseCode = map[string]byte{
-	"preflight": 0x10, "applying": 0x20, "applied": 0x21, "done": 0x2f, "gate": 0x30, "error": 0xff,
+	"preflight": 0x10, "restore-done": 0x16, "rebooted": 0x18,
+	"applying": 0x20, "applied": 0x21, "done": 0x2f, "gate": 0x30, "error": 0xff,
 }
 var resultCode = map[string]byte{
 	"ok": 0x01, "degraded": 0x02, "unreachable": 0x03, "topology-error": 0x04, "go": 0x05, "error": 0xff,
 }
 
-// selGateGo is the OEM byte pair the server writes to a non-master node's BMC
-// SEL (over LAN) once the master's apply is done — the OOB "your turn" signal.
+// Gate stages: the driver writes a gate/go SEL with one of these in OEM byte 2
+// when the operator (or auto mode) authorizes the corresponding step. Distinct
+// per stage so a prior stage's "go" can't satisfy a later gate.
+const (
+	gateStageRestore  byte = 1 // authorize restore (green light 1)
+	gateStageReboot   byte = 2 // authorize reboot after restore-done
+	gateStageApply    byte = 3 // authorize snapshot apply (master @ apply-master, peers @ apply-rest)
+	gateStageSetReady byte = 4 // authorize cluster set_ready (master, final step)
+)
+
+// selGateGo is the OEM byte pair (phase,result) marking a driver "go" record;
+// the stage discriminator lives in OEM byte 2 (see selGatePresent).
 var selGateGo = [2]byte{phaseCode["gate"], resultCode["go"]}
 
 // physIFs returns physical NIC kernel names sorted by PCI address so the k-th
@@ -273,10 +284,11 @@ func writeSEL(phase, result, detail string) error {
 	return err
 }
 
-// selGatePresent reports whether the server's "go" record (written to this
-// node's BMC over LAN once the master's apply finished) is in the local SEL,
-// read out-of-band over KCS — no in-band network required.
-func selGatePresent() bool {
+// selGatePresent reports whether the driver's "go" record for the given stage
+// (written to this node's BMC over LAN when the operator/auto authorizes the
+// step) is in the local SEL, read out-of-band over KCS — no in-band network
+// required. The stage byte (OEM byte 2) keeps each gate distinct.
+func selGatePresent(stage byte) bool {
 	client, err := goipmi.NewOpenClient()
 	if err != nil {
 		return false
@@ -294,22 +306,25 @@ func selGatePresent() bool {
 	for _, e := range entries {
 		o := e.OEMTimestamped
 		if o != nil && o.ManufacturerID == cubeManufacturerID &&
-			o.OEMDefined[0] == selGateGo[0] && o.OEMDefined[1] == selGateGo[1] {
+			o.OEMDefined[0] == selGateGo[0] && o.OEMDefined[1] == selGateGo[1] &&
+			o.OEMDefined[2] == stage {
 			return true
 		}
 	}
 	return false
 }
 
-// waitSELGate blocks until the go record appears in the local SEL or ctx ends.
-func waitSELGate(ctx context.Context, poll time.Duration) bool {
+// waitSELGate blocks until the go record for the given stage appears in the
+// local SEL or ctx ends. This is the authoritative gate — the driver may be
+// unreachable in-band at any phase, so gates ride the BMC, not the network.
+func waitSELGate(ctx context.Context, poll time.Duration, stage byte) bool {
 	for {
 		select {
 		case <-ctx.Done():
 			return false
 		default:
 		}
-		if selGatePresent() {
+		if selGatePresent(stage) {
 			return true
 		}
 		time.Sleep(poll)

@@ -281,6 +281,22 @@ func (m *Manager) GetSetReady(clusterID string) SetReadyInput {
 	return in
 }
 
+// maybeAutoSetReady, in AUTO mode, writes the master's set-ready gate/go once
+// every node has applied — the offline trigger for the master's cluster
+// set_ready (the master waits on this SEL, not the network). Manual mode uses
+// AdvanceStep(StepSetReady) instead. Writing the go again is harmless.
+func (m *Manager) maybeAutoSetReady(clusterID string) {
+	m.mu.Lock()
+	d := m.deploys[clusterID]
+	if d == nil || d.Manual || !m.allNodesAppliedLocked(clusterID) {
+		m.mu.Unlock()
+		return
+	}
+	targets := m.gateTargetsLocked(clusterID, "master")
+	m.mu.Unlock()
+	m.writeGosAsync(targets, gateStageSetReady)
+}
+
 // allNodesAppliedLocked reports whether every node in the active deploy has
 // finished applying (reached done). No active deploy → true (nothing to wait
 // for, e.g. a standalone re-arm after a restart).
@@ -451,11 +467,58 @@ func (m *Manager) ReleaseNode(clusterID, hostname string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := gate.WriteGate(ctx, target); err != nil {
+	if err := gate.WriteGate(ctx, target, gateStageApply); err != nil {
 		return fmt.Errorf("release %s via SEL go: %w", hostname, err)
 	}
-	log.Printf("manual release %s: wrote 'go' SEL to %s", hostname, target.BMCAddress)
+	log.Printf("manual release %s: wrote apply 'go' SEL to %s", hostname, target.BMCAddress)
 	return nil
+}
+
+// writeGosAsync writes the gate/go SEL for `stage` to each target's BMC in the
+// background (best-effort). Safe to call while holding m.mu — it captures the
+// targets + gate writer and does the IPMI work off-lock.
+func (m *Manager) writeGosAsync(targets []Node, stage byte) {
+	gate := m.gate
+	if gate == nil {
+		return
+	}
+	for _, n := range targets {
+		go func(n Node) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := gate.WriteGate(ctx, n, stage); err != nil {
+				log.Printf("gate go stage=%d %s: %v", stage, n.Hostname, err)
+			} else {
+				log.Printf("wrote gate go stage=%d to %s (%s)", stage, n.Hostname, n.BMCAddress)
+			}
+		}(n)
+	}
+}
+
+// gateTargetsLocked resolves the deploy's nodes for a gate write. which is
+// "all", "master", or "peers". Caller must hold m.mu.
+func (m *Manager) gateTargetsLocked(clusterID, which string) []Node {
+	byHost := m.nodes[clusterID]
+	d := m.deploys[clusterID]
+	if byHost == nil || d == nil {
+		return nil
+	}
+	var out []Node
+	for host, n := range byHost {
+		switch which {
+		case "all":
+			out = append(out, n)
+		case "master":
+			if host == d.Master {
+				out = append(out, n)
+			}
+		case "peers":
+			if host != d.Master {
+				out = append(out, n)
+			}
+		}
+	}
+	return out
 }
 
 // HasActiveDeploy reports whether a cluster has a non-terminal deploy running —
@@ -490,6 +553,7 @@ func (m *Manager) Master(clusterID string) string {
 // "go" SEL record to its BMC over LAN — the OOB master-first handoff.
 func (m *Manager) Applied(clusterID, hostname string, isMaster bool) {
 	m.set(clusterID, hostname, func(nd *NodeDeploy) { nd.State = StateDone })
+	defer m.maybeAutoSetReady(clusterID) // auto mode: trigger set_ready once all done
 	if !isMaster {
 		return
 	}
@@ -519,10 +583,10 @@ func (m *Manager) Applied(clusterID, hostname string, isMaster bool) {
 		go func(n Node) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			if err := gate.WriteGate(ctx, n); err != nil {
+			if err := gate.WriteGate(ctx, n, gateStageApply); err != nil {
 				log.Printf("release %s via SEL go: %v", n.Hostname, err)
 			} else {
-				log.Printf("released %s: wrote master-done 'go' SEL to %s", n.Hostname, n.BMCAddress)
+				log.Printf("released %s: wrote master-done apply 'go' SEL to %s", n.Hostname, n.BMCAddress)
 			}
 		}(n)
 	}
@@ -561,6 +625,35 @@ func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTar
 	m.cancels[clusterID] = cancel
 	m.persistLocked(d)
 	m.mu.Unlock()
+
+	// Wipe each node's SEL so a prior deploy's gate/status records can't replay
+	// into this run — gates are authoritative over SEL, so a stale "go" would be
+	// dangerous. Synchronous + bounded so it completes before runNode re-stamps
+	// the driver-endpoint record. Best-effort per node.
+	if m.gate != nil {
+		for _, n := range nodes {
+			cctx, ccancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := m.gate.ClearSEL(cctx, n); err != nil {
+				log.Printf("deploy start: clear SEL %s: %v", n.Hostname, err)
+			}
+			ccancel()
+		}
+		// Auto mode never holds: authorize restore + reboot for all nodes and
+		// apply for the master up front (peers' apply go is written on master-done,
+		// see Applied). Manual mode writes each go on the operator's AdvanceStep.
+		if !manual {
+			var all, masterN []Node
+			for _, n := range nodes {
+				all = append(all, n)
+				if n.Hostname == master {
+					masterN = append(masterN, n)
+				}
+			}
+			m.writeGosAsync(all, gateStageRestore)
+			m.writeGosAsync(all, gateStageReboot)
+			m.writeGosAsync(masterN, gateStageApply)
+		}
+	}
 
 	// Repoint the PXE default to the picked image before powering nodes; abort
 	// the run if the shared default is locked by another deploy.
@@ -1094,6 +1187,23 @@ func (m *Manager) AdvanceStep(clusterID string) (int, error) {
 	}
 	d.ManualStep++
 	m.persistLocked(d)
+	// Authorize the newly-entered step by writing its gate/go SEL to the right
+	// BMCs (OOB). This is the authoritative signal — the agents gate on SEL, not
+	// the network. Master-first is preserved: peers' apply go is only written at
+	// apply-rest, after the master finished (canAdvance for apply-rest requires
+	// the master done).
+	switch d.ManualStep {
+	case StepRestore:
+		m.writeGosAsync(m.gateTargetsLocked(clusterID, "all"), gateStageRestore)
+	case StepReboot:
+		m.writeGosAsync(m.gateTargetsLocked(clusterID, "all"), gateStageReboot)
+	case StepApplyMaster:
+		m.writeGosAsync(m.gateTargetsLocked(clusterID, "master"), gateStageApply)
+	case StepApplyRest:
+		m.writeGosAsync(m.gateTargetsLocked(clusterID, "peers"), gateStageApply)
+	case StepSetReady:
+		m.writeGosAsync(m.gateTargetsLocked(clusterID, "master"), gateStageSetReady)
+	}
 	return d.ManualStep, nil
 }
 

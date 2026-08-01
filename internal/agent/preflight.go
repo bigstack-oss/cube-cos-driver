@@ -49,8 +49,18 @@ type PreflightDeps struct {
 	// WriteSEL mirrors a phase transition to the BMC out-of-band (best effort;
 	// may be nil).
 	WriteSEL func(phase, result, detail string) error
-	HTTP     *http.Client
-	Sleep    func(time.Duration)
+	// WaitGate reports whether the driver's restore-go record is present on this
+	// node's BMC (OOB, read via local KCS). When set it is the AUTHORITATIVE
+	// green light 1 — the driver may be unreachable in-band after the topology
+	// reconfig, so GL1 rides the BMC. Nil falls back to the network greenlight.
+	WaitGate func() bool
+	// FetchSetReady best-effort pre-fetches the operator's set_ready params from
+	// the driver during preflight (network up) and stages them locally, so the
+	// master can run set_ready offline post-apply (mgmt off the flat L2 by then).
+	// Skips silently if params aren't submitted yet; never fails preflight. Nil = off.
+	FetchSetReady func(clusterID string) error
+	HTTP          *http.Client
+	Sleep         func(time.Duration)
 }
 
 // RunPreflight performs the installer-phase validation: check in, sync the
@@ -100,6 +110,13 @@ recheck:
 		if d.StampEnv != nil {
 			d.StampEnv(resp.Hostname, resp.ClusterID, resp.IsMaster, resp.OSDisk)
 			log.Printf("preflight: stamped OS-phase identity host=%s master=%v osDisk=%s", resp.Hostname, resp.IsMaster, resp.OSDisk)
+		}
+		// Pre-fetch the operator's set_ready params now (network up), like the
+		// snapshot, so the master can finalize the cluster offline. Best-effort.
+		if d.FetchSetReady != nil {
+			if e := d.FetchSetReady(resp.ClusterID); e != nil {
+				log.Printf("preflight: set_ready params pre-fetch: %v (best effort)", e)
+			}
 		}
 
 		// SEL self-test BEFORE the network reconfig. ConfigureTopology can sever the
@@ -224,8 +241,16 @@ recheck:
 			}
 			if passed {
 				d.sel("preflight", "ok", "")
-				if clear, gerr := d.greenlight(ctx, server, resp.ClusterID, resp.Hostname); gerr == nil && clear {
-					return nil // cleared to restore
+				// Best-effort HTTP greenlight — for faster UI + telemetry when the
+				// driver is still reachable. It never gates.
+				_, _ = d.greenlight(ctx, server, resp.ClusterID, resp.Hostname)
+				// Authoritative GL1: the driver's restore-go SEL on our BMC (OOB).
+				if d.WaitGate != nil {
+					if d.WaitGate() {
+						return nil // cleared to restore (SEL go)
+					}
+				} else if clear, gerr := d.greenlight(ctx, server, resp.ClusterID, resp.Hostname); gerr == nil && clear {
+					return nil // no OOB gate wired (tests): fall back to network greenlight
 				}
 			} else if !carrierOK {
 				d.sel("preflight", "carrier-fail", cdetail)
@@ -246,6 +271,7 @@ func (d PreflightDeps) syncClock(serverTimeUTC string) float64 {
 	}
 	return skew
 }
+
 type pingTarget struct {
 	label string
 	ip    string

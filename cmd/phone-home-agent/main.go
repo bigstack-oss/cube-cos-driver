@@ -162,9 +162,17 @@ func fetchSnapshot(url string) error {
 // needs no network — the whole point of pre-fetching during install.
 const localSnapshot = "/var/support/appointed.snapshot"
 
+// localSetReady is the operator's set_ready params, pre-fetched during preflight
+// (network up) and staged into the rootfs at restore — read locally so the
+// master runs set_ready with no route to the driver (mgmt is off the flat L2
+// by then). Analogous to localSnapshot.
+const localSetReady = "/var/support/set-ready.json"
+
 // hex_config exit status is a bitmask (hex/include/hex/config_module.h):
-//   1 = EXIT_FAILURE (a component failed — snapshot_apply ROLLS BACK its changes)
-//   2 = CONFIG_EXIT_NEED_REBOOT ("caller should reboot the system")
+//
+//	1 = EXIT_FAILURE (a component failed — snapshot_apply ROLLS BACK its changes)
+//	2 = CONFIG_EXIT_NEED_REBOOT ("caller should reboot the system")
+//
 // Success is 0; a clean apply that only needs a reboot to activate is 2. Exit 3
 // = failure|reboot means a component FAILED and was rolled back (the reboot bit
 // just reflects reboot-state touched) — rebooting does NOT fix it, so exit 3 is
@@ -287,46 +295,30 @@ func download(ctx context.Context, url, dest string) error {
 	return err
 }
 
-// reportRestoreDone tells the server the image restore finished (installer,
-// just before reboot) so the deploy UI can show restore-complete / reboot.
-// reportRestoreDone reports restore-complete and, in manual mode, HOLDS the
-// installer here (polling) until the operator authorizes the reboot step. The
-// server returns proceed=false while the manual gate is closed.
-func reportRestoreDone(srv string) {
+// reportRestoreDone marks the image restore complete (installer, just before
+// reboot) and holds until the reboot is authorized. The gate is authoritative
+// over SEL (OOB): the installer writes a restore-done status record (pollSEL
+// greens the UI) and waits for the driver's gate/go(reboot) on its BMC. The
+// HTTP POST is best-effort UI only and never gates — the topology reconfig can
+// have severed the in-band route to the driver by now.
+func reportRestoreDone(srv string, poll time.Duration) {
+	_ = writeSEL("restore-done", "ok", "") // OOB status: restore complete
+	// Best-effort HTTP notify (one shot, non-blocking on failure).
 	body, _ := json.Marshal(map[string]any{"macs": macs(), "serial": serial()})
-	logged := false
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		req, err := http.NewRequestWithContext(ctx, "POST", srv+"/api/v1/agents/restore-done", bytes.NewReader(body))
-		if err != nil {
-			cancel()
-			log.Printf("restore-done: %v", err)
-			return
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	if req, err := http.NewRequestWithContext(ctx, "POST", srv+"/api/v1/agents/restore-done", bytes.NewReader(body)); err == nil {
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		cancel()
-		if err != nil {
-			log.Printf("restore-done post: %v (retrying)", err)
-			time.Sleep(3 * time.Second)
-			continue
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
 		}
-		var out struct {
-			OK      bool `json:"ok"`
-			Proceed bool `json:"proceed"`
-		}
-		json.NewDecoder(resp.Body).Decode(&out)
-		resp.Body.Close()
-		if out.Proceed {
-			log.Printf("restore-done reported — reboot authorized")
-			return
-		}
-		if !logged {
-			log.Printf("restore-done reported — manual mode: holding for operator to authorize reboot ...")
-			logged = true
-		}
-		time.Sleep(3 * time.Second)
 	}
+	cancel()
+	log.Printf("restore-done reported — waiting for reboot 'go' via SEL (OOB) ...")
+	if !waitSELGate(context.Background(), poll, gateStageReboot) {
+		log.Printf("restore-done: reboot gate wait ended without go signal")
+		return
+	}
+	log.Printf("restore-done: reboot authorized (SEL go)")
 }
 
 // reportApplyStarted tells the server the OS-phase agent is up (reboot done) and
@@ -356,47 +348,6 @@ func reportApplyStarted(srv string) (reachable, proceed bool) {
 	json.NewDecoder(resp.Body).Decode(&out)
 	resp.Body.Close()
 	return true, out.Proceed
-}
-
-// applyGateFailOpen bounds how long the agent waits on an unreachable driver
-// before applying anyway, so a genuinely-dead driver can't strand the node
-// mid-deploy. In auto mode the driver authorizes immediately, so this only
-// matters when the driver is truly down.
-const applyGateFailOpen = 15 * time.Minute
-
-// waitApplyGate holds the node until the driver authorizes its apply, retrying
-// until the driver is REACHABLE and returns proceed. On the OS-phase network
-// coming up late, the first calls may be unreachable — we keep trying rather
-// than fail open, so (a) the master honors the manual apply-master step and
-// (b) the apply-started report actually lands (reboot cell goes green). In auto
-// mode proceed is true on the first reachable call, so there is no hold.
-func waitApplyGate(srv string) {
-	var unreachableSince time.Time
-	logged := false
-	for {
-		reachable, proceed := reportApplyStarted(srv)
-		if reachable {
-			unreachableSince = time.Time{}
-			if proceed {
-				if logged {
-					log.Printf("local-apply: apply authorized")
-				}
-				return
-			}
-			if !logged {
-				log.Printf("local-apply: manual mode — holding for operator to authorize apply ...")
-				logged = true
-			}
-		} else {
-			if unreachableSince.IsZero() {
-				unreachableSince = time.Now()
-			} else if time.Since(unreachableSince) > applyGateFailOpen {
-				log.Printf("local-apply: driver unreachable for %s — applying anyway (fail-open)", applyGateFailOpen)
-				return
-			}
-		}
-		time.Sleep(3 * time.Second)
-	}
 }
 
 // reportWaitMaster tells the server this rebooted non-master is holding for the
@@ -491,7 +442,7 @@ func main() {
 	}
 
 	if *restoreDone {
-		reportRestoreDone(srv)
+		reportRestoreDone(srv, *poll)
 		return
 	}
 
@@ -544,24 +495,29 @@ func runLocalApply(srv string, poll time.Duration) {
 		return
 	}
 
+	// OS phase has no in-band network until apply configures it, so the driver
+	// learns we rebooted (and greens the reboot cell) via this OOB SEL record,
+	// which pollSEL reads over the BMC. The HTTP reports below are best-effort UI.
+	_ = writeSEL("rebooted", "ok", host)
+
+	// The apply gate is authoritative over SEL (OOB): the driver writes a
+	// gate/go(apply) record to this node's BMC when the operator authorizes the
+	// apply step — the master at apply-master, peers at apply-rest (the driver
+	// only releases peers after the master is done, so master-first ordering is
+	// preserved driver-side). Auto mode writes the go immediately. HTTP is never
+	// consulted for the gate.
 	if !isMaster {
-		reportWaitMaster(srv) // reboot done: UI shows "wait for master", not applying
-		log.Printf("local-apply: non-master — waiting for master 'go' via SEL (OOB) ...")
-		if !waitSELGate(ctx, poll) {
-			log.Printf("local-apply: gate wait ended without go signal")
-			return
-		}
-		log.Printf("local-apply: SEL 'go' seen — master finished")
-		// Master is done; now honor the operator's apply-rest step (manual mode)
-		// before this peer applies. Auto mode returns immediately.
-		waitApplyGate(srv)
-		log.Printf("local-apply: non-master — applying local snapshot")
+		reportWaitMaster(srv) // best-effort UI: show "wait for master", not applying
+		log.Printf("local-apply: non-master — waiting for apply 'go' via SEL (OOB) ...")
 	} else {
-		// Manual mode holds the master here until the operator authorizes the
-		// apply-master step; auto mode returns immediately. Also flips UI to applying.
-		waitApplyGate(srv)
-		log.Printf("local-apply: master — applying local snapshot")
+		reportApplyStarted(srv) // best-effort UI hint; does not gate
+		log.Printf("local-apply: master — waiting for apply 'go' via SEL (OOB) ...")
 	}
+	if !waitSELGate(ctx, poll, gateStageApply) {
+		log.Printf("local-apply: gate wait ended without apply go signal")
+		return
+	}
+	log.Printf("local-apply: apply authorized (SEL go) — applying local snapshot")
 
 	err := apply(ctx, "") // empty URL: apply() uses localSnapshot
 	if errors.Is(err, errApplyReboot) {
@@ -596,23 +552,34 @@ func runLocalApply(srv string, poll time.Duration) {
 	// node has applied (it needs cluster-wide OSDs/services up). This is what
 	// turns the configured nodes into a ready, usable cluster.
 	if isMaster {
-		runSetReady(ctx, srv, cluster, host)
+		runSetReady(ctx, srv, cluster, host, poll)
 	}
 }
 
-// runSetReady polls the server for the operator's UI-supplied set_ready input
-// (external CIDR / gateway / floating-IP pool), then runs the one-time cluster
-// set_ready on the master with those args and reports the cluster ready. The
-// args require operator input, so this is UI-driven — the agent only executes.
-func runSetReady(ctx context.Context, srv, cluster, host string) {
-	log.Printf("set_ready: master configured — waiting for operator set_ready input from the UI ...")
+// runSetReady runs the one-time cluster set_ready on the master. Offline-first:
+// the params were pre-fetched during preflight and staged locally, so we read
+// them from disk and gate on the set-ready 'go' SEL (OOB) — the master's mgmt
+// network is off the flat L2 by now, so we must not depend on the driver. Only
+// when the local params are absent do we fall back to polling the driver (best
+// effort, for a deploy that didn't pre-stage them).
+func runSetReady(ctx context.Context, srv, cluster, host string, poll time.Duration) {
 	var sr setReadyInput
-	for {
-		if s, ok := pollSetReady(srv, cluster); ok && s.Trigger {
-			sr = s
-			break
+	if b, err := os.ReadFile(localSetReady); err == nil && json.Unmarshal(b, &sr) == nil {
+		log.Printf("set_ready: using locally-staged params — waiting for set-ready 'go' via SEL (OOB) ...")
+		if !waitSELGate(ctx, poll, gateStageSetReady) {
+			log.Printf("set_ready: gate wait ended without go signal")
+			return
 		}
-		time.Sleep(15 * time.Second)
+		log.Printf("set_ready: authorized (SEL go)")
+	} else {
+		log.Printf("set_ready: no local params — falling back to driver poll (network) ...")
+		for {
+			if s, ok := pollSetReady(srv, cluster); ok && s.Trigger {
+				sr = s
+				break
+			}
+			time.Sleep(15 * time.Second)
+		}
 	}
 	args := []string{"-c", "cluster", "-c", "set_ready"}
 	for _, a := range []string{sr.CIDR, sr.Gateway, sr.IPRange} {
@@ -645,6 +612,37 @@ type setReadyInput struct {
 	CIDR           string `json:"cidr"`
 	Gateway        string `json:"gateway"`
 	IPRange        string `json:"ipRange"`
+}
+
+// fetchSetReadyParams pre-fetches the operator's set_ready params from the
+// driver during preflight (network up) and stages them to /run/set-ready.json
+// for hex_autoinstall to carry into the rootfs, so the master runs set_ready
+// offline post-apply. Best-effort: absent/empty params are skipped (not staged),
+// and never fail preflight — the OS agent falls back to the network poll.
+func fetchSetReadyParams(srv, clusterID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", srv+"/api/v1/clusters/"+clusterID+"/set-ready", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	var sr setReadyInput
+	if json.Unmarshal(b, &sr) != nil {
+		return nil // nothing usable yet
+	}
+	if sr.CIDR == "" && sr.Gateway == "" && sr.IPRange == "" {
+		return nil // operator hasn't submitted params yet — don't stage an empty file
+	}
+	return os.WriteFile("/run/set-ready.json", b, 0o600)
 }
 
 // pollSetReady asks the server for the operator's set_ready input (submitted via
@@ -763,6 +761,8 @@ func runPreflight(srv string, poll time.Duration) {
 		SaveReport:        savePreflightReport,
 		Probe:             probe,
 		WriteSEL:          writeSEL,
+		WaitGate:          func() bool { return selGatePresent(gateStageRestore) },
+		FetchSetReady:     func(clusterID string) error { return fetchSetReadyParams(srv, clusterID) },
 		HTTP:              &http.Client{Timeout: 30 * time.Second},
 		Sleep:             time.Sleep,
 	}
