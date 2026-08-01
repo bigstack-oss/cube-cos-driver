@@ -321,6 +321,12 @@ func (m *Manager) MarkReady(clusterID string, ok bool, msg string) {
 	in.Ready = ok
 	in.Message = msg
 	m.setReady[clusterID] = in
+	// Stamp the live deploy so the master's set-ready cell greens on set_ready
+	// completion (not the earlier cluster-health check).
+	if d := m.deploys[clusterID]; d != nil {
+		d.SetReadyDone = ok
+		m.persistLocked(d)
+	}
 	if err := m.store.SaveSetReady(clusterID, in); err != nil {
 		log.Printf("orchestrator: persist set-ready %s: %v", clusterID, err)
 	}
@@ -749,10 +755,20 @@ func (m *Manager) Status(clusterID string) (*Deploy, error) {
 // deriveNodeFields recomputes each node's presentation-only fields from its
 // persisted state.
 func deriveNodeFields(d *Deploy) {
+	// set-ready cell: active once every node has applied (set_ready is runnable/
+	// running) and green only when the master reports set_ready finished.
+	allDone := len(d.Nodes) > 0
+	for _, nd := range d.Nodes {
+		if nd.State != StateDone {
+			allDone = false
+			break
+		}
+	}
+	setReadyActive := allDone && !d.SetReadyDone
 	for host, nd := range d.Nodes {
 		nd.Light1, nd.Light2 = nd.lights()
 		nd.Phase = nd.phase()
-		nd.Progress = nd.progress(host == d.Master, d.ClusterReady)
+		nd.Progress = nd.progress(host == d.Master, setReadyActive, d.SetReadyDone)
 	}
 }
 

@@ -212,7 +212,7 @@ func pipelineRank(s State) int {
 // final step). A cell is done once the pipeline is past it, active while in it,
 // and pending before. On error the failing cell is red and later cells stay
 // pending.
-func (nd *NodeDeploy) progress(isMaster, clusterReady bool) []PhaseCell {
+func (nd *NodeDeploy) progress(isMaster, setReadyActive, setReadyDone bool) []PhaseCell {
 	cell := func(name string, activeRank, doneRank int) PhaseCell {
 		r := pipelineRank(nd.State)
 		st := CellPending
@@ -248,11 +248,14 @@ func (nd *NodeDeploy) progress(isMaster, clusterReady bool) []PhaseCell {
 		// set-ready runs on the master after it (and the peers) have applied:
 		// pending until the master finishes applying, active while set_ready
 		// runs, done once the cluster reports ready.
+		// Mirror the apply cell: active (pulsing) while set_ready runs, green
+		// only once the master reports it finished — NOT off the earlier
+		// cluster-health check.
 		sr := PhaseCell{Name: "set-ready", Status: CellPending}
 		switch {
-		case clusterReady:
+		case setReadyDone:
 			sr.Status = CellDone
-		case nd.State != StateError && pipelineRank(nd.State) >= 7:
+		case setReadyActive:
 			sr.Status = CellActive
 		}
 		cells = append(cells, sr)
@@ -282,6 +285,10 @@ type Deploy struct {
 	// ClusterReady + Verify hold the Tier-2 whole-cluster check result.
 	ClusterReady bool              `json:"clusterReady"`
 	Verify       []PreflightResult `json:"verify,omitempty"`
+	// SetReadyDone is set when the master reports cluster set_ready finished
+	// (distinct from ClusterReady, the health check, which can pass earlier).
+	// It greens the master's set-ready cell.
+	SetReadyDone bool `json:"setReadyDone"`
 	// Manual gates the deploy step-by-step: the operator advances ManualStep
 	// via AdvanceStep, and each phase barrier holds until the step reaches it.
 	// 1=preflight 2=restore 3=reboot 4=apply-master 5=apply-rest+set_ready.
