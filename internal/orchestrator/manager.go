@@ -230,6 +230,13 @@ func (m *Manager) SubmitSetReady(clusterID string, in SetReadyInput) {
 	in.Trigger = true
 	in.Ready = false // a fresh submit (new reimage) is not ready until it runs
 	in.Message = ""
+	// The network params only describe the shared external network — never keep
+	// them without it, so no client can persist a createExternal=false + params
+	// inconsistency (and set_ready isn't handed args that would force-create the
+	// network against the operator's choice).
+	if !in.CreateExternal {
+		in.CIDR, in.Gateway, in.IPRange = "", "", ""
+	}
 	m.setReady[clusterID] = in
 	if err := m.store.SaveSetReady(clusterID, in); err != nil {
 		log.Printf("orchestrator: persist set-ready %s: %v", clusterID, err)

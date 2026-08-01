@@ -82,12 +82,15 @@ export const DeployModal = (props: DeployModalProps) => {
       // The external network is optional: no CIDR → set_ready finalizes WITHOUT
       // creating one. Submit the finalize input first (armed for the master to
       // consume once all nodes apply), then start the deploy.
+      // The CIDR/gateway/pool only describe the shared external network, so
+      // clear them when it isn't being created — otherwise stale pre-filled
+      // values would persist a createExternal=false + params inconsistency.
       const willCreate = createExternal && cidr.trim() !== ''
       await submitSetReady(clusterId, {
         createExternal: willCreate,
-        cidr,
-        gateway,
-        ipRange,
+        cidr: willCreate ? cidr : '',
+        gateway: willCreate ? gateway : '',
+        ipRange: willCreate ? ipRange : '',
       })
       await startDeploy(clusterId, { manual, image })
       onStarted()
