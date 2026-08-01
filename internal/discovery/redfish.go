@@ -79,13 +79,10 @@ func (RedfishDiscoverer) Discover(ctx context.Context, t Target) (inventory.Inve
 	if storages, err := sys.Storage(); err == nil {
 		for _, st := range storages {
 			// RAID virtual disks first: on a HW-RAID controller (e.g. Dell PERC)
-			// the OS sees the virtual disk, not the member drives — so VDs are
+			// the OS sees the virtual disk, not its member drives — so VDs are
 			// the OS-install candidates and the members are not.
-			hasVD := false
-			for _, vd := range fetchVirtualDisks(client, st.ODataID) {
-				inv.Disks = append(inv.Disks, vd)
-				hasVD = true
-			}
+			vds, members := fetchVirtualDisks(client, st.ODataID)
+			inv.Disks = append(inv.Disks, vds...)
 			drives, err := st.Drives()
 			if err != nil {
 				continue
@@ -99,9 +96,11 @@ func (RedfishDiscoverer) Discover(ctx context.Context, t Target) (inventory.Inve
 				if d.CapacityBytes != nil {
 					disk.SizeBytes = int64(*d.CapacityBytes)
 				}
-				if hasVD {
-					// Behind a RAID controller with volumes defined: the member
-					// drive is not OS-visible — never an install target.
+				// A drive inside a VD is hidden from the OS — never an install
+				// target. Drives outside every VD (pass-through, unconfigured)
+				// stay OS-visible. If the BMC lists VDs but no membership,
+				// membership is unknown: keep the old conservative marking.
+				if members[d.ODataID] || (len(vds) > 0 && len(members) == 0) {
 					no := false
 					disk.OSEligible = &no
 				}
@@ -131,6 +130,11 @@ type rfVolume struct {
 	CapacityBytes *int64 `json:"CapacityBytes"`
 	VolumeType    string `json:"VolumeType"`
 	RAIDType      string `json:"RAIDType"`
+	Links         struct {
+		Drives []struct {
+			ODataID string `json:"@odata.id"`
+		} `json:"Drives"`
+	} `json:"Links"`
 }
 
 func (v rfVolume) unresolved() bool {
@@ -138,13 +142,16 @@ func (v rfVolume) unresolved() bool {
 }
 
 // fetchVirtualDisks returns a controller's RAID virtual disks as OS-install
-// candidates. It parses the Volumes collection from raw JSON (gofish's typed
-// Volume rejects Dell iDRAC8's "Encrypted":null and drops the whole set) and
-// skips Dell "RawDevice" pass-throughs (the physical drives, already reported).
-func fetchVirtualDisks(client *gofish.APIClient, storageURL string) []inventory.Disk {
+// candidates, plus the @odata.id set of their member drives (Links.Drives) so
+// the caller can mark exactly those drives as RAID members. It parses the
+// Volumes collection from raw JSON (gofish's typed Volume rejects Dell
+// iDRAC8's "Encrypted":null and drops the whole set) and skips Dell
+// "RawDevice" pass-throughs (the physical drives, already reported).
+func fetchVirtualDisks(client *gofish.APIClient, storageURL string) ([]inventory.Disk, map[string]bool) {
 	var out []inventory.Disk
+	members := map[string]bool{}
 	if storageURL == "" {
-		return out
+		return out, members
 	}
 	// Volumes is a standard sub-resource of Storage. Ask the controller to
 	// inline the members ($expand) so a slow BMC (Dell iDRAC8 is ~5s/request)
@@ -157,7 +164,7 @@ func fetchVirtualDisks(client *gofish.APIClient, storageURL string) []inventory.
 	if err := getJSON(client, storageURL+"/Volumes?$expand=*($levels=1)", &coll); err != nil || len(coll.Members) == 0 {
 		coll.Members = nil
 		if err := getJSON(client, storageURL+"/Volumes", &coll); err != nil {
-			return out // no Volumes resource (e.g. an AHCI passthrough controller)
+			return out, members // no Volumes resource (e.g. an AHCI passthrough controller)
 		}
 	}
 	for _, v := range coll.Members {
@@ -169,6 +176,11 @@ func fetchVirtualDisks(client *gofish.APIClient, storageURL string) []inventory.
 		}
 		if v.unresolved() {
 			continue
+		}
+		for _, m := range v.Links.Drives {
+			if m.ODataID != "" {
+				members[m.ODataID] = true
+			}
 		}
 		name := firstNonEmpty(v.DisplayName, v.Name, v.Description)
 		raid := raidLabel(v.RAIDType, v.VolumeType)
@@ -184,7 +196,7 @@ func fetchVirtualDisks(client *gofish.APIClient, storageURL string) []inventory.
 		}
 		out = append(out, d)
 	}
-	return out
+	return out, members
 }
 
 // getJSON GETs a Redfish resource and decodes it into v.

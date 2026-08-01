@@ -107,7 +107,7 @@ func TestFetchVirtualDisksIDRAC8(t *testing.T) {
 	}
 	defer client.Logout()
 
-	disks := fetchVirtualDisks(client, storageURL)
+	disks, members := fetchVirtualDisks(client, storageURL)
 	if len(disks) != 1 {
 		t.Fatalf("got %d disks, want 1 (the VD; RawDevice skipped): %+v", len(disks), disks)
 	}
@@ -117,6 +117,9 @@ func TestFetchVirtualDisksIDRAC8(t *testing.T) {
 	}
 	if d.OSEligible == nil || !*d.OSEligible {
 		t.Fatal("VD must be explicitly OS-eligible")
+	}
+	if len(members) != 2 || !members["/d0"] || !members["/d1"] {
+		t.Fatalf("member refs must be the VD's Links.Drives only, got %v", members)
 	}
 }
 
@@ -147,11 +150,80 @@ func TestFetchVirtualDisksExpanded(t *testing.T) {
 	}
 	defer client.Logout()
 
-	disks := fetchVirtualDisks(client, storageURL)
+	disks, _ := fetchVirtualDisks(client, storageURL)
 	if len(disks) != 1 || disks[0].Name != "CubeCOS" {
 		t.Fatalf("want just the CubeCOS VD, got %+v", disks)
 	}
 	if memberGets != 0 {
 		t.Fatalf("expanded members must not be re-fetched (%d per-member GETs)", memberGets)
+	}
+}
+
+// Only the drives listed in a VD's Links.Drives are RAID members. Drives on the
+// same controller that are not in any VD (pass-throughs, unconfigured) stay
+// OS-visible and must not be marked ineligible (the "every disk shows as RAID
+// member" bug).
+func TestDiscoverMarksOnlyVolumeMemberDrives(t *testing.T) {
+	const sysURL = "/redfish/v1/Systems/S1"
+	const stURL = sysURL + "/Storage/C1"
+	drive := func(id, name string) string {
+		return `{"@odata.id":"` + id + `","Id":"` + name + `","Name":"` + name + `","Model":"SSDSC2KG480G8R","MediaType":"SSD","CapacityBytes":480103981056}`
+	}
+	routes := map[string]string{
+		"/redfish/v1/":        `{"@odata.id":"/redfish/v1/","Id":"RootService","Name":"Root Service","Systems":{"@odata.id":"/redfish/v1/Systems"}}`,
+		"/redfish/v1/Systems": `{"Members":[{"@odata.id":"` + sysURL + `"}],"Members@odata.count":1}`,
+		sysURL:                `{"@odata.id":"` + sysURL + `","Id":"S1","Name":"S1","Manufacturer":"Dell","Model":"R630","SerialNumber":"SN1","Storage":{"@odata.id":"` + sysURL + `/Storage"}}`,
+		sysURL + "/Storage":   `{"Members":[{"@odata.id":"` + stURL + `"}],"Members@odata.count":1}`,
+		stURL: `{"@odata.id":"` + stURL + `","Id":"C1","Name":"PERC","Drives":[
+			{"@odata.id":"/d0"},{"@odata.id":"/d1"},{"@odata.id":"/d2"},{"@odata.id":"/d3"}],
+			"Volumes":{"@odata.id":"` + stURL + `/Volumes"}}`,
+		stURL + "/Volumes": `{"Members":[{"@odata.id":"/vd0"},{"@odata.id":"/raw2"}]}`,
+		"/vd0":             `{"@odata.id":"/vd0","Name":"cubecos","VolumeType":"Mirrored","Encrypted":false,"CapacityBytes":479559942144,"Links":{"Drives":[{"@odata.id":"/d0"},{"@odata.id":"/d1"}]}}`,
+		"/raw2":            `{"@odata.id":"/raw2","Name":"Solid State Disk 0:1:2","VolumeType":"RawDevice","Encrypted":null,"Links":{"Drives":[{"@odata.id":"/d2"}]}}`,
+		"/d0":              drive("/d0", "Solid State Disk 0:1:0"),
+		"/d1":              drive("/d1", "Solid State Disk 0:1:1"),
+		"/d2":              drive("/d2", "Solid State Disk 0:1:2"),
+		"/d3":              drive("/d3", "Solid State Disk 0:1:3"),
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := routes[r.URL.Path]; ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(body))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	inv, err := RedfishDiscoverer{}.Discover(context.Background(), Target{Address: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eligible := map[string]string{} // name → "true" | "false" | "unset"
+	for _, d := range inv.Disks {
+		switch {
+		case d.OSEligible == nil:
+			eligible[d.Name] = "unset"
+		case *d.OSEligible:
+			eligible[d.Name] = "true"
+		default:
+			eligible[d.Name] = "false"
+		}
+	}
+	want := map[string]string{
+		"cubecos":                "true",  // the VD is the install target
+		"Solid State Disk 0:1:0": "false", // RAID member (in vd0's Links.Drives)
+		"Solid State Disk 0:1:1": "false", // RAID member
+		"Solid State Disk 0:1:2": "unset", // pass-through — OS-visible
+		"Solid State Disk 0:1:3": "unset", // not in any VD — OS-visible
+	}
+	if len(inv.Disks) != len(want) {
+		t.Fatalf("got %d disks, want %d: %+v", len(inv.Disks), len(want), inv.Disks)
+	}
+	for name, w := range want {
+		if eligible[name] != w {
+			t.Errorf("disk %q OSEligible = %s, want %s", name, eligible[name], w)
+		}
 	}
 }
