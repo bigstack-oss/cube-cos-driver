@@ -586,19 +586,26 @@ func runSetReady(ctx context.Context, srv, cluster, host string, poll time.Durat
 		}
 	}
 	args := []string{"-c", "cluster", "-c", "set_ready"}
-	for _, a := range []string{sr.CIDR, sr.Gateway, sr.IPRange} {
-		if a != "" {
-			args = append(args, a)
+	// set_ready treats any positional args as "create the shared external
+	// network" (argc>1 => it skips the prompt and builds a flat external net
+	// with these params). So only pass the network params when the operator
+	// actually wants that network; otherwise pass none and decline the prompt
+	// so set_ready finalizes without one.
+	if sr.CreateExternal {
+		for _, a := range []string{sr.CIDR, sr.Gateway, sr.IPRange} {
+			if a != "" {
+				args = append(args, a)
+			}
 		}
 	}
-	log.Printf("set_ready: running hex_cli %v", args)
+	log.Printf("set_ready: running hex_cli %v (createExternal=%v)", args, sr.CreateExternal)
 	cmd := exec.CommandContext(ctx, "hex_cli", args...)
-	// set_ready prompts "Create a shared external network? Enter 'YES'": the UI
-	// already captured the operator's intent, so auto-confirm here.
+	// With no args the CLI prompts "Create a shared external network?" — answer
+	// per the operator's intent. (With args the prompt is skipped.)
 	if sr.CreateExternal {
 		cmd.Stdin = strings.NewReader("YES\n")
 	} else {
-		cmd.Stdin = strings.NewReader("\n")
+		cmd.Stdin = strings.NewReader("no\n")
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
