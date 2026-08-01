@@ -219,11 +219,14 @@ export const ClusterPage = () => {
             </CosTag>
           </div>
           <span className="secondary-body4 text-functional-text-light">
+            {`Finalize: ${setReadyInfo.cidr || '—'}` +
+              (setReadyInfo.gateway ? ` · gw ${setReadyInfo.gateway}` : '') +
+              (setReadyInfo.ipRange ? ` · pool ${setReadyInfo.ipRange}` : '')}
+          </span>
+          <span className="secondary-body5 text-functional-text-light">
             {setReadyInfo.createExternal
-              ? `External network: ${setReadyInfo.cidr}` +
-                (setReadyInfo.gateway ? ` · gw ${setReadyInfo.gateway}` : '') +
-                (setReadyInfo.ipRange ? ` · pool ${setReadyInfo.ipRange}` : '')
-              : 'No shared external network'}
+              ? 'Shared external network: created'
+              : 'Shared external network: none'}
           </span>
           {setReadyInfo.message && (
             <span className="secondary-body5 text-status-negative">
