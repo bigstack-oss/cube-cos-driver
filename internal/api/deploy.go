@@ -37,6 +37,7 @@ func (h *deployHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/agents/preflight/greenlight", h.greenlight)
 	mux.HandleFunc("POST /api/v1/agents/restore-done", h.restoreDone)
 	mux.HandleFunc("POST /api/v1/agents/apply-started", h.applyStarted)
+	mux.HandleFunc("POST /api/v1/agents/wait-master", h.waitMaster)
 	mux.HandleFunc("POST /api/v1/agents/apply-failed", h.applyFailed)
 	mux.HandleFunc("POST /api/v1/agents/applied", h.applied)
 	mux.HandleFunc("POST /api/v1/agents/ready", h.ready)
@@ -636,6 +637,27 @@ func (h *deployHandlers) applyStarted(w http.ResponseWriter, r *http.Request) {
 	log.Printf("apply-started for %s (serial=%q)", assn.Hostname, req.Serial)
 	h.mgr.ApplyStarted(assn.ClusterID, assn.Hostname)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proceed": h.mgr.ApplyProceed(assn.ClusterID, assn.Hostname)})
+}
+
+// waitMaster is reported by a rebooted non-master before it blocks on the
+// master's SEL 'go' — so the UI shows "wait for master", not "applying".
+func (h *deployHandlers) waitMaster(w http.ResponseWriter, r *http.Request) {
+	var req agent.CheckinRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+	matched, assn, err := h.matchNode(req.MACs, req.Serial)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	if matched == nil || assn == nil {
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": false})
+		return
+	}
+	h.mgr.WaitForMaster(assn.ClusterID, assn.Hostname)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // applyFailed is reported by the OS-phase agent when the snapshot apply fails

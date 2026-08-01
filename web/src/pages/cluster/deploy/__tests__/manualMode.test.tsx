@@ -50,6 +50,7 @@ const manualDeploy = (step: number): Deploy => ({
   startedAt: '',
   manual: true,
   manualStep: step,
+  canAdvance: true,
   nodes: {
     'cube-1': { hostname: 'cube-1', machineId: 'm', state: 'preflight-ok', updatedAt: '', light1: 'green', light2: 'off', phase: 'preflight-net' },
   },
@@ -76,5 +77,20 @@ describe('DeployProgress manual step bar', () => {
       )
       expect(posted).toBeTruthy()
     })
+  })
+
+  it('disables Next until the step is complete (canAdvance false)', async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({ ...manualDeploy(1), canAdvance: false }),
+          { status: 200 },
+        ),
+    )
+    render(<DeployProgress clusterId="c1" />)
+    await waitFor(() => expect(screen.getByText(/1\. Preflight check/)).toBeTruthy())
+    expect(
+      screen.getByRole('button', { name: 'Next' }).hasAttribute('disabled'),
+    ).toBe(true)
   })
 })
