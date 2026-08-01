@@ -72,6 +72,8 @@ export type Deploy = {
   // Computed: whether the current step's nodes have reached it, so the Next
   // button can gate on real progress (not let the operator click through).
   canAdvance?: boolean
+  // Whole-cluster set_ready finished — greens the final step + Set-ready cell.
+  setReadyDone?: boolean
 }
 
 // Manual-deploy step labels, indexed by manualStep (1..6).

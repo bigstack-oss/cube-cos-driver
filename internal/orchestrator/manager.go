@@ -747,6 +747,12 @@ func (m *Manager) Status(clusterID string) (*Deploy, error) {
 	if err != nil {
 		return nil, err
 	}
+	// SetReadyDone is a mirror of the persisted set-ready result; recompute it
+	// so a reload (or a deploy marked by a prior process) still greens the final
+	// step.
+	if in, ok := m.store.LoadSetReady(clusterID); ok {
+		d.SetReadyDone = in.Ready
+	}
 	deriveNodeFields(d)
 	m.deriveDeployFields(d)
 	return d, nil

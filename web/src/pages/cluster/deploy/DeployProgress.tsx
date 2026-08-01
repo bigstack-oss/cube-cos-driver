@@ -21,9 +21,10 @@ import { PreflightReportModal } from './PreflightReportModal'
 const ManualStepBar = (props: {
   step: number
   canAdvance: boolean
+  complete: boolean
   onNext: () => void
 }) => {
-  const { step, canAdvance, onNext } = props // step is 1-based (1..5)
+  const { step, canAdvance, complete, onNext } = props // step is 1-based (1..6)
   const atLast = step >= MANUAL_STEPS.length
   return (
     <div className="flex items-center gap-x-3 rounded-md border border-primary/40 bg-primary/5 px-3 py-2">
@@ -31,7 +32,18 @@ const ManualStepBar = (props: {
       <div className="flex flex-1 flex-wrap items-center gap-1.5">
         {MANUAL_STEPS.map((label, i) => {
           const n = i + 1
-          const state = n < step ? 'done' : n === step ? 'current' : 'todo'
+          // Once set_ready completes, the last step is done (green), not the
+          // active/current highlight — otherwise it sits blue with nothing left
+          // to advance to.
+          const state = complete
+            ? n <= step
+              ? 'done'
+              : 'todo'
+            : n < step
+              ? 'done'
+              : n === step
+                ? 'current'
+                : 'todo'
           return (
             <span key={label} className="flex items-center gap-1.5">
               <span
@@ -58,7 +70,7 @@ const ManualStepBar = (props: {
         disabled={atLast || !canAdvance}
         onClick={onNext}
       >
-        {atLast ? 'Finishing' : 'Next'}
+        {complete ? 'Done' : atLast ? 'Finishing' : 'Next'}
       </CosButton>
     </div>
   )
@@ -226,6 +238,7 @@ export const DeployProgress = (props: DeployProgressProps) => {
         <ManualStepBar
           step={deploy.manualStep ?? 1}
           canAdvance={deploy.canAdvance ?? false}
+          complete={!!deploy.setReadyDone}
           onNext={() => advanceStep(clusterId).then(refresh).catch(() => {})}
         />
       )}
