@@ -29,5 +29,7 @@ const (
 	ErrApplyFailed   ErrCode = "APPLY_FAILED"   // hex_config snapshot_apply failed
 	ErrApplyTimeout  ErrCode = "APPLY_TIMEOUT"  // FTS never completed
 
+	ErrCancelled ErrCode = "CANCELLED" // deploy cancelled by the operator
+
 	ErrInternal ErrCode = "INTERNAL"
 )

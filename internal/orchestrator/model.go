@@ -271,6 +271,9 @@ type Deploy struct {
 	// 1=preflight 2=restore 3=reboot 4=apply-master 5=apply-rest+set_ready.
 	Manual     bool `json:"manual"`
 	ManualStep int  `json:"manualStep,omitempty"`
+	// CanAdvance (computed) reports whether the current manual step's nodes have
+	// reached its state, so the UI can gate the operator's Next button.
+	CanAdvance bool `json:"canAdvance"`
 }
 
 // Manual-deploy step cursor values (Deploy.ManualStep).

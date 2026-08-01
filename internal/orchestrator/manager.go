@@ -573,6 +573,21 @@ func (m *Manager) Cancel(clusterID string) {
 		cancel()
 		delete(m.cancels, clusterID)
 	}
+	// Reflect the stop in the node states so the UI shows it (cancelling the
+	// context alone leaves the last states in place). Non-terminal nodes go to
+	// error/cancelled; the PXE-restore watcher then fires (booted() is true once
+	// every node is terminal).
+	if d := m.deploys[clusterID]; d != nil {
+		for _, nd := range d.Nodes {
+			if nd.State != StateDone && nd.State != StateError {
+				nd.State = StateError
+				nd.ErrCode = ErrCancelled
+				nd.Message = "deploy cancelled by operator"
+				nd.UpdatedAt = nowUTC()
+			}
+		}
+		m.persistLocked(d)
+	}
 }
 
 // Status returns the current deploy (loading from disk if not in memory).
@@ -591,6 +606,7 @@ func (m *Manager) Status(clusterID string) (*Deploy, error) {
 		return nil, err
 	}
 	deriveNodeFields(d)
+	m.deriveDeployFields(d)
 	return d, nil
 }
 
@@ -602,6 +618,12 @@ func deriveNodeFields(d *Deploy) {
 		nd.Phase = nd.phase()
 		nd.Progress = nd.progress()
 	}
+}
+
+// deriveDeployFields recomputes the deploy-level presentation fields (the
+// manual Next gate). Must run under the manager lock.
+func (m *Manager) deriveDeployFields(d *Deploy) {
+	d.CanAdvance = m.canAdvance(d)
 }
 
 // set mutates a node's deploy record under lock and persists it.
@@ -639,6 +661,7 @@ func (m *Manager) snapshot(clusterID string) (*Deploy, error) {
 	var cp Deploy
 	json.Unmarshal(b, &cp)
 	deriveNodeFields(&cp)
+	m.deriveDeployFields(&cp)
 	return &cp, nil
 }
 
@@ -863,8 +886,20 @@ func (m *Manager) RestoreDone(clusterID, hostname string) {
 // UI flips reboot → done and apply → active during the long FTS apply.
 func (m *Manager) ApplyStarted(clusterID, hostname string) {
 	m.set(clusterID, hostname, func(nd *NodeDeploy) {
-		if nd.State == StateRebooting {
+		switch nd.State {
+		case StateRebooting, StateWaiting, StateCheckedIn:
 			nd.State = StateApplying
+		}
+	})
+}
+
+// WaitForMaster marks a rebooted non-master as holding for the master's apply
+// (green light 2) — so the UI shows "wait for master", not "applying", until the
+// master's SEL 'go' arrives.
+func (m *Manager) WaitForMaster(clusterID, hostname string) {
+	m.set(clusterID, hostname, func(nd *NodeDeploy) {
+		if nd.State == StateRebooting || nd.State == StateCheckedIn {
+			nd.State = StateWaiting
 		}
 	})
 }
@@ -983,7 +1018,8 @@ func (m *Manager) ApplyProceed(clusterID, hostname string) bool {
 }
 
 // AdvanceStep moves a manual deploy to the next step (operator "Next"). Returns
-// the new step. No-op for an auto deploy or when already at the final step.
+// the new step. Refuses to advance until the current step's nodes have reached
+// its state, so the operator can't click straight through the gates.
 func (m *Manager) AdvanceStep(clusterID string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -994,11 +1030,46 @@ func (m *Manager) AdvanceStep(clusterID string) (int, error) {
 	if !d.Manual {
 		return 0, fmt.Errorf("deploy for cluster %s is not in manual mode", clusterID)
 	}
-	if d.ManualStep < StepApplyRest {
-		d.ManualStep++
-		m.persistLocked(d)
+	if d.ManualStep >= StepApplyRest {
+		return d.ManualStep, nil
 	}
+	if !m.canAdvance(d) {
+		return d.ManualStep, fmt.Errorf("step %d not complete yet — all nodes must reach it first", d.ManualStep)
+	}
+	d.ManualStep++
+	m.persistLocked(d)
 	return d.ManualStep, nil
+}
+
+// canAdvance reports whether the current manual step's precondition is met: the
+// nodes have reached the state this step gates. Errored nodes (rank 0) block —
+// the operator rekicks or cancels rather than advancing past a failure.
+func (m *Manager) canAdvance(d *Deploy) bool {
+	if !d.Manual || d.ManualStep >= StepApplyRest {
+		return false
+	}
+	switch d.ManualStep {
+	case StepPreflight: // -> restore: every node passed preflight
+		return m.fabricReadyLocked(d)
+	case StepRestore: // -> reboot: every node finished restoring
+		return allReached(d, 4) // >= rebooting
+	case StepReboot: // -> apply-master: every node rebooted + checked in
+		return allReached(d, 5) // >= checked-in/waiting
+	case StepApplyMaster: // -> apply-rest: the master finished applying
+		nd := d.Nodes[d.Master]
+		return d.Master == "" || (nd != nil && nd.State == StateDone)
+	}
+	return false
+}
+
+// allReached reports whether every node's pipeline rank is >= want.
+func allReached(d *Deploy, want int) bool {
+	for _, nd := range d.Nodes {
+		if pipelineRank(nd.State) < want {
+			return false
+		}
+	}
+	return true
 }
 
 // ManualState returns whether the deploy is manual and its current step.

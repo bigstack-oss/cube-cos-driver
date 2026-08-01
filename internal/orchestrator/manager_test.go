@@ -294,19 +294,28 @@ func TestManualStepGates(t *testing.T) {
 		t.Fatal("master apply proceeded at preflight step")
 	}
 
-	// Next → restore authorized: GL1 clears now.
-	if s, _ := m.AdvanceStep("cm"); s != StepRestore {
-		t.Fatalf("step = %d, want %d", s, StepRestore)
+	// Step 1 completes (fabric ready), so Next → restore authorized; GL1 clears.
+	if s, err := m.AdvanceStep("cm"); err != nil || s != StepRestore {
+		t.Fatalf("advance to restore: step=%d err=%v", s, err)
 	}
-	if !m.GreenLight1("cm", "m") {
+	if !m.GreenLight1("cm", "m") || !m.GreenLight1("cm", "p") {
 		t.Fatal("GL1 should clear once restore authorized")
 	}
 	if m.RebootProceed("cm") {
 		t.Fatal("reboot should still hold at restore step")
 	}
 
-	// Next → reboot authorized.
-	m.AdvanceStep("cm")
+	// Next must be REFUSED until both nodes actually finish restoring.
+	if _, err := m.AdvanceStep("cm"); err == nil {
+		t.Fatal("advance to reboot should refuse until nodes reach rebooting")
+	}
+	m.RestoreDone("cm", "m")
+	m.RestoreDone("cm", "p")
+
+	// Now Next → reboot authorized.
+	if s, err := m.AdvanceStep("cm"); err != nil || s != StepReboot {
+		t.Fatalf("advance to reboot: step=%d err=%v", s, err)
+	}
 	if !m.RebootProceed("cm") {
 		t.Fatal("reboot should proceed once authorized")
 	}
@@ -314,8 +323,17 @@ func TestManualStepGates(t *testing.T) {
 		t.Fatal("master apply should still hold at reboot step")
 	}
 
+	// Refused until both check in post-reboot.
+	if _, err := m.AdvanceStep("cm"); err == nil {
+		t.Fatal("advance to apply-master should refuse until nodes check in")
+	}
+	m.CheckIn("cm", "m")
+	m.CheckIn("cm", "p")
+
 	// Next → apply-master authorized (master only; peer still held).
-	m.AdvanceStep("cm")
+	if s, err := m.AdvanceStep("cm"); err != nil || s != StepApplyMaster {
+		t.Fatalf("advance to apply-master: step=%d err=%v", s, err)
+	}
 	if !m.ApplyProceed("cm", "m") {
 		t.Fatal("master apply should proceed once authorized")
 	}
@@ -323,8 +341,16 @@ func TestManualStepGates(t *testing.T) {
 		t.Fatal("peer apply should hold until apply-rest")
 	}
 
+	// Refused until the master finishes applying.
+	if _, err := m.AdvanceStep("cm"); err == nil {
+		t.Fatal("advance to apply-rest should refuse until master is done")
+	}
+	m.Applied("cm", "m", true) // master → done
+
 	// Next → apply-rest: peer proceeds; step caps at 5.
-	m.AdvanceStep("cm")
+	if s, err := m.AdvanceStep("cm"); err != nil || s != StepApplyRest {
+		t.Fatalf("advance to apply-rest: step=%d err=%v", s, err)
+	}
 	if !m.ApplyProceed("cm", "p") {
 		t.Fatal("peer apply should proceed at apply-rest")
 	}

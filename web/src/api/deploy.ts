@@ -69,6 +69,9 @@ export type Deploy = {
   // (1=preflight 2=restore 3=reboot 4=apply-master 5=apply-rest+set_ready).
   manual?: boolean
   manualStep?: number
+  // Computed: whether the current step's nodes have reached it, so the Next
+  // button can gate on real progress (not let the operator click through).
+  canAdvance?: boolean
 }
 
 // Manual-deploy step labels, indexed by manualStep (1..5).

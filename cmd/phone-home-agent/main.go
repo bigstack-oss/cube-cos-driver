@@ -372,6 +372,23 @@ func waitApplyGate(srv string) {
 	}
 }
 
+// reportWaitMaster tells the server this rebooted non-master is holding for the
+// master's SEL 'go' — so the UI shows "wait for master" instead of "applying".
+// Best-effort: a failure here only affects the display, not the SEL gate.
+func reportWaitMaster(srv string) {
+	body, _ := json.Marshal(map[string]any{"macs": macs(), "serial": serial()})
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "POST", srv+"/api/v1/agents/wait-master", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		resp.Body.Close()
+	}
+}
+
 // reportApplyFailed tells the server the snapshot apply failed terminally, so
 // the deploy UI shows the node errored instead of hanging on "applying".
 func reportApplyFailed(srv, cluster, host, msg string) {
@@ -501,13 +518,14 @@ func runLocalApply(srv string, poll time.Duration) {
 	}
 
 	if !isMaster {
-		reportApplyStarted(srv) // agent up (reboot done): flip UI to applying
+		reportWaitMaster(srv) // reboot done: UI shows "wait for master", not applying
 		log.Printf("local-apply: non-master — waiting for master 'go' via SEL (OOB) ...")
 		if !waitSELGate(ctx, poll) {
 			log.Printf("local-apply: gate wait ended without go signal")
 			return
 		}
 		log.Printf("local-apply: SEL 'go' seen — master finished, applying local snapshot")
+		reportApplyStarted(srv) // now actually applying: flip UI to applying
 	} else {
 		// Manual mode holds the master here until the operator authorizes the
 		// apply-master step; auto mode returns immediately. Also flips UI to applying.

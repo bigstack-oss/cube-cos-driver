@@ -18,8 +18,12 @@ import { PreflightReportModal } from './PreflightReportModal'
 
 // ManualStepBar shows the 5 gated steps with the current one highlighted and a
 // Next button that clears the current gate. Disabled once past the last step.
-const ManualStepBar = (props: { step: number; onNext: () => void }) => {
-  const { step, onNext } = props // step is 1-based (1..5)
+const ManualStepBar = (props: {
+  step: number
+  canAdvance: boolean
+  onNext: () => void
+}) => {
+  const { step, canAdvance, onNext } = props // step is 1-based (1..5)
   const atLast = step >= MANUAL_STEPS.length
   return (
     <div className="flex items-center gap-x-3 rounded-md border border-primary/40 bg-primary/5 px-3 py-2">
@@ -48,7 +52,12 @@ const ManualStepBar = (props: { step: number; onNext: () => void }) => {
           )
         })}
       </div>
-      <CosButton type="primary" size="sm" disabled={atLast} onClick={onNext}>
+      <CosButton
+        type="primary"
+        size="sm"
+        disabled={atLast || !canAdvance}
+        onClick={onNext}
+      >
         {atLast ? 'Finishing' : 'Next'}
       </CosButton>
     </div>
@@ -214,6 +223,7 @@ export const DeployProgress = (props: DeployProgressProps) => {
       {deploy.manual && (
         <ManualStepBar
           step={deploy.manualStep ?? 1}
+          canAdvance={deploy.canAdvance ?? false}
           onNext={() => advanceStep(clusterId).then(refresh).catch(() => {})}
         />
       )}
