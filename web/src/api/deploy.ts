@@ -66,7 +66,7 @@ export type Deploy = {
   startedAt: string
   nodes: Record<string, NodeDeploy>
   // Manual step-gated deploy: manualStep is the current gate cursor
-  // (1=preflight 2=restore 3=reboot 4=apply-master 5=apply-rest+set_ready).
+  // (1=preflight 2=restore 3=reboot 4=apply-master 5=apply-rest 6=set-ready).
   manual?: boolean
   manualStep?: number
   // Computed: whether the current step's nodes have reached it, so the Next
@@ -74,13 +74,14 @@ export type Deploy = {
   canAdvance?: boolean
 }
 
-// Manual-deploy step labels, indexed by manualStep (1..5).
+// Manual-deploy step labels, indexed by manualStep (1..6).
 export const MANUAL_STEPS = [
   'Preflight check',
   'Restore all',
   'Reboot all',
   'Applying master',
-  'Apply rest + set ready',
+  'Apply rest',
+  'Set ready',
 ] as const
 
 export type PlanRow = {

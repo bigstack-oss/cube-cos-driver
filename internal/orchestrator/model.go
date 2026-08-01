@@ -281,8 +281,9 @@ const (
 	StepPreflight   = 1 // preflight running; Next authorizes restore
 	StepRestore     = 2 // restore authorized; Next authorizes reboot
 	StepReboot      = 3 // reboot authorized; Next authorizes master apply
-	StepApplyMaster = 4 // master apply authorized; Next authorizes apply-rest+set_ready
-	StepApplyRest   = 5 // peers apply + set_ready authorized (final)
+	StepApplyMaster = 4 // master apply authorized; Next authorizes apply-rest
+	StepApplyRest   = 5 // peers apply authorized; Next authorizes set_ready
+	StepSetReady    = 6 // set_ready authorized (final)
 )
 
 // terminal reports whether a node state needs no further engine stepping.
