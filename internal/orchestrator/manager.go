@@ -124,7 +124,13 @@ func (m *Manager) StartInspect(nodes []Node, labels map[string]string, image str
 	}
 	// Repoint the PXE default to the picked inspect image; restore once every
 	// inspected machine has booted (reported) or errored. Abort if locked.
-	if err := m.flipForBoot(context.Background(), image, nil, func() bool { return m.inspectsBooted(ids) }); err != nil {
+	// Inspect arms driver_server= (so the installer runs the inspect-check +
+	// phones home) but NOT autoinstall — an inspect must never restore a disk.
+	inspectArm := ""
+	if url := m.driverURL(); url != "" {
+		inspectArm = "driver_server=" + url
+	}
+	if err := m.flipForBoot(context.Background(), image, inspectArm, func() bool { return m.inspectsBooted(ids) }); err != nil {
 		for _, n := range nodes {
 			m.setInspect(n.MachineID, "error", err.Error())
 		}
@@ -316,11 +322,24 @@ func (m *Manager) SetSELObserver(o SELObserver) { m.sel = o }
 // SEL at boot). ip zero-value disables stamping.
 func (m *Manager) SetAdvertise(ip [4]byte, port uint16) { m.advertiseIP, m.advertisePort = ip, port }
 
-// PXEFlipper repoints the PXE server's default boot entry to a chosen image
-// (guarded by the shared advisory lock) and returns a restore func that sets
-// the default back and releases the lock. image=="" is a no-op (nil restore).
+// PXEFlipper points the PXE default at the chosen image (or the current default
+// when image=="") and injects armArgs — the zero-touch arming — into that
+// entry, under the shared advisory lock. The restore func strips the args, puts
+// the default back, and releases the lock. So the shared entry is armed only
+// while this driver's deploy/inspect is booting.
 type PXEFlipper interface {
-	Flip(image string) (restore func(), err error)
+	Flip(image, armArgs string) (restore func(), err error)
+}
+
+// driverURL is this driver's node-reachable HTTP endpoint (from --advertise),
+// or "" if unset. Injected as driver_server= so a booting node phones home to
+// THIS driver even on the shared PXE entry.
+func (m *Manager) driverURL() string {
+	if m.advertiseIP == ([4]byte{}) {
+		return ""
+	}
+	return fmt.Sprintf("http://%d.%d.%d.%d:%d",
+		m.advertiseIP[0], m.advertiseIP[1], m.advertiseIP[2], m.advertiseIP[3], m.advertisePort)
 }
 
 // SetPXEFlipper enables operator image selection for deploy/inspect.
@@ -332,16 +351,16 @@ func (m *Manager) SetPXEFlipper(p PXEFlipper) { m.pxe = p }
 // stage timeout elapses. Returns an error only if the flip itself fails (e.g.
 // the advisory lock is held) — the caller aborts the run so nodes don't boot a
 // stale default. A no-op (nil pxe / empty image) returns nil.
-func (m *Manager) flipForBoot(ctx context.Context, image string, hosts []string, booted func() bool) error {
-	if m.pxe == nil || image == "" {
+func (m *Manager) flipForBoot(ctx context.Context, image, armArgs string, booted func() bool) error {
+	if m.pxe == nil {
 		return nil
 	}
-	restore, err := m.pxe.Flip(image)
+	restore, err := m.pxe.Flip(image, armArgs)
 	if err != nil {
 		return err
 	}
 	if restore == nil {
-		return nil // image was already the default — nothing flipped
+		return nil
 	}
 	go func() {
 		deadline := time.Now().Add(m.cfg.StageTimeout + time.Minute)
@@ -545,7 +564,14 @@ func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTar
 
 	// Repoint the PXE default to the picked image before powering nodes; abort
 	// the run if the shared default is locked by another deploy.
-	if err := m.flipForBoot(ctx, image, nil, func() bool { return m.deployNodesBooted(clusterID) }); err != nil {
+	// Deploy arms autoinstall (unattended restore) + driver_server= (phone home)
+	// on the booting entry; SEL still overrides routing per node. Stripped on
+	// restore, so the shared entry is armed only while this deploy boots.
+	deployArm := "autoinstall"
+	if url := m.driverURL(); url != "" {
+		deployArm += " driver_server=" + url
+	}
+	if err := m.flipForBoot(ctx, image, deployArm, func() bool { return m.deployNodesBooted(clusterID) }); err != nil {
 		cancel()
 		m.mu.Lock()
 		delete(m.deploys, clusterID)

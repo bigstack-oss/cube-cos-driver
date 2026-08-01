@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -12,8 +13,8 @@ func TestEndpointRoundTrip(t *testing.T) {
 		ip   [4]byte
 		port uint16
 	}{
-		{[4]byte{10, 32, 0, 202}, 80},    // team lab VM
-		{[4]byte{10, 32, 2, 25}, 3299},   // dev box
+		{[4]byte{10, 32, 0, 202}, 80},     // team lab VM
+		{[4]byte{10, 32, 2, 25}, 3299},    // dev box
 		{[4]byte{192, 168, 1, 150}, 3001}, // embedded pxeserver
 	}
 	for _, c := range cases {
@@ -96,15 +97,17 @@ func TestDeployNoStampWithoutAdvertise(t *testing.T) {
 // fakeFlipper records flip requests and lets a test force a lock conflict.
 type fakeFlipper struct {
 	flipped  []string
+	armArgs  []string
 	restored int
 	failWith error
 }
 
-func (f *fakeFlipper) Flip(image string) (func(), error) {
+func (f *fakeFlipper) Flip(image, armArgs string) (func(), error) {
 	if f.failWith != nil {
 		return nil, f.failWith
 	}
 	f.flipped = append(f.flipped, image)
+	f.armArgs = append(f.armArgs, armArgs)
 	return func() { f.restored++ }, nil
 }
 
@@ -119,6 +122,10 @@ func TestDeployFlipsAndRestoresImage(t *testing.T) {
 	}
 	if len(ff.flipped) != 1 || ff.flipped[0] != "v3.1.0-rc6 (UEFI)" {
 		t.Fatalf("flipped = %v, want the picked image", ff.flipped)
+	}
+	// A deploy arms the entry for unattended install.
+	if len(ff.armArgs) != 1 || !strings.Contains(ff.armArgs[0], "autoinstall") {
+		t.Fatalf("armArgs = %v, want autoinstall", ff.armArgs)
 	}
 	// FakeExecutor drives the node to imaged then it awaits checkin; the restore
 	// watcher fires once nodes reach preflight — simulate by reporting preflight.

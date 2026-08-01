@@ -21,22 +21,48 @@ func NewFlipper(root string) *Flipper {
 	return &Flipper{Root: root, Holder: fmt.Sprintf("%s:%d", host, os.Getpid())}
 }
 
-// Flip repoints the PXE default to image. If image is already the default it is
-// a no-op (nil restore, nil error). Otherwise it takes the advisory lock,
-// records the current default, sets the new one, and returns a restore func.
-func (f *Flipper) Flip(image string) (func(), error) {
-	cur, err := CurrentDefault(f.Root)
+// Flip prepares the PXE entry for a driver-initiated boot: it points the
+// default at the target image (the picked image, or the current default when
+// image is "") and injects armArgs — the zero-touch arming (e.g. "autoinstall
+// driver_server=http://<this-driver>") — into that entry's kernel line, all
+// under the shared advisory lock. The returned restore func strips the args,
+// puts the previous default back, and releases the lock. So the shared grub
+// entry is armed only while THIS driver's deploy is booting.
+func (f *Flipper) Flip(image, armArgs string) (func(), error) {
+	prevDefault, err := CurrentDefault(f.Root)
 	if err != nil {
 		return nil, err
 	}
-	if image == cur {
-		return nil, nil // already booting this image — nothing to flip or lock
+	target := image
+	if target == "" {
+		target = prevDefault // no image picked — arm whatever boots by default
+	}
+	prevArgs, err := EntryArgs(f.Root, target)
+	if err != nil {
+		return nil, err
 	}
 	release, err := AcquireLock(f.Root, f.Holder, time.Now)
 	if err != nil {
 		return nil, err
 	}
-	if err := SetDefault(f.Root, image); err != nil {
+	undo := func() {
+		if target != prevDefault {
+			if e := SetDefault(f.Root, prevDefault); e != nil {
+				fmt.Fprintf(os.Stderr, "pxe: restore default to %q: %v\n", prevDefault, e)
+			}
+		}
+		if e := SetEntryArgs(f.Root, target, prevArgs); e != nil {
+			fmt.Fprintf(os.Stderr, "pxe: restore args on %q: %v\n", target, e)
+		}
+	}
+	if target != prevDefault {
+		if err := SetDefault(f.Root, target); err != nil {
+			release()
+			return nil, err
+		}
+	}
+	if err := SetEntryArgs(f.Root, target, armArgs); err != nil {
+		undo()
 		release()
 		return nil, err
 	}
@@ -46,10 +72,7 @@ func (f *Flipper) Flip(image string) (func(), error) {
 			return
 		}
 		once = true
-		if err := SetDefault(f.Root, cur); err != nil {
-			// Best effort: log via caller; still release so we don't wedge.
-			fmt.Fprintf(os.Stderr, "pxe: restore default to %q: %v\n", cur, err)
-		}
+		undo()
 		release()
 	}, nil
 }

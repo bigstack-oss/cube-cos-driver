@@ -99,6 +99,64 @@ func SetDefault(root, entry string) error {
 	return writeFileAtomic(path, []byte(out), 0o644)
 }
 
+// reEntryArgs captures the custom kernel-arg segment of a menuentry's linuxefi
+// line — everything between "erst_disable" and the "pxe_via_nfs="/"pxe_net_busid="
+// marker. The driver injects zero-touch arming (autoinstall driver_server=…)
+// there for a deploy and strips it after.
+var reEntryArgs = regexp.MustCompile(`(erst_disable)(.*?)( pxe_(?:via_nfs|net_busid)=)`)
+
+// entryLine finds the index of the menuentry line for entry (its linuxefi line).
+func entryLine(lines []string, entry string) int {
+	for i, ln := range lines {
+		if strings.Contains(ln, "'"+entry+"'") && strings.Contains(ln, "linuxefi") {
+			return i
+		}
+	}
+	return -1
+}
+
+// EntryArgs returns the custom kernel args currently set on entry ("" if none).
+func EntryArgs(root, entry string) (string, error) {
+	b, err := os.ReadFile(grubPath(root))
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(string(b), "\n")
+	i := entryLine(lines, entry)
+	if i < 0 {
+		return "", fmt.Errorf("no menuentry %q", entry)
+	}
+	m := reEntryArgs.FindStringSubmatch(lines[i])
+	if m == nil {
+		return "", nil
+	}
+	return strings.TrimSpace(m[2]), nil
+}
+
+// SetEntryArgs rewrites entry's custom kernel-arg segment to args (empty clears
+// it). It errors if entry is not a menuentry, so we never arm nothing.
+func SetEntryArgs(root, entry, args string) error {
+	path := grubPath(root)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(b), "\n")
+	i := entryLine(lines, entry)
+	if i < 0 {
+		return fmt.Errorf("no menuentry %q", entry)
+	}
+	if !reEntryArgs.MatchString(lines[i]) {
+		return fmt.Errorf("menuentry %q has no erst_disable…pxe_ segment", entry)
+	}
+	mid := ""
+	if args != "" {
+		mid = " " + args
+	}
+	lines[i] = reEntryArgs.ReplaceAllString(lines[i], "${1}"+mid+"${3}")
+	return writeFileAtomic(path, []byte(strings.Join(lines, "\n")), 0o644)
+}
+
 // writeFileAtomic writes via a temp file + rename in the same dir so a reader
 // (or a crash) never sees a half-written grub.cfg.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
