@@ -293,7 +293,11 @@ func selGatePresent(stage byte) bool {
 	if err != nil {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Generous timeout: the SEL can hold ~100 entries (BMC hardware events —
+	// PSU/voltage/fan warnings — dwarf our records), and reading them all over
+	// the slow KCS interface can exceed a few seconds. Too short a timeout makes
+	// the read fail and the gate never releases even though the go IS present.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := client.Connect(ctx); err != nil {
 		return false

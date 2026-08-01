@@ -518,6 +518,10 @@ func runLocalApply(srv string, poll time.Duration) {
 		return
 	}
 	log.Printf("local-apply: apply authorized (SEL go) — applying local snapshot")
+	// Mark applying OOB so the driver's pollSEL flips the node to "applying"
+	// during the (multi-minute) apply — pre-apply there's no network to report
+	// it in-band, so without this the UI sits on "waiting" the whole time.
+	_ = writeSEL("applying", "ok", host)
 
 	err := apply(ctx, "") // empty URL: apply() uses localSnapshot
 	if errors.Is(err, errApplyReboot) {

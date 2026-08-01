@@ -557,16 +557,28 @@ func (m *Manager) Applied(clusterID, hostname string, isMaster bool) {
 	if !isMaster {
 		return
 	}
-	if m.manualGate {
-		log.Printf("master %s applied; manual gate on — peers held for operator release", hostname)
-		return
-	}
+	// A manual deploy holds the peers for the operator's apply-rest step
+	// (AdvanceStep writes their go there) — the master finishing must NOT
+	// auto-release them. Key this on the deploy's own Manual flag, not the
+	// global manualGate, so a manual run always honors apply-rest. Auto mode
+	// releases the peers now (master-first handoff).
 	m.mu.Lock()
 	byHost := m.nodes[clusterID]
 	master := ""
+	manual := m.manualGate
 	if d := m.deploys[clusterID]; d != nil {
 		master = d.Master
+		if d.Manual {
+			manual = true
+		}
 	}
+	m.mu.Unlock()
+	if manual {
+		log.Printf("master %s applied; manual mode — peers held for operator (apply-rest)", hostname)
+		return
+	}
+	m.mu.Lock()
+	byHost = m.nodes[clusterID]
 	var targets []Node
 	for host, n := range byHost {
 		if host != master {
@@ -1014,10 +1026,25 @@ func (m *Manager) RestoreDone(clusterID, hostname string) {
 	m.mu.Unlock()
 	if ok {
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := m.exec.SetBootDisk(ctx, node); err != nil {
-				log.Printf("orchestrator: set boot-to-disk for %s: %v", hostname, err)
+			// Re-assert Force-HDD periodically until the node boots the OS (its
+			// agent checks in) or we give up. A single set isn't enough on
+			// MegaRAC: the boot-flag "valid" bit expires (~60s) and a slow POST
+			// that hasn't consumed it yet falls back to the PXE-first default and
+			// re-installs (seen live on the master). Re-stamping keeps it fresh
+			// across the ~4-min POST.
+			deadline := time.Now().Add(8 * time.Minute)
+			for {
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				if err := m.exec.SetBootDisk(ctx, node); err != nil {
+					log.Printf("orchestrator: set boot-to-disk for %s: %v", hostname, err)
+				}
+				cancel()
+				// Stop once the node is past reboot (OS agent reported in) or on
+				// timeout — re-stamping a booted node is pointless.
+				if stateRank(m.state(clusterID, hostname)) >= stateRank(StateWaiting) || time.Now().After(deadline) {
+					return
+				}
+				time.Sleep(20 * time.Second)
 			}
 		}()
 	}
