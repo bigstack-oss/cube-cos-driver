@@ -330,22 +330,24 @@ func reportRestoreDone(srv string) {
 }
 
 // reportApplyStarted tells the server the OS-phase agent is up (reboot done) and
-// about to apply — so the deploy UI flips reboot→done, apply→active immediately,
-// rather than sitting on "rebooting" for the whole apply.
-// reportApplyStarted reports the OS agent is up and returns the server's
-// proceed flag (manual mode gates the master's apply on the apply-master step).
-func reportApplyStarted(srv string) bool {
+// reports in — so the deploy UI can flip the reboot cell green — and returns
+// whether the driver was reachable and whether it authorizes the apply. The
+// distinction matters: an unreachable driver is "unknown", NOT "go" — treating
+// it as go (the old fail-open) let the master apply before the operator
+// authorized it and left the UI stuck on "rebooting" because the report never
+// landed.
+func reportApplyStarted(srv string) (reachable, proceed bool) {
 	body, _ := json.Marshal(map[string]any{"macs": macs(), "serial": serial()})
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", srv+"/api/v1/agents/apply-started", bytes.NewReader(body))
 	if err != nil {
-		return true
+		return false, false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return true // server unreachable: don't block the apply
+		return false, false // server unreachable
 	}
 	var out struct {
 		OK      bool `json:"ok"`
@@ -353,22 +355,47 @@ func reportApplyStarted(srv string) bool {
 	}
 	json.NewDecoder(resp.Body).Decode(&out)
 	resp.Body.Close()
-	return out.Proceed
+	return true, out.Proceed
 }
 
-// waitApplyGate holds the master until the server authorizes its apply (manual
-// mode). Re-reports apply-started each poll; returns once proceed is true.
+// applyGateFailOpen bounds how long the agent waits on an unreachable driver
+// before applying anyway, so a genuinely-dead driver can't strand the node
+// mid-deploy. In auto mode the driver authorizes immediately, so this only
+// matters when the driver is truly down.
+const applyGateFailOpen = 15 * time.Minute
+
+// waitApplyGate holds the node until the driver authorizes its apply, retrying
+// until the driver is REACHABLE and returns proceed. On the OS-phase network
+// coming up late, the first calls may be unreachable — we keep trying rather
+// than fail open, so (a) the master honors the manual apply-master step and
+// (b) the apply-started report actually lands (reboot cell goes green). In auto
+// mode proceed is true on the first reachable call, so there is no hold.
 func waitApplyGate(srv string) {
-	if reportApplyStarted(srv) {
-		return
-	}
-	log.Printf("local-apply: manual mode — holding for operator to authorize master apply ...")
+	var unreachableSince time.Time
+	logged := false
 	for {
-		time.Sleep(3 * time.Second)
-		if reportApplyStarted(srv) {
-			log.Printf("local-apply: master apply authorized")
-			return
+		reachable, proceed := reportApplyStarted(srv)
+		if reachable {
+			unreachableSince = time.Time{}
+			if proceed {
+				if logged {
+					log.Printf("local-apply: apply authorized")
+				}
+				return
+			}
+			if !logged {
+				log.Printf("local-apply: manual mode — holding for operator to authorize apply ...")
+				logged = true
+			}
+		} else {
+			if unreachableSince.IsZero() {
+				unreachableSince = time.Now()
+			} else if time.Since(unreachableSince) > applyGateFailOpen {
+				log.Printf("local-apply: driver unreachable for %s — applying anyway (fail-open)", applyGateFailOpen)
+				return
+			}
 		}
+		time.Sleep(3 * time.Second)
 	}
 }
 
@@ -524,8 +551,11 @@ func runLocalApply(srv string, poll time.Duration) {
 			log.Printf("local-apply: gate wait ended without go signal")
 			return
 		}
-		log.Printf("local-apply: SEL 'go' seen — master finished, applying local snapshot")
-		reportApplyStarted(srv) // now actually applying: flip UI to applying
+		log.Printf("local-apply: SEL 'go' seen — master finished")
+		// Master is done; now honor the operator's apply-rest step (manual mode)
+		// before this peer applies. Auto mode returns immediately.
+		waitApplyGate(srv)
+		log.Printf("local-apply: non-master — applying local snapshot")
 	} else {
 		// Manual mode holds the master here until the operator authorizes the
 		// apply-master step; auto mode returns immediately. Also flips UI to applying.

@@ -1,10 +1,14 @@
 package api
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -22,6 +26,7 @@ type deployHandlers struct {
 	machines *inventory.Store
 	mgr      *orchestrator.Manager
 	pxeRoot  string // grub.cfg dir for the image picker; "" = selection disabled
+	agentBin string // path to the packed phone-home-agent served for hot-update; "" = disabled
 }
 
 func (h *deployHandlers) register(mux *http.ServeMux) {
@@ -38,6 +43,8 @@ func (h *deployHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/agents/restore-done", h.restoreDone)
 	mux.HandleFunc("POST /api/v1/agents/apply-started", h.applyStarted)
 	mux.HandleFunc("POST /api/v1/agents/wait-master", h.waitMaster)
+	mux.HandleFunc("GET /api/v1/agents/binary", h.agentBinary)
+	mux.HandleFunc("GET /api/v1/agents/binary.sha256", h.agentBinarySHA)
 	mux.HandleFunc("POST /api/v1/agents/apply-failed", h.applyFailed)
 	mux.HandleFunc("POST /api/v1/agents/applied", h.applied)
 	mux.HandleFunc("POST /api/v1/agents/ready", h.ready)
@@ -635,8 +642,52 @@ func (h *deployHandlers) applyStarted(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("apply-started for %s (serial=%q)", assn.Hostname, req.Serial)
-	h.mgr.ApplyStarted(assn.ClusterID, assn.Hostname)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proceed": h.mgr.ApplyProceed(assn.ClusterID, assn.Hostname)})
+	proceed := h.mgr.ApplyProceed(assn.ClusterID, assn.Hostname)
+	// Pass proceed so the node flips to "applying" only when authorized; while
+	// holding for the operator it shows reboot-done + apply-pending (Waiting).
+	h.mgr.ApplyStarted(assn.ClusterID, assn.Hostname, proceed)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proceed": proceed})
+}
+
+// agentBinary serves the driver's packed phone-home-agent so the installer can
+// drop a fresh agent into the restored rootfs (hot-update), decoupling agent
+// fixes from full PXE image rebuilds. Air-gapped-safe: the binary is bundled
+// with the driver, served over the on-site LAN. Baked-in agent is the fallback.
+func (h *deployHandlers) agentBinary(w http.ResponseWriter, r *http.Request) {
+	if h.agentBin == "" {
+		writeError(w, http.StatusNotFound, "no packed agent configured")
+		return
+	}
+	f, err := os.Open(h.agentBin)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "packed agent unavailable")
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	http.ServeContent(w, r, "phone-home-agent", time.Time{}, f)
+}
+
+// agentBinarySHA serves the sha256 of the packed agent so the installer can
+// verify the download before swapping it into the rootfs.
+func (h *deployHandlers) agentBinarySHA(w http.ResponseWriter, r *http.Request) {
+	if h.agentBin == "" {
+		writeError(w, http.StatusNotFound, "no packed agent configured")
+		return
+	}
+	f, err := os.Open(h.agentBin)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "packed agent unavailable")
+		return
+	}
+	defer f.Close()
+	sum := sha256.New()
+	if _, err := io.Copy(sum, f); err != nil {
+		writeError(w, http.StatusInternalServerError, "hash: %v", err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	fmt.Fprintf(w, "%x\n", sum.Sum(nil))
 }
 
 // waitMaster is reported by a rebooted non-master before it blocks on the

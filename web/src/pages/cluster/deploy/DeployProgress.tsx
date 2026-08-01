@@ -130,11 +130,13 @@ const cellLabel: Record<string, string> = {
   restore: 'Restore',
   reboot: 'Reboot',
   apply: 'Apply',
+  'set-ready': 'Set ready',
 }
 
 // ProgressStrip renders the per-node pipeline: preflight → restore → reboot →
-// apply, each cell pending (grey) / active (pulsing yellow) / done (green) /
-// error (red).
+// apply (+ a trailing set-ready cell on the master, which runs cluster
+// set_ready). Each cell pending (grey) / active (pulsing yellow) / done (green)
+// / error (red).
 const ProgressStrip = ({ cells }: { cells: PhaseCell[] }) => (
   <div className="flex items-center gap-x-1.5">
     {cells.map((c, i) => (

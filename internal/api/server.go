@@ -39,6 +39,10 @@ type Config struct {
 	// the PXE export). Enables the deploy/inspect image picker + default flip.
 	// Empty = image selection disabled.
 	PXERoot string
+	// AgentBinPath is the packed phone-home-agent binary the driver serves at
+	// /api/v1/agents/binary so the installer can hot-update the OS agent without
+	// a full image rebuild. Empty resolves to <driver-dir>/phone-home-agent.
+	AgentBinPath string
 }
 
 func New(cfg Config) (http.Handler, error) {
@@ -100,7 +104,18 @@ func New(cfg Config) (http.Handler, error) {
 	h.register(mux)
 	mh := &machineHandlers{store: machineStore, discoverer: discoverer, mgr: mgr}
 	mh.register(mux)
-	dh := &deployHandlers{clusters: clusterStore, machines: machineStore, mgr: mgr, pxeRoot: cfg.PXERoot}
+	agentBin := cfg.AgentBinPath
+	if agentBin == "" {
+		if exe, err := os.Executable(); err == nil {
+			agentBin = filepath.Join(filepath.Dir(exe), "phone-home-agent")
+		}
+	}
+	if agentBin != "" {
+		if _, err := os.Stat(agentBin); err != nil {
+			agentBin = "" // not bundled: hot-update disabled, installer uses baked-in agent
+		}
+	}
+	dh := &deployHandlers{clusters: clusterStore, machines: machineStore, mgr: mgr, pxeRoot: cfg.PXERoot, agentBin: agentBin}
 	dh.register(mux)
 	mux.Handle("/", webui.Handler())
 	return mux, nil

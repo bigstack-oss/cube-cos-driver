@@ -644,10 +644,10 @@ func (m *Manager) Status(clusterID string) (*Deploy, error) {
 // deriveNodeFields recomputes each node's presentation-only fields from its
 // persisted state.
 func deriveNodeFields(d *Deploy) {
-	for _, nd := range d.Nodes {
+	for host, nd := range d.Nodes {
 		nd.Light1, nd.Light2 = nd.lights()
 		nd.Phase = nd.phase()
-		nd.Progress = nd.progress()
+		nd.Progress = nd.progress(host == d.Master, d.ClusterReady)
 	}
 }
 
@@ -933,11 +933,18 @@ func (m *Manager) RestoreDone(clusterID, hostname string) {
 // ApplyStarted marks the OS-phase agent up and applying: the reboot completed
 // and the snapshot apply is in progress. Moves the node off "rebooting" so the
 // UI flips reboot → done and apply → active during the long FTS apply.
-func (m *Manager) ApplyStarted(clusterID, hostname string) {
+func (m *Manager) ApplyStarted(clusterID, hostname string, proceed bool) {
 	m.set(clusterID, hostname, func(nd *NodeDeploy) {
 		switch nd.State {
 		case StateRebooting, StateWaiting, StateCheckedIn:
-			nd.State = StateApplying
+			if proceed {
+				nd.State = StateApplying
+			} else {
+				// OS-phase agent is up and holding for the operator to authorize
+				// the apply (manual mode): reboot is done — cell green — with the
+				// apply pending, not "applying".
+				nd.State = StateWaiting
+			}
 		}
 	})
 }

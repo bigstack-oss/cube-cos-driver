@@ -27,6 +27,7 @@ func main() {
 	simulate := flag.Bool("simulate", envOr("SIMULATE", "") != "", "simulate deploys with a fake executor (no real IPMI) — for demos/dev")
 	advertise := flag.String("advertise", envOr("ADVERTISE", ""), "node-reachable driver endpoint ip:port stamped into node BMC SEL (e.g. 10.32.0.202:80); empty = don't stamp")
 	pxeRoot := flag.String("pxe-root", envOr("PXE_ROOT", ""), "PXE server grub.cfg dir (local or NFS mount) enabling the image picker + default flip; empty = disabled")
+	agentBin := flag.String("agent-binary", envOr("AGENT_BINARY", ""), "packed phone-home-agent served for installer hot-update; empty = <driver-dir>/phone-home-agent if present")
 	flag.Parse()
 
 	if err := os.MkdirAll(*dataDir, 0o755); err != nil {
@@ -45,6 +46,7 @@ func main() {
 		SecretKeyFile: *secretKeyFile,
 		Advertise:     *advertise,
 		PXERoot:       *pxeRoot,
+		AgentBinPath:  *agentBin,
 	}
 	if *simulate {
 		cfg.DeployExecutor = orchestrator.NewFakeExecutor()

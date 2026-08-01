@@ -207,10 +207,12 @@ func pipelineRank(s State) int {
 	}
 }
 
-// progress builds the 4-cell per-node strip: preflight → restore → reboot →
-// apply. A cell is done once the pipeline is past it, active while in it, and
-// pending before. On error the failing cell is red and later cells stay pending.
-func (nd *NodeDeploy) progress() []PhaseCell {
+// progress builds the per-node strip: preflight → restore → reboot → apply, and
+// for the master a trailing set-ready cell (it runs cluster set_ready as the
+// final step). A cell is done once the pipeline is past it, active while in it,
+// and pending before. On error the failing cell is red and later cells stay
+// pending.
+func (nd *NodeDeploy) progress(isMaster, clusterReady bool) []PhaseCell {
 	cell := func(name string, activeRank, doneRank int) PhaseCell {
 		r := pipelineRank(nd.State)
 		st := CellPending
@@ -241,7 +243,21 @@ func (nd *NodeDeploy) progress() []PhaseCell {
 			pre.Status = CellError
 		}
 	}
-	return []PhaseCell{pre, res, reb, app}
+	cells := []PhaseCell{pre, res, reb, app}
+	if isMaster {
+		// set-ready runs on the master after it (and the peers) have applied:
+		// pending until the master finishes applying, active while set_ready
+		// runs, done once the cluster reports ready.
+		sr := PhaseCell{Name: "set-ready", Status: CellPending}
+		switch {
+		case clusterReady:
+			sr.Status = CellDone
+		case nd.State != StateError && pipelineRank(nd.State) >= 7:
+			sr.Status = CellActive
+		}
+		cells = append(cells, sr)
+	}
+	return cells
 }
 
 // isPreRestore reports whether a state is in the installer (pre-restore) phase.

@@ -386,6 +386,29 @@ func TestAutoModeNoGates(t *testing.T) {
 	}
 }
 
+// ApplyStarted must reflect the apply authorization: while the OS-phase agent
+// holds for the operator (proceed=false) the node shows reboot-done + waiting
+// (cell green, apply pending), and flips to applying only when authorized
+// (proceed=true). Auto mode always passes proceed=true, so it never lingers in
+// waiting — the regression guard for auto deploys.
+func TestApplyStartedProceedFlipsState(t *testing.T) {
+	m := newSettleManager(t)
+	m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, true, "")
+	// Put the node in the post-reboot state the OS agent reports from.
+	m.Report("cm", "m", StateRebooting, "", nil)
+
+	// Holding for the operator: reboot done → Waiting, NOT Applying.
+	m.ApplyStarted("cm", "m", false)
+	if d, _ := m.Status("cm"); d.Nodes["m"].State != StateWaiting {
+		t.Fatalf("proceed=false: state=%s, want %s (reboot green, apply pending)", d.Nodes["m"].State, StateWaiting)
+	}
+	// Authorized (operator advanced / auto mode): flip to Applying.
+	m.ApplyStarted("cm", "m", true)
+	if d, _ := m.Status("cm"); d.Nodes["m"].State != StateApplying {
+		t.Fatalf("proceed=true: state=%s, want %s", d.Nodes["m"].State, StateApplying)
+	}
+}
+
 // set_ready must not fire until EVERY node has finished applying. GetSetReady
 // withholds Trigger until all deploy nodes reach done.
 func TestSetReadyGatesOnAllNodesApplied(t *testing.T) {
