@@ -5,3 +5,4 @@ node_modules/
 web/dist/
 internal/webui/dist/
 *.log
+/phone-home-agent

@@ -63,6 +63,7 @@ type invReport struct {
 	MemoryBytes  int64     `json:"memoryBytes"`
 	NICs         []nicInv  `json:"nics"`
 	Disks        []diskInv `json:"disks"`
+	Cards        []cardInv `json:"cards"`
 }
 
 // reportInventory (inspect boot) reads this node's hardware, reports it to the
@@ -70,8 +71,8 @@ type invReport struct {
 // the assign flow (NIC mapper + OS-disk picker) without needing Redfish.
 func reportInventory(srv string) {
 	rep := gatherInventory()
-	log.Printf("inventory: serial=%s cpu=%q x%d mem=%dGB nics=%d disks=%d",
-		rep.Serial, rep.CPUModel, rep.CPUCount, rep.MemoryBytes/(1<<30), len(rep.NICs), len(rep.Disks))
+	log.Printf("inventory: serial=%s cpu=%q x%d mem=%dGB nics=%d disks=%d cards=%d",
+		rep.Serial, rep.CPUModel, rep.CPUCount, rep.MemoryBytes/(1<<30), len(rep.NICs), len(rep.Disks), len(rep.Cards))
 	postJSON(srv+"/api/v1/machines/inventory-report", rep)
 	log.Printf("inventory: reported; powering off in 5s")
 	time.Sleep(5 * time.Second)
@@ -87,6 +88,7 @@ func gatherInventory() invReport {
 	r.MemoryBytes = memTotalBytes()
 	r.NICs = nicsInv()
 	r.Disks = disksInv()
+	r.Cards = cardsInv()
 	return r
 }
 
@@ -147,7 +149,7 @@ func nicsInv() []nicInv {
 				speed = v
 			}
 		}
-		up := strings.TrimSpace(readFileStr("/sys/class/net/" + n + "/operstate")) == "up"
+		up := strings.TrimSpace(readFileStr("/sys/class/net/"+n+"/operstate")) == "up"
 		carrier := strings.TrimSpace(readFileStr("/sys/class/net/"+n+"/carrier")) == "1"
 		pci, vendor := "", ""
 		if dest, err := os.Readlink("/sys/class/net/" + n + "/device"); err == nil {

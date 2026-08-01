@@ -65,6 +65,9 @@ type Manager struct {
 	setReady map[string]SetReadyInput
 	// inspects tracks in-flight hardware-inspect boots by machine id.
 	inspects map[string]*InspectStatus
+	// inspectNodes keeps each in-flight inspect's Node (BMC creds) so the
+	// persistent Force-PXE armed for the boot can be reset once it's terminal.
+	inspectNodes map[string]Node
 }
 
 // InspectStatus is the per-machine state of a hardware-inspect boot.
@@ -91,15 +94,16 @@ type SetReadyInput struct {
 
 func NewManager(store *Store, exec Executor, cfg Config) *Manager {
 	return &Manager{
-		store:    store,
-		exec:     exec,
-		verifier: PingVerifier{},
-		cfg:      cfg.withDefaults(),
-		deploys:  map[string]*Deploy{},
-		cancels:  map[string]context.CancelFunc{},
-		nodes:    map[string]map[string]Node{},
-		setReady: map[string]SetReadyInput{},
-		inspects: map[string]*InspectStatus{},
+		store:        store,
+		exec:         exec,
+		verifier:     PingVerifier{},
+		cfg:          cfg.withDefaults(),
+		deploys:      map[string]*Deploy{},
+		cancels:      map[string]context.CancelFunc{},
+		nodes:        map[string]map[string]Node{},
+		setReady:     map[string]SetReadyInput{},
+		inspects:     map[string]*InspectStatus{},
+		inspectNodes: map[string]Node{},
 	}
 }
 
@@ -116,6 +120,7 @@ func (m *Manager) StartInspect(nodes []Node, labels map[string]string, image str
 		m.inspects[n.MachineID] = &InspectStatus{
 			MachineID: n.MachineID, Label: labels[n.MachineID], State: "booting", UpdatedAt: nowUTC(),
 		}
+		m.inspectNodes[n.MachineID] = n
 	}
 	m.mu.Unlock()
 	ids := make([]string, len(nodes))
@@ -181,21 +186,47 @@ func (m *Manager) inspectsBooted(machineIDs []string) bool {
 // that checked in and inventoried is already "reported" and left untouched.
 func (m *Manager) expireInspect(machineID string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	expired := false
 	if s := m.inspects[machineID]; s != nil && s.State == "booting" {
 		s.State = "error"
 		s.Message = "no check-in within timeout — node did not boot to inspect (check power / PXE)"
 		s.UpdatedAt = nowUTC()
+		expired = true
+	}
+	m.mu.Unlock()
+	if expired {
+		go m.resetInspectBoot(machineID)
 	}
 }
 
 func (m *Manager) setInspect(machineID, state, msg string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if s := m.inspects[machineID]; s != nil {
 		s.State = state
 		s.Message = msg
 		s.UpdatedAt = nowUTC()
+	}
+	m.mu.Unlock()
+	if state == "reported" || state == "error" {
+		go m.resetInspectBoot(machineID)
+	}
+}
+
+// resetInspectBoot clears the persistent Force-PXE armed for an inspect boot.
+// Without it the node re-PXEs into the installer on its next power-on instead
+// of booting its disk (deploys reset on restore-done; inspects must too).
+func (m *Manager) resetInspectBoot(machineID string) {
+	m.mu.Lock()
+	n, ok := m.inspectNodes[machineID]
+	delete(m.inspectNodes, machineID)
+	m.mu.Unlock()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := m.exec.SetBootDisk(ctx, n); err != nil {
+		log.Printf("inspect %s: resetting boot device to disk failed: %v", machineID, err)
 	}
 }
 

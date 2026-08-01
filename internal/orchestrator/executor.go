@@ -22,12 +22,24 @@ type Executor interface {
 type FakeExecutor struct {
 	mu            sync.Mutex
 	observeCalls  map[string]int
+	bootDisk      map[string]bool // machine IDs SetBootDisk was issued for
 	FailPreflight map[string]bool
 	StepsToDone   int // Observe calls before reaching done (default 3)
 }
 
 func NewFakeExecutor() *FakeExecutor {
-	return &FakeExecutor{observeCalls: map[string]int{}, FailPreflight: map[string]bool{}, StepsToDone: 3}
+	return &FakeExecutor{observeCalls: map[string]int{}, bootDisk: map[string]bool{}, FailPreflight: map[string]bool{}, StepsToDone: 3}
+}
+
+// BootDiskNodes returns the machine IDs SetBootDisk was issued for.
+func (f *FakeExecutor) BootDiskNodes() map[string]bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]bool{}
+	for k := range f.bootDisk {
+		out[k] = true
+	}
+	return out
 }
 
 func (f *FakeExecutor) Preflight(_ context.Context, n Node) error {
@@ -37,9 +49,14 @@ func (f *FakeExecutor) Preflight(_ context.Context, n Node) error {
 	return nil
 }
 
-func (f *FakeExecutor) SetBootPXE(_ context.Context, _ Node) error  { return nil }
-func (f *FakeExecutor) SetBootDisk(_ context.Context, _ Node) error { return nil }
-func (f *FakeExecutor) PowerCycle(_ context.Context, _ Node) error  { return nil }
+func (f *FakeExecutor) SetBootPXE(_ context.Context, _ Node) error { return nil }
+func (f *FakeExecutor) SetBootDisk(_ context.Context, n Node) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bootDisk[n.MachineID] = true
+	return nil
+}
+func (f *FakeExecutor) PowerCycle(_ context.Context, _ Node) error { return nil }
 
 func (f *FakeExecutor) Observe(_ context.Context, n Node) (Stage, error) {
 	f.mu.Lock()

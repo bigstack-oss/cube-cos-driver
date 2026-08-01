@@ -3,8 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -49,15 +49,16 @@ func (m *machineHandlers) register(mux *http.ServeMux) {
 // matching machine (by serial), populating CPU/mem/disk/NIC without Redfish.
 func (m *machineHandlers) inventoryReport(w http.ResponseWriter, r *http.Request) {
 	var rep struct {
-		Serial       string          `json:"serial"`
-		MACs         []string        `json:"macs"`
-		Manufacturer string          `json:"manufacturer"`
-		Model        string          `json:"model"`
-		CPUModel     string          `json:"cpuModel"`
-		CPUCount     int             `json:"cpuCount"`
-		MemoryBytes  int64           `json:"memoryBytes"`
-		NICs         []inventory.NIC `json:"nics"`
+		Serial       string           `json:"serial"`
+		MACs         []string         `json:"macs"`
+		Manufacturer string           `json:"manufacturer"`
+		Model        string           `json:"model"`
+		CPUModel     string           `json:"cpuModel"`
+		CPUCount     int              `json:"cpuCount"`
+		MemoryBytes  int64            `json:"memoryBytes"`
+		NICs         []inventory.NIC  `json:"nics"`
 		Disks        []inventory.Disk `json:"disks"`
+		Cards        []inventory.Card `json:"cards"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&rep); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
@@ -113,6 +114,7 @@ func (m *machineHandlers) inventoryReport(w http.ResponseWriter, r *http.Request
 		MemoryBytes:  rep.MemoryBytes,
 		NICs:         rep.NICs,
 		Disks:        rep.Disks,
+		Cards:        rep.Cards,
 	}
 	if err := m.store.SetInventory(targetID, inv); err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)

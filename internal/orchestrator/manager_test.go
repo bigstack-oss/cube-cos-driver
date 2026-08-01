@@ -463,3 +463,34 @@ func TestStatusRecomputesProgressOnReload(t *testing.T) {
 		t.Fatalf("reloaded deploy should have the 4-cell progress strip, got %v", got)
 	}
 }
+
+// An inspect boot arms persistent Force-PXE; when the inspect reaches a
+// terminal state (reported or error) the boot device must be reset to disk —
+// otherwise the node re-PXEs into the installer on its next power-on.
+func TestInspectResetsBootDeviceOnTerminal(t *testing.T) {
+	exec := NewFakeExecutor()
+	m := newTestManager(t, exec)
+
+	nodes := []Node{
+		{Hostname: "n1", MachineID: "m1", BMCAddress: "b1"},
+		{Hostname: "n2", MachineID: "m2", BMCAddress: "b2"},
+	}
+	if err := m.StartInspect(nodes, map[string]string{"m1": "cc1", "m2": "cc2"}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	m.InspectReported("m1") // agent checked in and reported
+	m.expireInspect("m2")   // never checked in — timed out
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(exec.BootDiskNodes()) == 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	got := exec.BootDiskNodes()
+	if len(got) != 2 || !got["m1"] || !got["m2"] {
+		t.Fatalf("SetBootDisk not issued for terminal inspects: %v", got)
+	}
+}

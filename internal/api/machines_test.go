@@ -293,3 +293,40 @@ func TestMachineImportTemplate(t *testing.T) {
 		t.Fatalf("template missing header: %s", b)
 	}
 }
+
+// An agent inventory report carries add-in cards (GPU/FC/RDMA) through to the
+// stored inventory alongside NICs and disks.
+func TestInventoryReportCarriesCards(t *testing.T) {
+	srv := newTestServerCfg(t, Config{
+		DataDir:    t.TempDir(),
+		Discoverer: fakeDiscoverer{inv: inventory.Inventory{Serial: "SN-9", NICs: []inventory.NIC{{MAC: "aa:bb:cc:dd:ee:01"}}}},
+	})
+
+	resp := do(t, "POST", srv.URL+"/api/v1/machines", []byte(`{"label":"gpu-node","bmc":{"address":"10.0.0.9","username":"admin","password":"x"}}`))
+	if resp.StatusCode != 201 {
+		t.Fatalf("create = %d", resp.StatusCode)
+	}
+	created := decodeMachine(t, resp.Body)
+	resp.Body.Close()
+
+	report := `{"serial":"SN-9","macs":["aa:bb:cc:dd:ee:01"],
+		"nics":[{"mac":"aa:bb:cc:dd:ee:01"}],
+		"disks":[{"name":"/dev/sda","sizeBytes":1000}],
+		"cards":[{"slot":"0000:3b:00.0","name":"NVIDIA 0x20b0","type":"GPU"},
+		         {"slot":"0000:5e:00.0","name":"Mellanox 0x101d","type":"RDMA NIC"}]}`
+	resp = do(t, "POST", srv.URL+"/api/v1/machines/inventory-report", []byte(report))
+	if resp.StatusCode != 200 {
+		t.Fatalf("report = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = do(t, "GET", srv.URL+"/api/v1/machines/"+created.ID, nil)
+	m := decodeMachine(t, resp.Body)
+	resp.Body.Close()
+	if m.Inventory == nil || len(m.Inventory.Cards) != 2 {
+		t.Fatalf("cards not stored: %+v", m.Inventory)
+	}
+	if m.Inventory.Cards[0].Type != "GPU" || m.Inventory.Cards[1].Type != "RDMA NIC" {
+		t.Fatalf("cards mapped wrong: %+v", m.Inventory.Cards)
+	}
+}
