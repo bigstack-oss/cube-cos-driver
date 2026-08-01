@@ -10,6 +10,7 @@ import (
 type Executor interface {
 	Preflight(ctx context.Context, n Node) error
 	SetBootPXE(ctx context.Context, n Node) error
+	SetBootDisk(ctx context.Context, n Node) error
 	PowerCycle(ctx context.Context, n Node) error
 	// Observe returns the furthest install stage seen for this node.
 	Observe(ctx context.Context, n Node) (Stage, error)
@@ -36,8 +37,9 @@ func (f *FakeExecutor) Preflight(_ context.Context, n Node) error {
 	return nil
 }
 
-func (f *FakeExecutor) SetBootPXE(_ context.Context, _ Node) error { return nil }
-func (f *FakeExecutor) PowerCycle(_ context.Context, _ Node) error { return nil }
+func (f *FakeExecutor) SetBootPXE(_ context.Context, _ Node) error  { return nil }
+func (f *FakeExecutor) SetBootDisk(_ context.Context, _ Node) error { return nil }
+func (f *FakeExecutor) PowerCycle(_ context.Context, _ Node) error  { return nil }
 
 func (f *FakeExecutor) Observe(_ context.Context, n Node) (Stage, error) {
 	f.mu.Lock()

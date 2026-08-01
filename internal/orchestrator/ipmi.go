@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"time"
 
 	goipmi "github.com/bougou/go-ipmi"
 )
@@ -62,20 +63,41 @@ func (e IPMIExecutor) Preflight(ctx context.Context, n Node) error {
 	return nil
 }
 
-func (e IPMIExecutor) SetBootPXE(ctx context.Context, n Node) error {
+// setBootFlags sends Set System Boot Options (param 5, boot flags) as a raw IPMI
+// command: valid + persistent + EFI boot type + the given device selector
+// (0x04 Force-PXE, 0x08 Force-HDD). The high-level go-ipmi SetBootDevice sets
+// flags MegaRAC firmware (sky SKY-7221) silently ignores — the node then boots
+// its disk instead of PXE. This raw form is what those boards honor, and every
+// other BMC (iDRAC, iLO, …) accepts it too, so it's used for all hardware.
+func (e IPMIExecutor) setBootFlags(ctx context.Context, n Node, dev byte) error {
 	client, err := dial(ctx, n)
 	if err != nil {
 		return err
 	}
 	defer client.Close(ctx)
-	// Force EFI PXE, one-time. UEFI firmwares (e.g. the sky MegaRAC SKY-7221
-	// boards) ignore a *legacy* PXE flag and boot the disk instead, so we
-	// must request EFI. One-time (persist=false) so the node boots the disk
-	// after imaging — persistent would re-PXE and reinstall forever. Set
-	// immediately before PowerCycle (runNode does) so the valid bit is fresh.
-	return client.SetBootDevice(ctx, goipmi.BootDeviceSelectorForcePXE, goipmi.BIOSBootTypeEFI, false)
+	// data: param selector 5, byte1 0xE0 = valid|persistent|EFI, byte2 = device.
+	_, err = client.RawCommand(ctx, goipmi.NetFnChassisRequest, 0x08,
+		[]byte{0x05, 0xE0, dev, 0x00, 0x00, 0x00}, "set-boot-options")
+	return err
 }
 
+// SetBootPXE forces the next boot to EFI PXE (the install boot). Set fresh right
+// before PowerCycle so the valid bit hasn't expired.
+func (e IPMIExecutor) SetBootPXE(ctx context.Context, n Node) error {
+	return e.setBootFlags(ctx, n, 0x04)
+}
+
+// SetBootDisk forces the boot device to the local disk. Set on restore-done so
+// the post-install reboot lands on the installed OS — the install boot arms a
+// *persistent* Force-PXE (what MegaRAC needs), so it must be overridden or the
+// node re-PXEs and reinstalls forever.
+func (e IPMIExecutor) SetBootDisk(ctx context.Context, n Node) error {
+	return e.setBootFlags(ctx, n, 0x08)
+}
+
+// PowerCycle cold-cycles the node: power off, wait until it is actually off,
+// then power on. A warm ChassisControlPowerCycle is a no-op on MegaRAC boards,
+// so we always cold-cycle (reliable on every BMC, never worse).
 func (e IPMIExecutor) PowerCycle(ctx context.Context, n Node) error {
 	client, err := dial(ctx, n)
 	if err != nil {
@@ -86,11 +108,22 @@ func (e IPMIExecutor) PowerCycle(ctx context.Context, n Node) error {
 	if err != nil {
 		return err
 	}
-	control := goipmi.ChassisControlPowerCycle
-	if !status.PowerIsOn {
-		control = goipmi.ChassisControlPowerUp
+	if status.PowerIsOn {
+		if _, err := client.ChassisControl(ctx, goipmi.ChassisControlPowerDown); err != nil {
+			return err
+		}
+		for i := 0; i < 30; i++ { // wait until actually off (bounded ~60s)
+			if s, e := client.GetChassisStatus(ctx); e == nil && !s.PowerIsOn {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
+		}
 	}
-	_, err = client.ChassisControl(ctx, control)
+	_, err = client.ChassisControl(ctx, goipmi.ChassisControlPowerUp)
 	return err
 }
 

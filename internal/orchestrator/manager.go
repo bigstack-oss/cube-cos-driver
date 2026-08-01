@@ -910,6 +910,24 @@ func (m *Manager) RestoreDone(clusterID, hostname string) {
 			nd.State = StateRebooting
 		}
 	})
+	// Point the freshly-imaged node at its disk so the post-restore reboot boots
+	// the installed OS, not a re-PXE — the install boot armed a persistent
+	// Force-PXE (needed by MegaRAC). Best-effort, off the request path.
+	m.mu.Lock()
+	node, ok := Node{}, false
+	if byHost := m.nodes[clusterID]; byHost != nil {
+		node, ok = byHost[hostname]
+	}
+	m.mu.Unlock()
+	if ok {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := m.exec.SetBootDisk(ctx, node); err != nil {
+				log.Printf("orchestrator: set boot-to-disk for %s: %v", hostname, err)
+			}
+		}()
+	}
 }
 
 // ApplyStarted marks the OS-phase agent up and applying: the reboot completed
