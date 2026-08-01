@@ -95,36 +95,54 @@ func (e IPMIExecutor) SetBootDisk(ctx context.Context, n Node) error {
 	return e.setBootFlags(ctx, n, 0x08)
 }
 
-// PowerCycle cold-cycles the node: power off, wait until it is actually off,
-// then power on. A warm ChassisControlPowerCycle is a no-op on MegaRAC boards,
-// so we always cold-cycle (reliable on every BMC, never worse).
+// drivePower brings the chassis to the target power state, RE-ISSUING the
+// control command until the chassis actually reports it (bounded). MegaRAC
+// firmware silently drops the occasional power on/off, so a single command
+// isn't enough — issuing once and moving on leaves a node stuck on (never
+// reboots to PXE) or stuck off (never comes back). Already at target = no-op.
+func drivePower(ctx context.Context, client *goipmi.Client, on bool) error {
+	ctrl := goipmi.ChassisControlPowerDown
+	if on {
+		ctrl = goipmi.ChassisControlPowerUp
+	}
+	for attempt := 0; attempt < 6; attempt++ {
+		if s, e := client.GetChassisStatus(ctx); e == nil && s.PowerIsOn == on {
+			return nil
+		}
+		if _, err := client.ChassisControl(ctx, ctrl); err != nil {
+			return err
+		}
+		for i := 0; i < 5; i++ { // poll ~10s before re-issuing
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
+			if s, e := client.GetChassisStatus(ctx); e == nil && s.PowerIsOn == on {
+				return nil
+			}
+		}
+	}
+	if on {
+		return fmt.Errorf("chassis did not power on after retries")
+	}
+	return fmt.Errorf("chassis did not power off after retries")
+}
+
+// PowerCycle cold-cycles the node: force it off (verified), then on (verified).
+// A warm ChassisControlPowerCycle is a no-op on MegaRAC, and a single off/on
+// can be silently dropped, so we drive each transition to completion — reliable
+// on every BMC, never worse.
 func (e IPMIExecutor) PowerCycle(ctx context.Context, n Node) error {
 	client, err := dial(ctx, n)
 	if err != nil {
 		return err
 	}
 	defer client.Close(ctx)
-	status, err := client.GetChassisStatus(ctx)
-	if err != nil {
+	if err := drivePower(ctx, client, false); err != nil {
 		return err
 	}
-	if status.PowerIsOn {
-		if _, err := client.ChassisControl(ctx, goipmi.ChassisControlPowerDown); err != nil {
-			return err
-		}
-		for i := 0; i < 30; i++ { // wait until actually off (bounded ~60s)
-			if s, e := client.GetChassisStatus(ctx); e == nil && !s.PowerIsOn {
-				break
-			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(2 * time.Second):
-			}
-		}
-	}
-	_, err = client.ChassisControl(ctx, goipmi.ChassisControlPowerUp)
-	return err
+	return drivePower(ctx, client, true)
 }
 
 func (e IPMIExecutor) Observe(ctx context.Context, n Node) (Stage, error) {
