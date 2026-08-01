@@ -191,11 +191,11 @@ export const DeployProgress = (props: DeployProgressProps) => {
     const nodes = deploy ? Object.values(deploy.nodes) : []
     // Keep polling while set_ready is still running too: every node is already
     // terminal (done) by then, so node state alone would stop the poll and the
-    // final set-ready green would only appear on a manual refresh.
-    const setReadyRunning =
-      !!deploy?.manual &&
-      (deploy?.manualStep ?? 0) >= MANUAL_STEPS.length &&
-      !deploy?.setReadyDone
+    // final set-ready green would only appear on a manual refresh. Works for
+    // both manual and auto (auto has no manualStep) — key it on all-nodes-done
+    // plus set_ready not yet finished.
+    const allDone = nodes.length > 0 && nodes.every((n) => n.state === 'done')
+    const setReadyRunning = allDone && !deploy?.setReadyDone
     const active =
       (nodes.length > 0 && nodes.some((n) => !isTerminal(n.state))) ||
       setReadyRunning
