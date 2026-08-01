@@ -2,10 +2,13 @@ package discovery
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
 	"github.com/stmcginnis/gofish"
@@ -156,6 +159,89 @@ func TestFetchVirtualDisksExpanded(t *testing.T) {
 	}
 	if memberGets != 0 {
 		t.Fatalf("expanded members must not be re-fetched (%d per-member GETs)", memberGets)
+	}
+}
+
+// discoverRoutes is a minimal Redfish tree a Discover walk can complete on.
+func discoverRoutes() map[string]string {
+	const sysURL = "/redfish/v1/Systems/S1"
+	return map[string]string{
+		"/redfish/v1/":        `{"@odata.id":"/redfish/v1/","Id":"RootService","Name":"Root Service","Systems":{"@odata.id":"/redfish/v1/Systems"}}`,
+		"/redfish/v1/Systems": `{"Members":[{"@odata.id":"` + sysURL + `"}],"Members@odata.count":1}`,
+		sysURL:                `{"@odata.id":"` + sysURL + `","Id":"S1","Name":"S1","Manufacturer":"Dell","Model":"R630","SerialNumber":"SN1","EthernetInterfaces":{"@odata.id":"` + sysURL + `/EthernetInterfaces"}}`,
+		sysURL + "/EthernetInterfaces": `{"Members":[{"@odata.id":"/n0"},{"@odata.id":"/n1"},{"@odata.id":"/n2"},{"@odata.id":"/n3"},{"@odata.id":"/n4"},{"@odata.id":"/n5"}],"Members@odata.count":6}`,
+		"/n0":                          `{"@odata.id":"/n0","Id":"n0","Name":"NIC0","MACAddress":"02:00:00:00:00:00"}`,
+		"/n1":                          `{"@odata.id":"/n1","Id":"n1","Name":"NIC1","MACAddress":"02:00:00:00:00:01"}`,
+		"/n2":                          `{"@odata.id":"/n2","Id":"n2","Name":"NIC2","MACAddress":"02:00:00:00:00:02"}`,
+		"/n3":                          `{"@odata.id":"/n3","Id":"n3","Name":"NIC3","MACAddress":"02:00:00:00:00:03"}`,
+		"/n4":                          `{"@odata.id":"/n4","Id":"n4","Name":"NIC4","MACAddress":"02:00:00:00:00:04"}`,
+		"/n5":                          `{"@odata.id":"/n5","Id":"n5","Name":"NIC5","MACAddress":"02:00:00:00:00:05"}`,
+	}
+}
+
+// Old BMC firmware (Dell iDRAC8) offers only RSA-key-exchange TLS cipher
+// suites, which Go 1.22+ removed from the client defaults — discovery must
+// still connect (the "inspect fails at TLS handshake" bug).
+func TestDiscoverRSAKeyExchangeTLS(t *testing.T) {
+	routes := discoverRoutes()
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := routes[r.URL.Path]; ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(body))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	srv.TLS = &tls.Config{
+		MaxVersion:   tls.VersionTLS12,
+		CipherSuites: []uint16{tls.TLS_RSA_WITH_AES_256_GCM_SHA384},
+	}
+	srv.StartTLS()
+	defer srv.Close()
+
+	inv, err := RedfishDiscoverer{}.Discover(context.Background(), Target{Address: srv.URL})
+	if err != nil {
+		t.Fatalf("Discover over RSA-KEX-only TLS: %v", err)
+	}
+	if inv.Serial != "SN1" {
+		t.Fatalf("unexpected inventory: %+v", inv)
+	}
+}
+
+// Discovery must issue requests concurrently — a BMC at ~5s/request makes a
+// fully serial ~20-request walk take minutes (the "inspect takes too long"
+// bug). Watch the fake BMC's in-flight high-water mark.
+func TestDiscoverRequestsConcurrently(t *testing.T) {
+	routes := discoverRoutes()
+	var inflight, peak int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&inflight, 1)
+		for {
+			p := atomic.LoadInt32(&peak)
+			if n <= p || atomic.CompareAndSwapInt32(&peak, p, n) {
+				break
+			}
+		}
+		time.Sleep(30 * time.Millisecond)
+		atomic.AddInt32(&inflight, -1)
+		if body, ok := routes[r.URL.Path]; ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(body))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	inv, err := RedfishDiscoverer{}.Discover(context.Background(), Target{Address: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.NICs) != 6 {
+		t.Fatalf("want 6 NICs, got %+v", inv.NICs)
+	}
+	if p := atomic.LoadInt32(&peak); p < 2 {
+		t.Fatalf("requests never overlapped (peak in-flight %d) — discovery is serial", p)
 	}
 }
 

@@ -2,8 +2,11 @@ package discovery
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
@@ -14,17 +17,42 @@ import (
 // RedfishDiscoverer reads hardware facts over the Redfish API (gofish).
 type RedfishDiscoverer struct{}
 
+// bmcConcurrency caps in-flight requests per BMC. Slow controllers (Dell
+// iDRAC8 is ~5s/request) make a serial ~20-request walk take minutes; a few
+// parallel requests cut that without overwhelming the BMC (gofish's own
+// collection fan-out is 3-wide).
+const bmcConcurrency = 4
+
+// bmcHTTPClient permits the RSA-key-exchange TLS cipher suites that old BMC
+// firmware (e.g. Dell iDRAC8) is limited to — Go 1.22+ dropped them from the
+// client defaults, failing the handshake outright.
+func bmcHTTPClient() *http.Client {
+	var suites []uint16
+	for _, s := range tls.CipherSuites() {
+		suites = append(suites, s.ID)
+	}
+	suites = append(suites,
+		tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+	)
+	return &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{CipherSuites: suites},
+	}}
+}
+
 func (RedfishDiscoverer) Discover(ctx context.Context, t Target) (inventory.Inventory, error) {
 	endpoint := t.Address
 	if len(endpoint) < 4 || endpoint[:4] != "http" {
 		endpoint = "https://" + endpoint
 	}
 	client, err := gofish.ConnectContext(ctx, gofish.ClientConfig{
-		Endpoint:  endpoint,
-		Username:  t.Username,
-		Password:  t.Password,
-		Insecure:  true, // BMC certs are self-signed
-		BasicAuth: true,
+		Endpoint:              endpoint,
+		Username:              t.Username,
+		Password:              t.Password,
+		Insecure:              true, // BMC certs are self-signed
+		BasicAuth:             true,
+		HTTPClient:            bmcHTTPClient(),
+		MaxConcurrentRequests: bmcConcurrency,
 	})
 	if err != nil {
 		return inventory.Inventory{}, err
@@ -58,7 +86,17 @@ func (RedfishDiscoverer) Discover(ctx context.Context, t Target) (inventory.Inve
 		inv.MemoryBytes = int64(*sys.MemorySummary.TotalSystemMemoryGiB * (1 << 30))
 	}
 
-	if eths, err := sys.EthernetInterfaces(); err == nil {
+	// The three sections are independent — walk them concurrently (the BMC is
+	// the bottleneck; the client caps total in-flight at bmcConcurrency).
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		eths, err := sys.EthernetInterfaces()
+		if err != nil {
+			return
+		}
 		for _, e := range eths {
 			mac := e.MACAddress
 			if mac == "" {
@@ -74,9 +112,14 @@ func (RedfishDiscoverer) Discover(ctx context.Context, t Target) (inventory.Inve
 			}
 			inv.NICs = append(inv.NICs, nic)
 		}
-	}
+	}()
 
-	if storages, err := sys.Storage(); err == nil {
+	go func() {
+		defer wg.Done()
+		storages, err := sys.Storage()
+		if err != nil {
+			return
+		}
 		for _, st := range storages {
 			// RAID virtual disks first: on a HW-RAID controller (e.g. Dell PERC)
 			// the OS sees the virtual disk, not its member drives — so VDs are
@@ -107,17 +150,23 @@ func (RedfishDiscoverer) Discover(ctx context.Context, t Target) (inventory.Inve
 				inv.Disks = append(inv.Disks, disk)
 			}
 		}
-	}
+	}()
 
-	if devices, err := sys.PCIeDevices(); err == nil {
+	go func() {
+		defer wg.Done()
+		devices, err := sys.PCIeDevices()
+		if err != nil {
+			return
+		}
 		for _, dev := range devices {
 			inv.Cards = append(inv.Cards, inventory.Card{
 				Name: dev.Name,
 				Type: string(dev.DeviceType),
 			})
 		}
-	}
+	}()
 
+	wg.Wait()
 	return inv, nil
 }
 
@@ -167,10 +216,20 @@ func fetchVirtualDisks(client *gofish.APIClient, storageURL string) ([]inventory
 			return out, members // no Volumes resource (e.g. an AHCI passthrough controller)
 		}
 	}
-	for _, v := range coll.Members {
-		if v.unresolved() && v.ODataID != "" {
-			_ = getJSON(client, v.ODataID, &v) // $expand ignored — resolve one by one
+	// $expand ignored — resolve the volumes individually, in parallel (the
+	// client's request cap bounds actual concurrency against the BMC).
+	var wg sync.WaitGroup
+	for i := range coll.Members {
+		if v := &coll.Members[i]; v.unresolved() && v.ODataID != "" {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_ = getJSON(client, v.ODataID, v)
+			}()
 		}
+	}
+	wg.Wait()
+	for _, v := range coll.Members {
 		if strings.EqualFold(v.VolumeType, "RawDevice") {
 			continue // a pass-through of a single physical disk, not a VD
 		}
