@@ -300,6 +300,11 @@ type Deploy struct {
 	// CanAdvance (computed) reports whether the current manual step's nodes have
 	// reached its state, so the UI can gate the operator's Next button.
 	CanAdvance bool `json:"canAdvance"`
+	// OptOutRepair (hidden, driver-API only): when set, the phone-home agent
+	// drops the persistent /etc/appliance/state/cube_repair_optout marker so
+	// cluster_check_repair_async + health auto_repair no-op -- faster iteration,
+	// raw post-set_ready state stays visible. A non-opt-out deploy clears it.
+	OptOutRepair bool `json:"optOutRepair,omitempty"`
 }
 
 // Manual-deploy step cursor values (Deploy.ManualStep).

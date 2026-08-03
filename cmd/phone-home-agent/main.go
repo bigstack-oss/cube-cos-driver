@@ -328,27 +328,53 @@ func reportRestoreDone(srv string, poll time.Duration) {
 // it as go (the old fail-open) let the master apply before the operator
 // authorized it and left the UI stuck on "rebooting" because the report never
 // landed.
-func reportApplyStarted(srv string) (reachable, proceed, isMaster bool) {
+func reportApplyStarted(srv string) (reachable, proceed, isMaster, optOutRepair bool) {
 	body, _ := json.Marshal(map[string]any{"macs": macs(), "serial": serial()})
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", srv+"/api/v1/agents/apply-started", bytes.NewReader(body))
 	if err != nil {
-		return false, false, false
+		return false, false, false, false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return false, false, false // server unreachable
+		return false, false, false, false // server unreachable
 	}
 	var out struct {
-		OK       bool `json:"ok"`
-		Proceed  bool `json:"proceed"`
-		IsMaster bool `json:"isMaster"`
+		OK           bool `json:"ok"`
+		Proceed      bool `json:"proceed"`
+		IsMaster     bool `json:"isMaster"`
+		OptOutRepair bool `json:"optOutRepair"`
 	}
 	json.NewDecoder(resp.Body).Decode(&out)
 	resp.Body.Close()
-	return true, out.Proceed, out.IsMaster
+	return true, out.Proceed, out.IsMaster, out.OptOutRepair
+}
+
+// repairOptOutMarker is the persistent, per-slot marker honored by cubecos's
+// cluster_check_repair_async + health auto_repair (sdk_health.sh / proj_functions).
+// Persistent (not /run) so the opt-out holds across the OS-phase reboots and
+// rolling-restart/powercycle iteration; cleared on reimage or by a normal deploy.
+const repairOptOutMarker = "/etc/appliance/state/cube_repair_optout"
+
+// setRepairOptOut drops (on) or clears (off) the hidden repair opt-out marker, so
+// a normal (non-opt-out) deploy re-enables repair. Best-effort.
+func setRepairOptOut(on bool) {
+	if on {
+		if f, err := os.OpenFile(repairOptOutMarker, os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+			f.Close()
+			log.Printf("local-apply: repair opt-out ON (%s) — cluster repair + auto_repair disabled this slot", repairOptOutMarker)
+		} else {
+			log.Printf("local-apply: repair opt-out: create %s failed: %v", repairOptOutMarker, err)
+		}
+		return
+	}
+	if err := os.Remove(repairOptOutMarker); err == nil {
+		log.Printf("local-apply: repair opt-out OFF — cleared %s", repairOptOutMarker)
+	} else if !os.IsNotExist(err) {
+		log.Printf("local-apply: repair opt-out: clear %s failed: %v", repairOptOutMarker, err)
+	}
 }
 
 // reportApplyFailed tells the server the snapshot apply failed terminally, so
@@ -495,11 +521,14 @@ func runLocalApply(srv string, poll time.Duration) {
 	// which would otherwise strand a sole master waiting for itself. This call
 	// also flips the driver-side UI state (master → apply-active, peer → wait for
 	// master). The env is the offline fallback.
-	if reachable, _, driverIsMaster := reportApplyStarted(srv); reachable {
+	if reachable, _, driverIsMaster, optOutRepair := reportApplyStarted(srv); reachable {
 		if driverIsMaster != isMaster {
 			log.Printf("local-apply: driver says master=%v (env IS_MASTER=%v) — trusting driver", driverIsMaster, isMaster)
 		}
 		isMaster = driverIsMaster
+		// Hidden repair opt-out (persistent, per-slot): set/clear before set_ready
+		// so cluster_check_repair_async + health auto_repair honor it this deploy.
+		setRepairOptOut(optOutRepair)
 	}
 	if isMaster {
 		log.Printf("local-apply: master — waiting for apply 'go' via SEL (OOB) ...")

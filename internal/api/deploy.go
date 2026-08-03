@@ -263,10 +263,11 @@ func (h *deployHandlers) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Confirm   bool     `json:"confirm"`
-		Hostnames []string `json:"hostnames"`
-		Manual    bool     `json:"manual"`
-		Image     string   `json:"image"`
+		Confirm      bool     `json:"confirm"`
+		Hostnames    []string `json:"hostnames"`
+		Manual       bool     `json:"manual"`
+		Image        string   `json:"image"`
+		OptOutRepair bool     `json:"optOutRepair"` // hidden: agent drops the repair opt-out marker
 	}
 	json.NewDecoder(r.Body).Decode(&body)
 	if !body.Confirm {
@@ -313,7 +314,7 @@ func (h *deployHandlers) start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no matching nodes to deploy")
 		return
 	}
-	dep, err := h.mgr.Start(id, nodes, master, h.verifyTargets(id), body.Manual, body.Image)
+	dep, err := h.mgr.Start(id, nodes, master, h.verifyTargets(id), body.Manual, body.Image, body.OptOutRepair)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
@@ -655,7 +656,7 @@ func (h *deployHandlers) applyStarted(w http.ResponseWriter, r *http.Request) {
 	} else {
 		h.mgr.WaitForMaster(assn.ClusterID, assn.Hostname)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proceed": proceed, "isMaster": isMaster})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proceed": proceed, "isMaster": isMaster, "optOutRepair": h.mgr.OptOutRepair(assn.ClusterID)})
 }
 
 // agentBinary serves the driver's packed phone-home-agent so the installer can
