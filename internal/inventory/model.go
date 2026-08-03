@@ -5,6 +5,8 @@ package inventory
 type BMC struct {
 	Address  string `json:"address"`
 	Username string `json:"username"`
+	// Cipher pins the IPMI cipher suite (e.g. 17); 0 lets the library try all.
+	Cipher int `json:"cipher,omitempty"`
 }
 
 type NIC struct {
@@ -20,11 +22,11 @@ type NIC struct {
 }
 
 type Disk struct {
-	Name       string `json:"name,omitempty"`
-	Model      string `json:"model,omitempty"`
-	SizeBytes  int64  `json:"sizeBytes,omitempty"`
-	Type       string `json:"type,omitempty"` // HDD | SSD | NVMe
-	Tran string `json:"tran,omitempty"` // transport: sata|sas|nvme|iscsi|fc|usb
+	Name      string `json:"name,omitempty"`
+	Model     string `json:"model,omitempty"`
+	SizeBytes int64  `json:"sizeBytes,omitempty"`
+	Type      string `json:"type,omitempty"` // HDD | SSD | NVMe
+	Tran      string `json:"tran,omitempty"` // transport: sata|sas|nvme|iscsi|fc|usb
 	// OSEligible: safe as a CubeCOS OS-install target. A pointer so unclassified
 	// disks (inventory captured before the agent computed this) serialize as
 	// absent — the UI then falls back to its model/transport heuristic instead of
@@ -85,11 +87,11 @@ const (
 
 // Machine is the API-facing view: no password, HasPassword computed.
 type Machine struct {
-	ID          string      `json:"id"`
-	Label       string      `json:"label"`
-	BMC         BMC         `json:"bmc"`
-	HasPassword bool        `json:"hasPassword"`
-	Inventory   *Inventory  `json:"inventory,omitempty"`
+	ID          string       `json:"id"`
+	Label       string       `json:"label"`
+	BMC         BMC          `json:"bmc"`
+	HasPassword bool         `json:"hasPassword"`
+	Inventory   *Inventory   `json:"inventory,omitempty"`
 	FetchState  FetchState   `json:"fetchState"`
 	FetchError  string       `json:"fetchError,omitempty"`
 	Assignment  *Assignment  `json:"assignment,omitempty"` // primary (first) — back-compat

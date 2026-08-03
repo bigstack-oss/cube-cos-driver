@@ -28,6 +28,7 @@ type machineInput struct {
 		Address  string  `json:"address"`
 		Username string  `json:"username"`
 		Password *string `json:"password"`
+		Cipher   int     `json:"cipher"`
 	} `json:"bmc"`
 }
 
@@ -175,6 +176,7 @@ func (m *machineHandlers) create(w http.ResponseWriter, r *http.Request) {
 		Label:    in.Label,
 		Address:  in.BMC.Address,
 		Username: in.BMC.Username,
+		Cipher:   in.BMC.Cipher,
 		Password: in.BMC.Password,
 	})
 	if err != nil {
@@ -231,6 +233,7 @@ func (m *machineHandlers) update(w http.ResponseWriter, r *http.Request) {
 		Label:    in.Label,
 		Address:  in.BMC.Address,
 		Username: in.BMC.Username,
+		Cipher:   in.BMC.Cipher,
 		Password: in.BMC.Password, // nil = keep stored
 	})
 	if errors.Is(err, inventory.ErrNotFound) {

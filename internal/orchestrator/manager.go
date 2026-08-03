@@ -54,6 +54,11 @@ type Manager struct {
 	// and restores it after the nodes boot. nil = image selection disabled.
 	pxe PXEFlipper
 
+	// wg tracks a deploy's background goroutines (per-node drivers + SEL poll) so
+	// StopAll can wait for them to exit — otherwise they can still write the
+	// deploy store after a caller (e.g. a test's temp-dir cleanup) tears down.
+	wg sync.WaitGroup
+
 	mu      sync.Mutex
 	deploys map[string]*Deploy
 	cancels map[string]context.CancelFunc
@@ -677,6 +682,17 @@ func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTar
 	}
 	m.nodes[clusterID] = byHost
 	m.deploys[clusterID] = d
+	// Fresh deploy: clear any prior run's set_ready RESULT. SetReadyDone mirrors
+	// the persisted set-ready Ready flag on read, so leaving it true shows a
+	// stale-green final step on the new run. Keep the operator's input params.
+	if in, ok := m.store.LoadSetReady(clusterID); ok && in.Ready {
+		in.Ready = false
+		in.Message = ""
+		m.setReady[clusterID] = in
+		if err := m.store.SaveSetReady(clusterID, in); err != nil {
+			log.Printf("orchestrator: reset set-ready %s: %v", clusterID, err)
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancels[clusterID] = cancel
 	m.persistLocked(d)
@@ -722,15 +738,26 @@ func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTar
 	}
 	if err := m.flipForBoot(ctx, image, deployArm, func() bool { return m.deployNodesBooted(clusterID) }); err != nil {
 		cancel()
+		// Clean up only if this deploy is still the registered one — a concurrent
+		// Start for the same cluster may have taken over (and won the lock) in the
+		// meantime; deleting then would nuke its valid record. The deploy was
+		// persisted above before this lock check, so also remove it from disk
+		// (under the lock, atomic with the in-memory check) to avoid a ghost
+		// "pending" job when the abort is e.g. the shared PXE default being busy.
 		m.mu.Lock()
-		delete(m.deploys, clusterID)
-		delete(m.cancels, clusterID)
+		if m.deploys[clusterID] == d {
+			delete(m.deploys, clusterID)
+			delete(m.cancels, clusterID)
+			_ = m.store.Delete(clusterID)
+		}
 		m.mu.Unlock()
 		return nil, err
 	}
 
 	for i, n := range nodes {
+		m.wg.Add(1)
 		go func(idx int, n Node) {
+			defer m.wg.Done()
 			// Stagger power-ons across nodes (respecting cancellation).
 			select {
 			case <-ctx.Done():
@@ -741,7 +768,11 @@ func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTar
 		}(i, n)
 	}
 	if m.sel != nil {
-		go m.pollSEL(ctx, clusterID, nodes)
+		m.wg.Add(1)
+		go func() {
+			defer m.wg.Done()
+			m.pollSEL(ctx, clusterID, nodes)
+		}()
 	}
 	return m.snapshot(clusterID)
 }
@@ -767,6 +798,25 @@ func (m *Manager) Cancel(clusterID string) {
 			}
 		}
 		m.persistLocked(d)
+	}
+}
+
+// StopAll cancels every running deploy and waits (bounded) for their background
+// goroutines to exit, so nothing writes the deploy store afterward. For graceful
+// shutdown and test teardown — without it, a deploy's goroutines can still write
+// files while the caller removes the data dir.
+func (m *Manager) StopAll() {
+	m.mu.Lock()
+	for id, cancel := range m.cancels {
+		cancel()
+		delete(m.cancels, id)
+	}
+	m.mu.Unlock()
+	done := make(chan struct{})
+	go func() { m.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second): // don't hang teardown on a stuck goroutine
 	}
 }
 

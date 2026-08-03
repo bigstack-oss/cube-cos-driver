@@ -72,6 +72,7 @@ type Input struct {
 	Label    string
 	Address  string
 	Username string
+	Cipher   int
 	// Password: nil = keep existing (update); non-nil = set (empty clears).
 	Password *string
 }
@@ -93,7 +94,7 @@ func (s *Store) Create(in Input) (Machine, error) {
 	r := &record{
 		ID:         newID(),
 		Label:      in.Label,
-		BMC:        BMC{Address: in.Address, Username: in.Username},
+		BMC:        BMC{Address: in.Address, Username: in.Username, Cipher: in.Cipher},
 		FetchState: FetchIdle,
 	}
 	if in.Password != nil && *in.Password != "" {
@@ -118,7 +119,7 @@ func (s *Store) Update(id string, in Input) (Machine, error) {
 		return Machine{}, err
 	}
 	r.Label = in.Label
-	r.BMC = BMC{Address: in.Address, Username: in.Username}
+	r.BMC = BMC{Address: in.Address, Username: in.Username, Cipher: in.Cipher}
 	if in.Password != nil {
 		if *in.Password == "" {
 			r.PasswordEnc = ""

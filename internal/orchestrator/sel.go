@@ -54,11 +54,8 @@ type GateWriter interface {
 type IPMIGateWriter struct{}
 
 func (IPMIGateWriter) WriteGate(ctx context.Context, n Node, stage byte) error {
-	client, err := goipmi.NewClient(n.BMCAddress, 623, n.BMCUser, n.BMCPass)
+	client, err := dial(ctx, n)
 	if err != nil {
-		return err
-	}
-	if err := client.Connect(ctx); err != nil {
 		return err
 	}
 	defer client.Close(ctx)
@@ -80,11 +77,8 @@ func (IPMIGateWriter) WriteGate(ctx context.Context, n Node, stage byte) error {
 // ClearSEL wipes the node's SEL (reserve + clear) so a previous deploy's gate/
 // status records don't satisfy this run's gates or replay old status.
 func (IPMIGateWriter) ClearSEL(ctx context.Context, n Node) error {
-	client, err := goipmi.NewClient(n.BMCAddress, 623, n.BMCUser, n.BMCPass)
+	client, err := dial(ctx, n)
 	if err != nil {
-		return err
-	}
-	if err := client.Connect(ctx); err != nil {
 		return err
 	}
 	defer client.Close(ctx)
@@ -123,11 +117,8 @@ type SELObserver interface {
 type IPMISELObserver struct{}
 
 func (IPMISELObserver) Observe(ctx context.Context, n Node) (*SELStatus, error) {
-	client, err := goipmi.NewClient(n.BMCAddress, 623, n.BMCUser, n.BMCPass)
+	client, err := dial(ctx, n)
 	if err != nil {
-		return nil, err
-	}
-	if err := client.Connect(ctx); err != nil {
 		return nil, err
 	}
 	defer client.Close(ctx)
@@ -275,11 +266,8 @@ func endpointSEL(ip [4]byte, port uint16) *goipmi.SEL {
 // driver) learns which driver actually booted it. Best-effort, same SEL-full
 // recovery as WriteGate.
 func (IPMIGateWriter) WriteEndpoint(ctx context.Context, n Node, ip [4]byte, port uint16) error {
-	client, err := goipmi.NewClient(n.BMCAddress, 623, n.BMCUser, n.BMCPass)
+	client, err := dial(ctx, n)
 	if err != nil {
-		return err
-	}
-	if err := client.Connect(ctx); err != nil {
 		return err
 	}
 	defer client.Close(ctx)

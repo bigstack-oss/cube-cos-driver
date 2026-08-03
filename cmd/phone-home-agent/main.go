@@ -328,43 +328,27 @@ func reportRestoreDone(srv string, poll time.Duration) {
 // it as go (the old fail-open) let the master apply before the operator
 // authorized it and left the UI stuck on "rebooting" because the report never
 // landed.
-func reportApplyStarted(srv string) (reachable, proceed bool) {
+func reportApplyStarted(srv string) (reachable, proceed, isMaster bool) {
 	body, _ := json.Marshal(map[string]any{"macs": macs(), "serial": serial()})
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", srv+"/api/v1/agents/apply-started", bytes.NewReader(body))
 	if err != nil {
-		return false, false
+		return false, false, false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return false, false // server unreachable
+		return false, false, false // server unreachable
 	}
 	var out struct {
-		OK      bool `json:"ok"`
-		Proceed bool `json:"proceed"`
+		OK       bool `json:"ok"`
+		Proceed  bool `json:"proceed"`
+		IsMaster bool `json:"isMaster"`
 	}
 	json.NewDecoder(resp.Body).Decode(&out)
 	resp.Body.Close()
-	return true, out.Proceed
-}
-
-// reportWaitMaster tells the server this rebooted non-master is holding for the
-// master's SEL 'go' — so the UI shows "wait for master" instead of "applying".
-// Best-effort: a failure here only affects the display, not the SEL gate.
-func reportWaitMaster(srv string) {
-	body, _ := json.Marshal(map[string]any{"macs": macs(), "serial": serial()})
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "POST", srv+"/api/v1/agents/wait-master", bytes.NewReader(body))
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if resp, err := http.DefaultClient.Do(req); err == nil {
-		resp.Body.Close()
-	}
+	return true, out.Proceed, out.IsMaster
 }
 
 // reportApplyFailed tells the server the snapshot apply failed terminally, so
@@ -506,12 +490,21 @@ func runLocalApply(srv string, poll time.Duration) {
 	// only releases peers after the master is done, so master-first ordering is
 	// preserved driver-side). Auto mode writes the go immediately. HTTP is never
 	// consulted for the gate.
-	if !isMaster {
-		reportWaitMaster(srv) // best-effort UI: show "wait for master", not applying
-		log.Printf("local-apply: non-master — waiting for apply 'go' via SEL (OOB) ...")
-	} else {
-		reportApplyStarted(srv) // best-effort UI hint; does not gate
+	// Resolve master identity authoritatively from the driver when reachable —
+	// the IS_MASTER env can be lost in the fragile install-time persistence chain,
+	// which would otherwise strand a sole master waiting for itself. This call
+	// also flips the driver-side UI state (master → apply-active, peer → wait for
+	// master). The env is the offline fallback.
+	if reachable, _, driverIsMaster := reportApplyStarted(srv); reachable {
+		if driverIsMaster != isMaster {
+			log.Printf("local-apply: driver says master=%v (env IS_MASTER=%v) — trusting driver", driverIsMaster, isMaster)
+		}
+		isMaster = driverIsMaster
+	}
+	if isMaster {
 		log.Printf("local-apply: master — waiting for apply 'go' via SEL (OOB) ...")
+	} else {
+		log.Printf("local-apply: non-master — waiting for apply 'go' via SEL (OOB) ...")
 	}
 	if !waitSELGate(ctx, poll, gateStageApply) {
 		log.Printf("local-apply: gate wait ended without apply go signal")

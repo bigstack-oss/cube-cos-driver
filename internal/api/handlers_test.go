@@ -29,12 +29,15 @@ func newTestServerCfg(t *testing.T, cfg Config) *httptest.Server {
 	if cfg.Discoverer == nil {
 		cfg.Discoverer = fakeDiscoverer{}
 	}
-	handler, err := New(cfg)
+	handler, mgr, err := newHandler(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
+	// Stop deploy background goroutines before t.TempDir removal, else they can
+	// still write the deploy store and fail cleanup with "directory not empty".
+	t.Cleanup(mgr.StopAll)
 	return srv
 }
 

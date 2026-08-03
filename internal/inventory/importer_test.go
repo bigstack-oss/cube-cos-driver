@@ -38,6 +38,26 @@ func TestParseCSV(t *testing.T) {
 	}
 }
 
+func TestParseCSVCipher(t *testing.T) {
+	csv := "Label,BMC Address,BMC Username,BMC Cipher\n" +
+		"cube-1,10.0.0.11,admin,17\n" + // pinned
+		"cube-2,10.0.0.12,admin,\n" + // blank -> 0 (try all)
+		"cube-3,10.0.0.13,admin,notanumber\n" // invalid -> 0
+	res, err := ParseCSV(strings.NewReader(csv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Machines) != 3 {
+		t.Fatalf("machines = %d", len(res.Machines))
+	}
+	if res.Machines[0].Cipher != 17 {
+		t.Fatalf("row 1 cipher = %d, want 17", res.Machines[0].Cipher)
+	}
+	if res.Machines[1].Cipher != 0 || res.Machines[2].Cipher != 0 {
+		t.Fatalf("blank/invalid cipher not 0: %d %d", res.Machines[1].Cipher, res.Machines[2].Cipher)
+	}
+}
+
 func TestParseCSVMissingColumn(t *testing.T) {
 	_, err := ParseCSV(strings.NewReader("name,ip\nfoo,1.2.3.4\n"))
 	if err == nil || !strings.Contains(err.Error(), "label") {
