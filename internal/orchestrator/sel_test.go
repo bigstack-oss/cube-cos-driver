@@ -28,7 +28,7 @@ func TestMergeSELAdvancesButNeverRegresses(t *testing.T) {
 	m := newTestManager(t, NewFakeExecutor())
 	fv := &fakeVerifier{}
 	m.SetVerifier(fv)
-	m.Start("cl1", []Node{{Hostname: "cube-1", MachineID: "m1"}}, "cube-1", nil, false, "")
+	m.Start("cl1", []Node{{Hostname: "cube-1", MachineID: "m1"}}, "cube-1", nil, false, "", false)
 	waitFor(t, m, "cl1", "cube-1", StateImaged)
 
 	// OOB "applying" advances the node from imaged.
@@ -67,7 +67,7 @@ func TestMergeSELAdvancesButNeverRegresses(t *testing.T) {
 
 func TestMergeSELError(t *testing.T) {
 	m := newTestManager(t, NewFakeExecutor())
-	m.Start("cl1", []Node{{Hostname: "cube-1", MachineID: "m1"}}, "cube-1", nil, false, "")
+	m.Start("cl1", []Node{{Hostname: "cube-1", MachineID: "m1"}}, "cube-1", nil, false, "", false)
 	waitFor(t, m, "cl1", "cube-1", StateImaged)
 	m.MergeSEL("cl1", "cube-1", SELStatus{Phase: "error", Result: "error", Detail: "apply blew up"})
 	d, _ := m.Status("cl1")
@@ -97,7 +97,7 @@ func TestPollSELIgnoresRecordsFromAPreviousDeploy(t *testing.T) {
 	// A terminal record stamped an hour ago — i.e. left over from a prior run.
 	stale := &SELStatus{Phase: "done", Result: "ok", At: time.Now().Add(-time.Hour)}
 	m.SetSELObserver(fakeSELObserver{s: stale})
-	m.Start("cl1", []Node{{Hostname: "cube-1", MachineID: "m1"}}, "cube-1", nil, false, "")
+	m.Start("cl1", []Node{{Hostname: "cube-1", MachineID: "m1"}}, "cube-1", nil, false, "", false)
 	waitFor(t, m, "cl1", "cube-1", StateImaged)
 
 	// Give pollSEL several ticks: the stale record must never complete the node.
