@@ -35,6 +35,16 @@ func (s *Store) Save(d *Deploy) error {
 	return os.Rename(tmp, s.path(d.ClusterID))
 }
 
+// Delete removes a cluster's persisted deploy record. Used when a deploy aborts
+// before it starts driving nodes (e.g. the shared PXE default is locked), so a
+// ghost "pending" job isn't left on disk.
+func (s *Store) Delete(clusterID string) error {
+	if err := os.Remove(s.path(clusterID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // setReadyPath/SaveSetReady/LoadSetReady persist the operator's set_ready input
 // per cluster, so the external-network config is remembered and pre-filled on a
 // later reimage (and survives a server restart) rather than re-entered.

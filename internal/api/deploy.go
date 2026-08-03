@@ -228,6 +228,7 @@ func (h *deployHandlers) buildNodes(id string) (nodes []orchestrator.Node, rows 
 			BMCAddress: addr,
 			BMCUser:    user,
 			BMCPass:    pass,
+			BMCCipher:  m.BMC.Cipher,
 			MACs:       macs,
 			OSDisk:     osDisk,
 		})
@@ -503,7 +504,7 @@ func (h *deployHandlers) startInspect(w http.ResponseWriter, r *http.Request) {
 		if gerr != nil {
 			continue
 		}
-		nodes = append(nodes, orchestrator.Node{MachineID: id, BMCAddress: addr, BMCUser: user, BMCPass: pass})
+		nodes = append(nodes, orchestrator.Node{MachineID: id, BMCAddress: addr, BMCUser: user, BMCPass: pass, BMCCipher: m.BMC.Cipher})
 		labels[id] = m.Label
 	}
 	if len(nodes) == 0 {
@@ -643,10 +644,18 @@ func (h *deployHandlers) applyStarted(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("apply-started for %s (serial=%q)", assn.Hostname, req.Serial)
 	proceed := h.mgr.ApplyProceed(assn.ClusterID, assn.Hostname)
-	// Pass proceed so the node flips to "applying" only when authorized; while
-	// holding for the operator it shows reboot-done + apply-pending (Waiting).
-	h.mgr.ApplyStarted(assn.ClusterID, assn.Hostname, proceed)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proceed": proceed})
+	// The driver is authoritative on who is master: the OS-phase agent's
+	// IS_MASTER env rides a fragile install-time persistence chain and can be
+	// lost, which would strand a sole master as a peer waiting for itself. Set
+	// the state here from d.Master (master → apply, per proceed; peer → wait) and
+	// return isMaster so the agent trusts us over its env when reachable.
+	isMaster := assn.Hostname == h.mgr.Master(assn.ClusterID)
+	if isMaster {
+		h.mgr.ApplyStarted(assn.ClusterID, assn.Hostname, proceed)
+	} else {
+		h.mgr.WaitForMaster(assn.ClusterID, assn.Hostname)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proceed": proceed, "isMaster": isMaster})
 }
 
 // agentBinary serves the driver's packed phone-home-agent so the installer can

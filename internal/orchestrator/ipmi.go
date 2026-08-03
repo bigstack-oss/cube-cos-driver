@@ -3,10 +3,29 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	goipmi "github.com/bougou/go-ipmi"
 )
+
+// BMCs allow only a few concurrent RMCP+ sessions; a stale/half-open session
+// (or the driver's own connect churn) can momentarily use them all up, so
+// Connect fails "Insufficient resources to create a session". They free as the
+// stale sessions time out, so retry the session open with backoff rather than
+// failing the whole deploy.
+const (
+	bmcConnectAttempts = 6
+	bmcConnectBackoff  = 10 * time.Second
+)
+
+// isSessionExhausted reports whether err is a transient BMC session shortage.
+func isSessionExhausted(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "insufficient resource")
+}
 
 // IPMIExecutor drives real hardware: power/bootdev over IPMI lanplus, and
 // install-stage observation via an injected Observer (pxeserver logs). Never
@@ -22,17 +41,38 @@ type Observer interface {
 	Stage(ctx context.Context, macs []string) (Stage, error)
 }
 
+// dial opens an IPMI lanplus session, retrying with backoff when the BMC is
+// transiently out of session slots. When the node pins a cipher suite only that
+// suite is tried -- on an exhausted BMC go-ipmi otherwise falls back through
+// every suite, multiplying the failed open-session attempts and prolonging the
+// shortage. A non-exhaustion error (auth, unreachable) returns immediately.
 func dial(ctx context.Context, n Node) (*goipmi.Client, error) {
 	host, port := splitHostPort(n.BMCAddress)
-	client, err := goipmi.NewClient(host, port, n.BMCUser, n.BMCPass)
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for attempt := 1; attempt <= bmcConnectAttempts; attempt++ {
+		client, err := goipmi.NewClient(host, port, n.BMCUser, n.BMCPass)
+		if err != nil {
+			return nil, err
+		}
+		client = client.WithInterface(goipmi.InterfaceLanplus)
+		if n.BMCCipher > 0 {
+			client = client.WithCipherSuiteID(goipmi.CipherSuiteID(n.BMCCipher))
+		}
+		if err = client.Connect(ctx); err == nil {
+			return client, nil
+		}
+		lastErr = err
+		_ = client.Close(ctx) // best-effort: don't leak a half-open session
+		if !isSessionExhausted(err) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(bmcConnectBackoff):
+		}
 	}
-	client = client.WithInterface(goipmi.InterfaceLanplus)
-	if err := client.Connect(ctx); err != nil {
-		return nil, err
-	}
-	return client, nil
+	return nil, fmt.Errorf("bmc %s session unavailable after %d attempts: %w", n.BMCAddress, bmcConnectAttempts, lastErr)
 }
 
 func splitHostPort(addr string) (string, int) {

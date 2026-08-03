@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -99,7 +100,7 @@ func TestDeployNoStampWithoutAdvertise(t *testing.T) {
 type fakeFlipper struct {
 	flipped  []string
 	armArgs  []string
-	restored int
+	restored atomic.Int32 // written by the async restore goroutine
 	failWith error
 }
 
@@ -109,7 +110,7 @@ func (f *fakeFlipper) Flip(image, armArgs string) (func(), error) {
 	}
 	f.flipped = append(f.flipped, image)
 	f.armArgs = append(f.armArgs, armArgs)
-	return func() { f.restored++ }, nil
+	return func() { f.restored.Add(1) }, nil
 }
 
 // A picked image flips the PXE default at deploy start and restores once all
@@ -131,15 +132,39 @@ func TestDeployFlipsAndRestoresImage(t *testing.T) {
 	// FakeExecutor drives the node to imaged then it awaits checkin; the restore
 	// watcher fires once nodes reach preflight — simulate by reporting preflight.
 	m.PreflightReport("cm", "m", NodePreflight{CarrierOK: true, Passed: true})
-	waitUntil(t, func() bool { m.mu.Lock(); defer m.mu.Unlock(); return ff.restored == 1 })
+	waitUntil(t, func() bool { return ff.restored.Load() == 1 })
 }
 
-// A locked PXE default (another deploy booting) aborts the start.
+// A locked PXE default (another deploy booting) aborts the start and leaves no
+// ghost "pending" deploy persisted on disk.
 func TestDeployAbortsWhenPXELocked(t *testing.T) {
 	m := newSettleManager(t)
 	m.SetPXEFlipper(&fakeFlipper{failWith: errors.New("PXE default is busy")})
 	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, "other (UEFI)"); err == nil {
 		t.Fatal("Start should abort when the PXE default is locked")
+	}
+	if _, err := m.store.Load("cm"); err == nil {
+		t.Fatal("aborted deploy left a ghost persisted record")
+	}
+}
+
+// A fresh deploy clears a prior run's set_ready result (so setReadyDone doesn't
+// show stale-true) while keeping the operator's input params.
+func TestStartClearsStaleSetReadyResult(t *testing.T) {
+	m := newSettleManager(t)
+	m.SetPXEFlipper(&fakeFlipper{})
+	if err := m.store.SaveSetReady("cm", SetReadyInput{CIDR: "10.0.0.0/16", Ready: true, Message: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, "v (UEFI)"); err != nil {
+		t.Fatal(err)
+	}
+	in, ok := m.store.LoadSetReady("cm")
+	if !ok || in.Ready || in.Message != "" {
+		t.Fatalf("set-ready result not reset on fresh deploy: %+v", in)
+	}
+	if in.CIDR != "10.0.0.0/16" {
+		t.Fatalf("set-ready input params lost: %+v", in)
 	}
 }
 

@@ -45,18 +45,25 @@ type Config struct {
 	AgentBinPath string
 }
 
+// New builds the HTTP handler. For graceful shutdown / test teardown of the
+// deploy manager's background goroutines, use newHandler (returns the manager).
 func New(cfg Config) (http.Handler, error) {
+	h, _, err := newHandler(cfg)
+	return h, err
+}
+
+func newHandler(cfg Config) (http.Handler, *orchestrator.Manager, error) {
 	keyFile := cfg.SecretKeyFile
 	if keyFile == "" {
 		keyFile = filepath.Join(cfg.DataDir, ".secret-key")
 	}
 	box, err := secret.Load(cfg.SecretKey, keyFile)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	machineStore, err := inventory.NewStore(filepath.Join(cfg.DataDir, "machines"), box)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	discoverer := cfg.Discoverer
 	if discoverer == nil {
@@ -72,7 +79,7 @@ func New(cfg Config) (http.Handler, error) {
 	}
 	deployStore, err := orchestrator.NewStore(filepath.Join(cfg.DataDir, "deploys"))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	mgr := orchestrator.NewManager(deployStore, deployExec, cfg.DeployConfig)
 	if realHW {
@@ -87,7 +94,7 @@ func New(cfg Config) (http.Handler, error) {
 	if cfg.Advertise != "" {
 		ip, port, err := orchestrator.ParseAdvertise(cfg.Advertise)
 		if err != nil {
-			return nil, fmt.Errorf("advertise %q: %w", cfg.Advertise, err)
+			return nil, nil, fmt.Errorf("advertise %q: %w", cfg.Advertise, err)
 		}
 		mgr.SetAdvertise(ip, port)
 	}
@@ -118,5 +125,5 @@ func New(cfg Config) (http.Handler, error) {
 	dh := &deployHandlers{clusters: clusterStore, machines: machineStore, mgr: mgr, pxeRoot: cfg.PXERoot, agentBin: agentBin}
 	dh.register(mux)
 	mux.Handle("/", webui.Handler())
-	return mux, nil
+	return mux, mgr, nil
 }

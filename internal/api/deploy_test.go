@@ -385,3 +385,63 @@ func TestDeployStartConflictsWithActiveDeploy(t *testing.T) {
 		t.Fatalf("409 should name the conflicting cluster, got %s", b)
 	}
 }
+
+// The driver is authoritative on who is master: apply-started returns isMaster
+// from d.Master (not the agent's fragile IS_MASTER env), so a sole master can't
+// be stranded as a peer. Master → isMaster true + not "waiting"; peer → false.
+func TestApplyStartedReturnsMasterFromDriver(t *testing.T) {
+	srv, _ := deployFixture(t, orchestrator.NewFakeExecutor())
+	do(t, "POST", srv.URL+"/api/v1/clusters/"+depClusterID+"/deploy", []byte(`{"confirm":true}`)).Body.Close()
+
+	st := do(t, "GET", srv.URL+"/api/v1/clusters/"+depClusterID+"/deploy", nil)
+	var status struct {
+		Master string `json:"master"`
+	}
+	json.NewDecoder(st.Body).Decode(&status)
+	st.Body.Close()
+	if status.Master == "" {
+		t.Fatal("deploy has no master")
+	}
+
+	// macFor(i) corresponds to NodeData[i] (fixture assignment order).
+	raw, _ := os.ReadFile("../model/testdata/ha3.json")
+	var d struct {
+		NodeData []struct {
+			Hostname string `json:"hostname"`
+		} `json:"nodeData"`
+	}
+	json.Unmarshal(raw, &d)
+	macOf := func(host string) string {
+		for i, n := range d.NodeData {
+			if n.Hostname == host {
+				return macFor(i)
+			}
+		}
+		return ""
+	}
+	applyStarted := func(mac string) bool {
+		r := do(t, "POST", srv.URL+"/api/v1/agents/apply-started", []byte(`{"macs":["`+mac+`"],"serial":"S"}`))
+		var out struct {
+			OK       bool `json:"ok"`
+			IsMaster bool `json:"isMaster"`
+		}
+		json.NewDecoder(r.Body).Decode(&out)
+		r.Body.Close()
+		if !out.OK {
+			t.Fatalf("apply-started not ok for mac %s", mac)
+		}
+		return out.IsMaster
+	}
+
+	if !applyStarted(macOf(status.Master)) {
+		t.Fatalf("master %s: apply-started returned isMaster=false", status.Master)
+	}
+	for _, n := range d.NodeData {
+		if n.Hostname != status.Master {
+			if applyStarted(macOf(n.Hostname)) {
+				t.Fatalf("peer %s: apply-started returned isMaster=true", n.Hostname)
+			}
+			break
+		}
+	}
+}

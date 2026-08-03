@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/xuri/excelize/v2"
@@ -15,6 +16,7 @@ const (
 	colAddress  = "bmc_address"
 	colUsername = "bmc_username"
 	colPassword = "bmc_password"
+	colCipher   = "bmc_cipher" // optional: pin the IPMI cipher suite (e.g. 17)
 )
 
 // RowError reports a rejected row (1-based, including the header row).
@@ -64,6 +66,11 @@ func rowToInput(idx map[string]int, cells []string) (Input, bool) {
 	if _, ok := idx[colPassword]; ok {
 		pw := get(colPassword)
 		in.Password = &pw
+	}
+	if c := get(colCipher); c != "" {
+		if n, err := strconv.Atoi(c); err == nil {
+			in.Cipher = n
+		}
 	}
 	// Skip fully blank rows.
 	if in.Label == "" && in.Address == "" {

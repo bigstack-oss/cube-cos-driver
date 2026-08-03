@@ -44,13 +44,16 @@ const (
 
 // Node is the executor's view of one node to deploy.
 type Node struct {
-	Hostname   string   `json:"hostname"`
-	MachineID  string   `json:"machineId"`
-	BMCAddress string   `json:"bmcAddress"`
-	BMCUser    string   `json:"bmcUser"`
-	BMCPass    string   `json:"-"`
-	MACs       []string `json:"macs"`
-	OSDisk     string   `json:"osDisk"`
+	Hostname   string `json:"hostname"`
+	MachineID  string `json:"machineId"`
+	BMCAddress string `json:"bmcAddress"`
+	BMCUser    string `json:"bmcUser"`
+	BMCPass    string `json:"-"`
+	// BMCCipher pins the IPMI cipher suite (e.g. 17); 0 lets the library try all.
+	// Pinning cuts the suite-fallback that amplifies session exhaustion.
+	BMCCipher int      `json:"bmcCipher,omitempty"`
+	MACs      []string `json:"macs"`
+	OSDisk    string   `json:"osDisk"`
 }
 
 // PreflightResult is one target's connectivity/time check from the agent.
