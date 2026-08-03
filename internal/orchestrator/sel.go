@@ -60,18 +60,47 @@ func (IPMIGateWriter) WriteGate(ctx context.Context, n Node, stage byte) error {
 	}
 	defer client.Close(ctx)
 
-	if _, err := client.AddSELEntry(ctx, gateSEL(stage)); err != nil {
-		// SEL full ("out of space", cc 0xc4) — clear it and retry once. The SEL
-		// here only carries our coordination records, so clearing is safe.
-		if res, rerr := client.ReserveSEL(ctx); rerr == nil {
-			if _, cerr := client.ClearSEL(ctx, res.ReservationID); cerr == nil {
-				time.Sleep(2 * time.Second)
-				_, err = client.AddSELEntry(ctx, gateSEL(stage))
+	// Read-after-write: the AddSELEntry ack can be lost to a UDP timeout even
+	// when the record landed (and can fail without landing), so the write's
+	// return can't be trusted — only the SEL contents can. Write, then confirm
+	// the gate record is actually present; retry so a transient BMC blip can't
+	// silently strand the node waiting for a gate that never landed.
+	const attempts = 4
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(i) * time.Second):
 			}
 		}
-		return err
+		if _, werr := client.AddSELEntry(ctx, gateSEL(stage)); werr != nil {
+			lastErr = werr
+			// SEL full (cc 0xc4): clear our coordination records so the next
+			// attempt has room. Safe — the SEL only carries our records.
+			if res, rerr := client.ReserveSEL(ctx); rerr == nil {
+				_, _ = client.ClearSEL(ctx, res.ReservationID)
+			}
+		}
+		entries, gerr := client.GetSELEntries(ctx, 0)
+		if gerr != nil {
+			lastErr = gerr
+			continue
+		}
+		for _, e := range entries {
+			if e == nil || e.OEMTimestamped == nil ||
+				e.OEMTimestamped.ManufacturerID != cubeManufacturerID {
+				continue
+			}
+			o := e.OEMTimestamped.OEMDefined
+			if o[0] == 0x30 && o[1] == 0x05 && o[2] == stage {
+				return nil
+			}
+		}
+		lastErr = fmt.Errorf("gate stage=%d not present in SEL after write", stage)
 	}
-	return nil
+	return lastErr
 }
 
 // ClearSEL wipes the node's SEL (reserve + clear) so a previous deploy's gate/
