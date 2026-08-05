@@ -63,6 +63,11 @@ type PreflightCheckinResponse struct {
 	// IsMaster marks the master (first control node); the installer stamps it so
 	// the OS-phase agent knows whether to apply first or wait for the SEL "go".
 	IsMaster bool `json:"isMaster"`
+	// OptOutRepair (hidden, driver-API only) is stamped into the rootfs like
+	// IsMaster during preflight (HTTP is reliable on the flat L2 here) so the
+	// OS-phase agent can drop the repair opt-out marker without depending on
+	// post-apply reachability to the driver.
+	OptOutRepair bool `json:"optOutRepair,omitempty"`
 	// OSDisk is the operator-picked install target (e.g. /dev/sda) from the
 	// assignment. The installer writes the restored image to this disk instead
 	// of auto-detecting, so the OS never lands on a SAN LUN or the wrong disk.
