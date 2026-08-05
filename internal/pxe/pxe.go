@@ -99,6 +99,41 @@ func SetDefault(root, entry string) error {
 	return writeFileAtomic(path, []byte(out), 0o644)
 }
 
+// reTimeout captures the `set timeout=` line: group 1 is the prefix, group 2 the
+// value.
+var reTimeout = regexp.MustCompile(`(?m)^(\s*set\s+timeout=)(\S+)`)
+
+// CurrentTimeout returns the grub.cfg's `set timeout=` value ("" if no line).
+func CurrentTimeout(root string) (string, error) {
+	b, err := os.ReadFile(grubPath(root))
+	if err != nil {
+		return "", err
+	}
+	m := reTimeout.FindStringSubmatch(string(b))
+	if m == nil {
+		return "", nil
+	}
+	return m[2], nil
+}
+
+// SetTimeout rewrites the `set timeout=` line to value. A driver-armed deploy
+// forces "0" so the node auto-boots the armed default; an ambient timeout=-1
+// (from another grub generator) would otherwise strand the node at the menu.
+// No-op if grub.cfg has no timeout line.
+func SetTimeout(root, value string) error {
+	path := grubPath(root)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	text := string(b)
+	if !reTimeout.MatchString(text) {
+		return nil
+	}
+	out := reTimeout.ReplaceAllString(text, "${1}"+value)
+	return writeFileAtomic(path, []byte(out), 0o644)
+}
+
 // reEntryArgs captures the custom kernel-arg segment of a menuentry's linuxefi
 // line — everything between "erst_disable" and the "pxe_via_nfs="/"pxe_net_busid="
 // marker. The driver injects zero-touch arming (autoinstall driver_server=…)

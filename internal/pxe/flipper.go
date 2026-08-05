@@ -41,6 +41,10 @@ func (f *Flipper) Flip(image, armArgs string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
+	prevTimeout, err := CurrentTimeout(f.Root)
+	if err != nil {
+		return nil, err
+	}
 	release, err := AcquireLock(f.Root, f.Holder, time.Now)
 	if err != nil {
 		return nil, err
@@ -54,6 +58,11 @@ func (f *Flipper) Flip(image, armArgs string) (func(), error) {
 		if e := SetEntryArgs(f.Root, target, prevArgs); e != nil {
 			fmt.Fprintf(os.Stderr, "pxe: restore args on %q: %v\n", target, e)
 		}
+		if prevTimeout != "" && prevTimeout != "0" {
+			if e := SetTimeout(f.Root, prevTimeout); e != nil {
+				fmt.Fprintf(os.Stderr, "pxe: restore timeout to %q: %v\n", prevTimeout, e)
+			}
+		}
 	}
 	if target != prevDefault {
 		if err := SetDefault(f.Root, target); err != nil {
@@ -62,6 +71,13 @@ func (f *Flipper) Flip(image, armArgs string) (func(), error) {
 		}
 	}
 	if err := SetEntryArgs(f.Root, target, armArgs); err != nil {
+		undo()
+		release()
+		return nil, err
+	}
+	// Force auto-boot of the armed default; without this an ambient timeout=-1
+	// leaves the node stuck at the grub menu and the deploy silently hangs.
+	if err := SetTimeout(f.Root, "0"); err != nil {
 		undo()
 		release()
 		return nil, err

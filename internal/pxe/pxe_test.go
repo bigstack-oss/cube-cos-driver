@@ -148,11 +148,42 @@ func TestFlipperArmsAndRestores(t *testing.T) {
 	if a, _ := EntryArgs(root, "v3.1.0-rc6 (UEFI)"); a != "autoinstall driver_server=http://x:1" {
 		t.Fatalf("entry not armed: %q", a)
 	}
+	if to, _ := CurrentTimeout(root); to != "0" {
+		t.Fatalf("timeout not forced to 0 on arm: %q", to)
+	}
 	restore()
 	if d, _ := CurrentDefault(root); d != "travis_cubecos (UEFI)" {
 		t.Fatalf("default not restored: %q", d)
 	}
 	if a, _ := EntryArgs(root, "v3.1.0-rc6 (UEFI)"); a != "" {
 		t.Fatalf("args not stripped on restore: %q", a)
+	}
+	if to, _ := CurrentTimeout(root); to != "5" {
+		t.Fatalf("timeout not restored: %q", to)
+	}
+}
+
+// A grub with an ambient timeout=-1 (wait-forever, e.g. from another generator)
+// would strand the node at the menu; Flip must force 0 so the deploy boots, then
+// restore the -1 on cleanup (leave grub as found).
+func TestFlipperForcesTimeoutOverAmbientWaitForever(t *testing.T) {
+	d := t.TempDir()
+	grub := "set default='travis_cubecos (UEFI)'\nset timeout=-1\n" +
+		"menuentry 'travis_cubecos (UEFI)' { linuxefi /b rw erst_disable pxe_via_nfs=1 ; }\n"
+	root := d
+	if err := os.WriteFile(filepath.Join(d, "grub.cfg"), []byte(grub), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := &Flipper{Root: root, Holder: "test:1"}
+	restore, err := f.Flip("", "autoinstall driver_server=http://x:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if to, _ := CurrentTimeout(root); to != "0" {
+		t.Fatalf("timeout not forced to 0 over ambient -1: %q", to)
+	}
+	restore()
+	if to, _ := CurrentTimeout(root); to != "-1" {
+		t.Fatalf("ambient timeout not restored: %q", to)
 	}
 }
