@@ -799,6 +799,7 @@ func (h *deployHandlers) preflightCheckin(w http.ResponseWriter, r *http.Request
 		Bundle:        bundle,
 		SnapshotURL:   scheme + r.Host + "/api/v1/clusters/" + cid + "/nodes/" + host + "/download",
 		IsMaster:      host == h.mgr.Master(cid),
+		OptOutRepair:  h.mgr.OptOutRepair(cid),
 		OSDisk:        assn.OSDisk,
 	})
 }

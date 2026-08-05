@@ -120,12 +120,16 @@ const stagedSnapshot = "/run/appointed.snapshot"
 // also drops the picked OS disk to /run/os-disk, which hex_autoinstall reads to
 // target the restore (overriding its auto-detect) so the OS lands on the
 // operator-chosen local disk, never a SAN LUN.
-func stampEnv(host, cluster string, isMaster bool, osDisk string) {
+func stampEnv(host, cluster string, isMaster bool, osDisk string, optOutRepair bool) {
 	m := "0"
 	if isMaster {
 		m = "1"
 	}
-	content := fmt.Sprintf("CUBE_HOSTNAME=%s\nCUBE_CLUSTER_ID=%s\nIS_MASTER=%s\nCUBE_OS_DISK=%s\n", host, cluster, m, osDisk)
+	o := "0"
+	if optOutRepair {
+		o = "1"
+	}
+	content := fmt.Sprintf("CUBE_HOSTNAME=%s\nCUBE_CLUSTER_ID=%s\nIS_MASTER=%s\nCUBE_OS_DISK=%s\nOPT_OUT_REPAIR=%s\n", host, cluster, m, osDisk, o)
 	_ = os.WriteFile("/run/phone-home-agent.env", []byte(content), 0o644)
 	if osDisk != "" {
 		_ = os.WriteFile("/run/os-disk", []byte(osDisk+"\n"), 0o644)
@@ -497,6 +501,12 @@ func runLocalApply(srv string, poll time.Duration) {
 	cluster := os.Getenv("CUBE_CLUSTER_ID")
 	log.Printf("local-apply: host=%s cluster=%s master=%v", host, cluster, isMaster)
 
+	// Hidden repair opt-out (persistent, per-slot): the flag is stamped into the
+	// rootfs env at preflight (reliable on the flat L2), NOT fetched over OS-phase
+	// HTTP (which can be unreachable before apply configures the network). Set/
+	// clear the marker early so cluster_check_repair_async + auto_repair honor it.
+	setRepairOptOut(os.Getenv("OPT_OUT_REPAIR") == "1")
+
 	// A prior boot already reached a terminal failure — never re-apply a genuine
 	// failure. Re-report it (in case the server missed it) and stop.
 	if _, e := os.Stat(applyTerminalFile); e == nil {
@@ -521,14 +531,11 @@ func runLocalApply(srv string, poll time.Duration) {
 	// which would otherwise strand a sole master waiting for itself. This call
 	// also flips the driver-side UI state (master → apply-active, peer → wait for
 	// master). The env is the offline fallback.
-	if reachable, _, driverIsMaster, optOutRepair := reportApplyStarted(srv); reachable {
+	if reachable, _, driverIsMaster, _ := reportApplyStarted(srv); reachable {
 		if driverIsMaster != isMaster {
 			log.Printf("local-apply: driver says master=%v (env IS_MASTER=%v) — trusting driver", driverIsMaster, isMaster)
 		}
 		isMaster = driverIsMaster
-		// Hidden repair opt-out (persistent, per-slot): set/clear before set_ready
-		// so cluster_check_repair_async + health auto_repair honor it this deploy.
-		setRepairOptOut(optOutRepair)
 	}
 	if isMaster {
 		log.Printf("local-apply: master — waiting for apply 'go' via SEL (OOB) ...")
