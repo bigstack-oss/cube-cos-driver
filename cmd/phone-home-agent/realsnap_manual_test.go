@@ -34,3 +34,23 @@ func keys(m map[string][]byte) []string {
 	}
 	return out
 }
+
+// Same guarded manual check for the timezone guard: read the zone out of a
+// real snapshot's time policy and report what the guard would decide.
+func TestRealSnapshotTimezone(t *testing.T) {
+	src := os.Getenv("REAL_SNAPSHOT")
+	if src == "" {
+		t.Skip("REAL_SNAPSHOT not set")
+	}
+	tz, err := snapshotTimezone(src)
+	if err != nil {
+		t.Fatalf("snapshotTimezone on real snapshot: %v", err)
+	}
+	if tz == "" {
+		t.Fatal("no timezone found in the real snapshot's time policy")
+	}
+	t.Logf("real snapshot timezone: %q", tz)
+	if verFile := os.Getenv("REAL_VERSION_FILE"); verFile != "" {
+		t.Logf("guard verdict against %s: %v", verFile, checkLegacyTimezone(verFile, src))
+	}
+}
