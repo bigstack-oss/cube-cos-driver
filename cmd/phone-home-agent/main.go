@@ -246,6 +246,11 @@ func apply(ctx context.Context, snapshotURL string) error {
 			return derr
 		}
 	}
+	// A single-component timezone segfaults pre-fix images mid-commit — refuse
+	// now rather than fail minutes in (legacy_timezone.go).
+	if terr := checkLegacyTimezone(versionFile, dest); terr != nil {
+		return terr
+	}
 	// Pre-fix images install the snapshot's state markers before committing, so
 	// every module sees an already-configured node and skips first-time setup.
 	// Strip them, apply, and stamp them ourselves on success (legacy_markers.go).
