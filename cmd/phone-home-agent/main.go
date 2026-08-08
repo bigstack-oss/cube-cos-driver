@@ -246,8 +246,27 @@ func apply(ctx context.Context, snapshotURL string) error {
 			return derr
 		}
 	}
+	// Pre-fix images install the snapshot's state markers before committing, so
+	// every module sees an already-configured node and skips first-time setup.
+	// Strip them, apply, and stamp them ourselves on success (legacy_markers.go).
+	var pendingMarkers map[string][]byte
+	if needsLegacyMarkerHandling(versionFile) {
+		stripped := dest + ".nomarkers"
+		if m, serr := stripMarkers(dest, stripped); serr != nil {
+			log.Printf("legacy-markers: strip failed (%v) — applying snapshot unmodified", serr)
+		} else if len(m) == 0 {
+			log.Printf("legacy-markers: snapshot carries no state markers — applying unmodified")
+			_ = os.Remove(stripped)
+		} else {
+			pendingMarkers = m
+			dest = stripped
+		}
+	}
 	out, err := exec.CommandContext(ctx, "hex_config", "snapshot_apply", dest).CombinedOutput()
 	if err == nil {
+		if serr := stampMarkers("/", pendingMarkers); serr != nil {
+			return fmt.Errorf("apply succeeded but stamping state markers failed: %w", serr)
+		}
 		return nil
 	}
 	code := -1
@@ -261,11 +280,16 @@ func apply(ctx context.Context, snapshotURL string) error {
 	// back — never reboot-retry that.
 	if code >= 0 && code&cfgExitNeedReboot != 0 && code&cfgExitFailure == 0 {
 		log.Printf("snapshot_apply exit %d: needs reboot to activate (no failure) — rebooting", code)
+		// Markers stay stripped across the reboot: the resumed apply re-runs this
+		// path and stamps them once the commit finally succeeds.
 		return errApplyReboot
 	}
 	// Soft-complete: some phases exit non-zero yet FTS set the configured marker.
 	if _, e := os.Stat(configuredMarker); e == nil {
 		log.Printf("snapshot_apply exit %d but %s exists — treating as success", code, configuredMarker)
+		if serr := stampMarkers("/", pendingMarkers); serr != nil {
+			log.Printf("legacy-markers: stamping after soft-complete failed: %v", serr)
+		}
 		return nil
 	}
 	// Real failure (component failed + rolled back, e.g. exit 3) — no retry.
