@@ -60,9 +60,19 @@ echo "waiting for databases…"
 $K -n "$NS" wait --for=condition=ready pod cube-portal-mongodb-0 --timeout=8m 2>/dev/null || true
 $K -n "$NS" wait --for=condition=ready pod cube-portal-postgresql-ha-postgresql-0 --timeout=8m 2>/dev/null || true
 
-# The post-install job grants admin (keycloak) + runs DB migrations; re-run it if
-# it failed on the DB race (both steps are idempotent).
-if [ -n "$($K -n "$NS" get job cube-portal-post-install -o jsonpath='{.status.failed}' 2>/dev/null)" ]; then
+# Wait for the post-install job's terminal Complete/Failed condition and re-run
+# only on Failed (steps are idempotent). Keying off .status.failed would also
+# count a backoffLimit>0 chart's in-progress retries and re-run a job that
+# later succeeds.
+rerun=""
+for _ in $(seq 1 60); do
+  comp="$($K -n "$NS" get job cube-portal-post-install -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null)"
+  failed="$($K -n "$NS" get job cube-portal-post-install -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null)"
+  [ "$comp" = "True" ] && break
+  [ "$failed" = "True" ] && { rerun=1; break; }
+  sleep 10
+done
+if [ -n "$rerun" ]; then
   echo "post-install job failed (DB race) — re-running…"
   $K -n "$NS" delete job post-install-rerun --ignore-not-found >/dev/null 2>&1
   $K -n "$NS" get job cube-portal-post-install -o json 2>/dev/null | python3 -c '
