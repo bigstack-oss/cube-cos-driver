@@ -1,6 +1,7 @@
 import { Route, Routes } from 'react-router'
 import { AppSidebar } from './components/AppSidebar'
 import { ClusterPage } from './pages/cluster/ClusterPage'
+import { EnterprisePage } from './pages/enterprise/EnterprisePage'
 import { HardwarePage } from './pages/hardware/HardwarePage'
 import { LandingPage } from './pages/landing/LandingPage'
 
@@ -13,6 +14,7 @@ export const App = () => {
           <Route path="/" element={<LandingPage />} />
           <Route path="/clusters/:id" element={<ClusterPage />} />
           <Route path="/hardware" element={<HardwarePage />} />
+          <Route path="/enterprise" element={<EnterprisePage />} />
         </Routes>
       </main>
     </div>

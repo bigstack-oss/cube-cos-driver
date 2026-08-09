@@ -5,10 +5,35 @@ import { listPxeImages, stripBootMode } from '../api/deploy'
 
 type NavItem = { to: string; label: string; end?: boolean }
 
-const navItems: NavItem[] = [
-  { to: '/', label: 'Clusters', end: true },
+// Provisioning group (Hardware, Clusters) and the Enterprise group are shown
+// as separate sections split by a hairline divider.
+const provisioningNav: NavItem[] = [
   { to: '/hardware', label: 'Hardware' },
+  { to: '/', label: 'Clusters', end: true },
 ]
+const enterpriseNav: NavItem[] = [
+  { to: '/enterprise', label: 'Enterprise Modules' },
+]
+
+const navLinkClass = ({ isActive }: { isActive: boolean }): string =>
+  `secondary-body2 flex items-center px-[22px] py-[7px] font-medium transition ${
+    isActive
+      ? 'bg-functional-hover-secondary text-primary'
+      : 'text-functional-text hover:bg-functional-hover-grey'
+  }`
+
+// One nav section (list of links).
+const NavList = ({ items }: { items: NavItem[] }) => (
+  <ul className="flex flex-col py-4">
+    {items.map((item) => (
+      <li key={item.to}>
+        <NavLink to={item.to} end={item.end} className={navLinkClass}>
+          {item.label}
+        </NavLink>
+      </li>
+    ))}
+  </ul>
+)
 
 // cubeDriver version shown in the nav. Bump on release (wire to build later).
 const VERSION = '2.0.0'
@@ -68,25 +93,9 @@ export const AppSidebar = () => {
       </div>
       <div className="h-px w-full bg-functional-border-divider" />
 
-      <ul className="flex flex-col py-4">
-        {navItems.map((item) => (
-          <li key={item.to}>
-            <NavLink
-              to={item.to}
-              end={item.end}
-              className={({ isActive }) =>
-                `secondary-body2 flex items-center px-[22px] py-[7px] font-medium transition ${
-                  isActive
-                    ? 'bg-functional-hover-secondary text-primary'
-                    : 'text-functional-text hover:bg-functional-hover-grey'
-                }`
-              }
-            >
-              {item.label}
-            </NavLink>
-          </li>
-        ))}
-      </ul>
+      <NavList items={provisioningNav} />
+      <div className="h-px w-full bg-functional-border-divider" />
+      <NavList items={enterpriseNav} />
       <div className="h-px w-full bg-functional-border-divider" />
 
       <div className="flex w-full flex-1 flex-col justify-end">
