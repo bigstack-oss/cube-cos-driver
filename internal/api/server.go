@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/bigstack-oss/cube-cos-driver/internal/clusterssh"
 	"github.com/bigstack-oss/cube-cos-driver/internal/discovery"
+	"github.com/bigstack-oss/cube-cos-driver/internal/enterprise"
 	"github.com/bigstack-oss/cube-cos-driver/internal/inventory"
 	"github.com/bigstack-oss/cube-cos-driver/internal/orchestrator"
 	"github.com/bigstack-oss/cube-cos-driver/internal/pxe"
@@ -43,6 +45,9 @@ type Config struct {
 	// /api/v1/agents/binary so the installer can hot-update the OS agent without
 	// a full image rebuild. Empty resolves to <driver-dir>/phone-home-agent.
 	AgentBinPath string
+	// EnterpriseDial overrides how the enterprise install manager dials a
+	// cluster's VIP (tests inject a mock). Defaults to clusterssh.NewSSHClient.
+	EnterpriseDial func(host, user, password string) (clusterssh.Client, error)
 }
 
 // New builds the HTTP handler. For graceful shutdown / test teardown of the
@@ -124,6 +129,21 @@ func newHandler(cfg Config) (http.Handler, *orchestrator.Manager, error) {
 	}
 	dh := &deployHandlers{clusters: clusterStore, machines: machineStore, mgr: mgr, pxeRoot: cfg.PXERoot, agentBin: agentBin}
 	dh.register(mux)
+
+	entStore, err := enterprise.NewStore(filepath.Join(cfg.DataDir, "installs"))
+	if err != nil {
+		return nil, nil, err
+	}
+	entDial := cfg.EnterpriseDial
+	if entDial == nil {
+		entDial = func(host, user, password string) (clusterssh.Client, error) {
+			return clusterssh.NewSSHClient(host, user, password)
+		}
+	}
+	entMgr := enterprise.NewManager(entStore, cfg.DataDir, entDial)
+	eh := &enterpriseHandlers{clusters: clusterStore, mgr: entMgr, dataDir: cfg.DataDir, box: box}
+	eh.register(mux)
+
 	mux.Handle("/", webui.Handler())
 	return mux, mgr, nil
 }

@@ -1,0 +1,69 @@
+// Package enterprise builds and drives the install plan for app-framework 2 and cube-cmp 2.1.0.
+package enterprise
+
+// Module identifiers for the enterprise install flow.
+const (
+	ModuleAppFW = "appfw"
+	ModuleCMP   = "cmp"
+)
+
+// StepState is the lifecycle state of a persisted Step.
+type StepState string
+
+// Step states.
+const (
+	StepPending StepState = "pending"
+	StepActive  StepState = "active"
+	StepDone    StepState = "done"
+	StepError   StepState = "error"
+	StepSkipped StepState = "skipped"
+)
+
+// InstallParams holds the user-supplied and derived parameters for an install run.
+type InstallParams struct {
+	Project   string // framework_create project name
+	PublicNet string // default "public"
+	MgmtNet   string // default "public"
+	LBIP      string
+	OSImage   string // rancher .raw basename (no path)
+	Framework string // CMP: target framework (may equal Project when auto-created)
+	AppFile   string // CMP: cube-portal-*.pigz basename
+	FsImage   string // manila-*.qcow2 basename
+	LBImage   string // amphora-*.qcow2 basename
+
+	StorageBackend string // cinder volume type for image import; from cluster query
+}
+
+// Step is the persisted, user-visible record of one install step.
+type Step struct {
+	Name, Title string
+	State       StepState
+	Output      string
+	Err         string
+}
+
+// Install is the persisted record of one install run for a cluster+module.
+type Install struct {
+	ClusterID      string
+	Module         string
+	StartedAt      string
+	Manual         bool
+	ManualStep     int
+	SimulateAirgap bool
+	Params         InstallParams
+	Steps          []*Step
+	Current        int
+	State          string // "running" | "done" | "error"
+	Portal         string
+}
+
+// plannedStep is the executable form of a step (not persisted; rebuilt from params).
+type plannedStep struct {
+	Name, Title, Kind string // Kind: "run" | "scp+run" | "airgap" | "framework" | "detect" | "complete"
+	Cmd               string // for run / scp+run / framework
+	LocalPath         string // for scp+run: <DataDir>/enterprise/.../<file>
+	RemotePath        string // for scp+run: cephfs dir
+	ImageName         string // for scp+run image imports: glance image name to idempotency-check
+	Framework         string // for framework: the app-framework name to create + poll to active
+	LBIP              string // for framework: the ingress LB IP, to verify registry reachability
+}
