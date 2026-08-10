@@ -68,6 +68,10 @@ type PreflightCheckinResponse struct {
 	// OS-phase agent can drop the repair opt-out marker without depending on
 	// post-apply reachability to the driver.
 	OptOutRepair bool `json:"optOutRepair,omitempty"`
+	// SimulateAirgap (hidden, driver-API only) is stamped into the rootfs like
+	// OptOutRepair during preflight so the OS-phase agent applies the CUBE_AIRGAP
+	// egress block for the whole install.
+	SimulateAirgap bool `json:"simulateAirgap,omitempty"`
 	// OSDisk is the operator-picked install target (e.g. /dev/sda) from the
 	// assignment. The installer writes the restored image to this disk instead
 	// of auto-detecting, so the OS never lands on a SAN LUN or the wrong disk.

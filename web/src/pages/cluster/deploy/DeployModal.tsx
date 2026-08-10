@@ -50,6 +50,8 @@ export const DeployModal = (props: DeployModalProps) => {
   const [ipRange, setIpRange] = useState('')
   const [manual, setManual] = useState(false)
   const [image, setImage] = useState('')
+  const [optOutRepair, setOptOutRepair] = useState(false)
+  const [simulateAirgap, setSimulateAirgap] = useState(false)
 
   useEffect(() => {
     if (!isOpen) return
@@ -92,7 +94,7 @@ export const DeployModal = (props: DeployModalProps) => {
         gateway: willCreate ? gateway : '',
         ipRange: willCreate ? ipRange : '',
       })
-      await startDeploy(clusterId, { manual, image })
+      await startDeploy(clusterId, { manual, image, optOutRepair, simulateAirgap })
       onStarted()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -143,6 +145,55 @@ export const DeployModal = (props: DeployModalProps) => {
           </span>
         </label>
 
+        <details className="rounded-md border border-functional-border-divider">
+          <summary className="primary-body4 cursor-pointer px-3 py-2 font-semibold text-functional-text-light">
+            Advanced (validation)
+          </summary>
+          <div className="flex flex-col gap-y-2 px-3 pb-3">
+            <label className="flex items-start gap-x-2 rounded-md border border-functional-border-divider px-3 py-2">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={optOutRepair}
+                onChange={(e) => setOptOutRepair(e.target.checked)}
+              />
+              <span>
+                <span className="primary-body4 font-semibold">
+                  Opt out of repair
+                </span>
+                <span className="secondary-body5 block text-functional-text-light">
+                  Skip the post-set_ready check_repair and health auto_repair so
+                  the raw cluster state stays visible (surfaces FTS issues
+                  instead of auto-healing them). Cleared on the next normal
+                  deploy.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-x-2 rounded-md border border-functional-border-divider px-3 py-2">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={simulateAirgap}
+                onChange={(e) => setSimulateAirgap(e.target.checked)}
+              />
+              <span>
+                <span className="primary-body4 font-semibold">
+                  Simulate air-gapped install
+                </span>
+                <span className="secondary-body5 block text-functional-text-light">
+                  Block off-subnet egress for the whole install to catch steps
+                  that reach the internet, and leave the block in place so the
+                  cluster stays air-gapped for inspection. Clear it on all nodes
+                  when done:
+                  <code className="mt-1 block rounded bg-functional-bg-hover px-2 py-1 font-mono">
+                    cubectl node exec -p 'hex_sdk airgap_sim_clear'
+                  </code>
+                </span>
+              </span>
+            </label>
+          </div>
+        </details>
+
         {error && (
           <CosInlineNotification type="error" title="Error" isClosable={false}>
             {error}
@@ -177,31 +228,36 @@ export const DeployModal = (props: DeployModalProps) => {
         )}
 
         {plan && (
-          <div className="flex flex-col gap-y-2">
-            {plan.nodes.map((n) => (
-              <div
-                key={n.hostname}
-                className="secondary-body4 flex items-center gap-x-3 rounded-md border border-functional-border-divider px-3 py-2"
-              >
-                <span className="w-24 font-semibold">{n.hostname}</span>
-                {n.assigned ? (
-                  <span className="flex-1 text-functional-text-light">
-                    {n.machineLabel} · BMC {n.bmcAddress} · disk {n.osDisk} ·{' '}
-                    {(n.macs ?? []).join(', ')}
-                    {n.conflict && (
-                      <span className="ml-2 rounded bg-status-negative/10 px-1.5 py-0.5 font-semibold text-status-negative">
-                        deploying in {n.conflict}
-                      </span>
-                    )}
-                  </span>
-                ) : (
-                  <span className="flex-1 text-status-negative">
-                    no server assigned
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
+          <details className="rounded-md border border-functional-border-divider">
+            <summary className="secondary-body4 cursor-pointer px-3 py-2 font-semibold">
+              Nodes ({plan.nodes.length})
+            </summary>
+            <div className="flex flex-col gap-y-2 px-3 pb-3">
+              {plan.nodes.map((n) => (
+                <div
+                  key={n.hostname}
+                  className="secondary-body4 flex items-center gap-x-3 rounded-md border border-functional-border-divider px-3 py-2"
+                >
+                  <span className="w-24 font-semibold">{n.hostname}</span>
+                  {n.assigned ? (
+                    <span className="flex-1 text-functional-text-light">
+                      {n.machineLabel} · BMC {n.bmcAddress} · disk {n.osDisk} ·{' '}
+                      {(n.macs ?? []).join(', ')}
+                      {n.conflict && (
+                        <span className="ml-2 rounded bg-status-negative/10 px-1.5 py-0.5 font-semibold text-status-negative">
+                          deploying in {n.conflict}
+                        </span>
+                      )}
+                    </span>
+                  ) : (
+                    <span className="flex-1 text-status-negative">
+                      no server assigned
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </details>
         )}
 
         <ImagePicker onChange={setImage} />

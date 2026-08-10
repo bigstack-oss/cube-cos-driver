@@ -606,6 +606,15 @@ func (m *Manager) OptOutRepair(clusterID string) bool {
 	return d != nil && d.OptOutRepair
 }
 
+// SimulateAirgap reports whether this deploy opted into air-gap simulation
+// (hidden, driver-API only). The agent uses it to apply the CUBE_AIRGAP block.
+func (m *Manager) SimulateAirgap(clusterID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := m.deploys[clusterID]
+	return d != nil && d.SimulateAirgap
+}
+
 // Applied records that a node finished applying its (local) snapshot. When the
 // master reports applied, the server releases every non-master by writing the
 // "go" SEL record to its BMC over LAN — the OOB master-first handoff.
@@ -666,7 +675,7 @@ func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
 
 // Start begins (or restarts) a deploy of the given nodes for a cluster.
 // master is the hostname whose FTS must finish before other nodes apply.
-func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTargets []string, manual bool, image string, optOutRepair bool) (*Deploy, error) {
+func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTargets []string, manual bool, image string, optOutRepair, simulateAirgap bool) (*Deploy, error) {
 	if len(nodes) == 0 {
 		return nil, errors.New("no nodes to deploy")
 	}
@@ -678,7 +687,7 @@ func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTar
 	if manual {
 		step = StepPreflight
 	}
-	d := &Deploy{ClusterID: clusterID, StartedAt: nowUTC(), Master: master, VerifyTargets: verifyTargets, Manual: manual, ManualStep: step, OptOutRepair: optOutRepair, Nodes: map[string]*NodeDeploy{}}
+	d := &Deploy{ClusterID: clusterID, StartedAt: nowUTC(), Master: master, VerifyTargets: verifyTargets, Manual: manual, ManualStep: step, OptOutRepair: optOutRepair, SimulateAirgap: simulateAirgap, Nodes: map[string]*NodeDeploy{}}
 	byHost := map[string]Node{}
 	for _, n := range nodes {
 		d.Nodes[n.Hostname] = &NodeDeploy{

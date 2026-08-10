@@ -305,6 +305,11 @@ type Deploy struct {
 	// cluster_check_repair_async + health auto_repair no-op -- faster iteration,
 	// raw post-set_ready state stays visible. A non-opt-out deploy clears it.
 	OptOutRepair bool `json:"optOutRepair,omitempty"`
+	// SimulateAirgap (hidden, driver-API only): when set, the phone-home agent
+	// applies + holds cubecos's CUBE_AIRGAP egress block for the whole install so
+	// any step reaching the internet fails. Left in place after set_ready; cleared
+	// with `cubectl exec -p 'hex_sdk airgap_sim_clear'`.
+	SimulateAirgap bool `json:"simulateAirgap,omitempty"`
 }
 
 // Manual-deploy step cursor values (Deploy.ManualStep).

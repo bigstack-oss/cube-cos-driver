@@ -1,8 +1,8 @@
 package orchestrator
 
 import (
-	"os"
 	"context"
+	"os"
 	"testing"
 	"time"
 )
@@ -66,7 +66,7 @@ func TestDeployReachesImagedThenAgentApplies(t *testing.T) {
 		{Hostname: "cube-1", MachineID: "m1", MACs: []string{"aa:01"}},
 		{Hostname: "cube-2", MachineID: "m2", MACs: []string{"aa:02"}},
 	}
-	if _, err := m.Start("cl1", nodes, "cube-1", nil, false, "", false); err != nil {
+	if _, err := m.Start("cl1", nodes, "cube-1", nil, false, "", false, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -103,7 +103,7 @@ func TestDeployReachesImagedThenAgentApplies(t *testing.T) {
 
 func TestGreenLight1Barrier(t *testing.T) {
 	m := newTestManager(t, NewFakeExecutor())
-	m.Start("cl1", []Node{{Hostname: "a", MachineID: "m1"}, {Hostname: "b", MachineID: "m2"}}, "a", nil, false, "", false)
+	m.Start("cl1", []Node{{Hostname: "a", MachineID: "m1"}, {Hostname: "b", MachineID: "m2"}}, "a", nil, false, "", false, false)
 	waitFor(t, m, "cl1", "a", StateImaged)
 	waitFor(t, m, "cl1", "b", StateImaged)
 
@@ -149,7 +149,7 @@ func TestGreenLight2MasterFirst(t *testing.T) {
 	m.Start("cl1", []Node{
 		{Hostname: "master", MachineID: "m1"},
 		{Hostname: "worker", MachineID: "m2"},
-	}, "master", nil, false, "", false)
+	}, "master", nil, false, "", false, false)
 	waitFor(t, m, "cl1", "master", StateImaged)
 	waitFor(t, m, "cl1", "worker", StateImaged)
 
@@ -193,7 +193,7 @@ func TestClusterVerifyGatedOnAllDone(t *testing.T) {
 	m.Start("cl1", []Node{
 		{Hostname: "cube-1", MachineID: "m1"},
 		{Hostname: "cube-2", MachineID: "m2"},
-	}, "cube-1", []string{"10.254.0.100"}, false, "", false)
+	}, "cube-1", []string{"10.254.0.100"}, false, "", false, false)
 	waitFor(t, m, "cl1", "cube-1", StateImaged)
 	waitFor(t, m, "cl1", "cube-2", StateImaged)
 
@@ -233,7 +233,7 @@ func TestPreflightFailureIsolatesNode(t *testing.T) {
 	m.Start("cl1", []Node{
 		{Hostname: "bad", MachineID: "m1"},
 		{Hostname: "good", MachineID: "m2"},
-	}, "good", nil, false, "", false)
+	}, "good", nil, false, "", false, false)
 	waitFor(t, m, "cl1", "bad", StateError)
 	waitFor(t, m, "cl1", "good", StateImaged) // unaffected
 	d, _ := m.Status("cl1")
@@ -245,7 +245,7 @@ func TestPreflightFailureIsolatesNode(t *testing.T) {
 func TestStatusPersists(t *testing.T) {
 	store, _ := NewStore(t.TempDir())
 	m := NewManager(store, NewFakeExecutor(), Config{PollInterval: time.Millisecond, StageTimeout: time.Second})
-	m.Start("cl9", []Node{{Hostname: "n1", MachineID: "m1"}}, "n1", nil, false, "", false)
+	m.Start("cl9", []Node{{Hostname: "n1", MachineID: "m1"}}, "n1", nil, false, "", false, false)
 	waitFor(t, m, "cl9", "n1", StateImaged)
 	// A fresh manager backed by the same store reads persisted status.
 	m2 := NewManager(store, NewFakeExecutor(), Config{})
@@ -260,7 +260,7 @@ func TestCancelStopsStepping(t *testing.T) {
 	exec := NewFakeExecutor()
 	exec.StepsToDone = 100000
 	m := newTestManager(t, exec)
-	m.Start("clc", []Node{{Hostname: "n1", MachineID: "m1"}}, "n1", nil, false, "", false)
+	m.Start("clc", []Node{{Hostname: "n1", MachineID: "m1"}}, "n1", nil, false, "", false, false)
 	waitFor(t, m, "clc", "n1", StateNetbooting)
 	m.Cancel("clc")
 	// State should stop advancing to imaged.
@@ -275,7 +275,7 @@ func TestCancelStopsStepping(t *testing.T) {
 func TestManualStepGates(t *testing.T) {
 	m := newSettleManager(t)
 	nodes := []Node{{Hostname: "m", MachineID: "1"}, {Hostname: "p", MachineID: "2"}}
-	if _, err := m.Start("cm", nodes, "m", nil, true, "", false); err != nil {
+	if _, err := m.Start("cm", nodes, "m", nil, true, "", false, false); err != nil {
 		t.Fatal(err)
 	}
 	pass := NodePreflight{CarrierOK: true, Passed: true}
@@ -373,7 +373,7 @@ func TestManualStepGates(t *testing.T) {
 // Auto mode never gates (all proceed immediately).
 func TestAutoModeNoGates(t *testing.T) {
 	m := newSettleManager(t)
-	m.Start("ca", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, "", false)
+	m.Start("ca", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, "", false, false)
 	m.PreflightReport("ca", "m", NodePreflight{CarrierOK: true, Passed: true})
 	if !m.GreenLight1("ca", "m") {
 		t.Fatal("auto GL1 should clear when fabric ready")
@@ -393,7 +393,7 @@ func TestAutoModeNoGates(t *testing.T) {
 // waiting — the regression guard for auto deploys.
 func TestApplyStartedProceedFlipsState(t *testing.T) {
 	m := newSettleManager(t)
-	m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, true, "", false)
+	m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, true, "", false, false)
 	// Put the node in the post-reboot state the OS agent reports from.
 	m.Report("cm", "m", StateRebooting, "", nil)
 
@@ -414,7 +414,7 @@ func TestApplyStartedProceedFlipsState(t *testing.T) {
 func TestSetReadyGatesOnAllNodesApplied(t *testing.T) {
 	m := newSettleManager(t)
 	nodes := []Node{{Hostname: "m", MachineID: "1"}, {Hostname: "p", MachineID: "2"}}
-	if _, err := m.Start("cm", nodes, "m", nil, false, "", false); err != nil {
+	if _, err := m.Start("cm", nodes, "m", nil, false, "", false, false); err != nil {
 		t.Fatal(err)
 	}
 	m.SubmitSetReady("cm", SetReadyInput{CreateExternal: true, CIDR: "10.0.0.0/16"})
