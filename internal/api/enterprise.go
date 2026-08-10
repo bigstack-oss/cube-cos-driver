@@ -160,6 +160,13 @@ func (h *enterpriseHandlers) start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "unknown module %q", body.Module)
 		return
 	}
+	// Both modules' plans import the rancher image + framework_create keyed on
+	// OSImage; an empty value can't be resolved to a file and would scp the
+	// artifacts directory. Reject it here with a clear message.
+	if body.Params.OSImage == "" {
+		writeError(w, http.StatusBadRequest, "params.OSImage is required (the rancher cluster image .raw)")
+		return
+	}
 	detail, err := h.clusters.Detail(id)
 	if errors.Is(err, storage.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "cluster %s not found", id)
