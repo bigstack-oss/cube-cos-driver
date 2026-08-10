@@ -19,7 +19,9 @@ if [ -z "$CTRL" ]; then
   MGMT="$(grep 'cubesys.management' /etc/settings.txt | cut -d= -f2 | tr -d ' ')"
   CTRL="$(grep "net.if.addr.${MGMT}" /etc/settings.txt | cut -d= -f2 | tr -d ' ')"
 fi
-RT="$(terraform-cube.sh state pull 2>/dev/null | jq -r '.resources[]|select(.type=="rancher2_bootstrap").instances[0].attributes.token')"
+# terraform-cube.sh may print "Upgrading modules…" to stdout before the JSON on
+# a fresh cluster; strip everything before the first { so jq sees clean JSON.
+RT="$(terraform-cube.sh state pull 2>/dev/null | sed -n '/^{/,$p' | jq -r '.resources[]|select(.type=="rancher2_bootstrap").instances[0].attributes.token')"
 [ -n "$RT" ] || fail "could not read rancher token"
 echo yes | sudo /usr/local/bin/rancher login --skip-verify --token "$RT" "https://${CTRL}:10443" >/dev/null 2>&1
 KC="/tmp/${FRAMEWORK}-portal.kc"
@@ -42,6 +44,10 @@ else
   echo "installing cube-portal $CHART_VER from oci://$RURL/$RPROJ …"
   grep -q "$RURL" /etc/hosts || echo "$LBIP $RURL" | sudo tee -a /etc/hosts >/dev/null
   helm registry login "$RURL" -u "$RUSER" -p "$RPASS" --insecure >/dev/null 2>&1
+  # app_register can exit 0 having pushed nothing if the framework registry
+  # wasn't set up — fail clearly here, not on a cryptic helm pull.
+  helm show chart "oci://$RURL/$RPROJ/cube-portal" --version "$CHART_VER" --insecure-skip-tls-verify >/dev/null 2>&1 \
+    || fail "cube-portal chart not in registry (oci://$RURL/$RPROJ/cube-portal:$CHART_VER) — app_register pushed nothing; check the framework registry setup"
   # Older cubecmp charts ship rancherToken + worker.keycloak.admin empty, which
   # breaks login and the resyncer; set them so the portal works from scratch.
   [ -n "$RT" ] || fail "rancher token unavailable; portal would deploy without RANCHER_TOKEN"
@@ -89,8 +95,10 @@ fi
 # --- wait for the portal workloads ---
 echo "waiting for portal workloads…"
 $K -n "$NS" rollout restart deploy/portal-api >/dev/null 2>&1 || true
-$K -n "$NS" rollout status deploy/portal --timeout=8m 2>/dev/null || fail "portal deployment not ready"
-$K -n "$NS" rollout status deploy/portal-api --timeout=8m 2>/dev/null || fail "portal-api deployment not ready"
+# 20m, not 8m: on a fresh air-gapped cluster the portal pods wait on image
+# pulls + a manila-backed nfs-vol mount, which can exceed 8m.
+$K -n "$NS" rollout status deploy/portal --timeout=20m 2>/dev/null || fail "portal deployment not ready"
+$K -n "$NS" rollout status deploy/portal-api --timeout=20m 2>/dev/null || fail "portal-api deployment not ready"
 
 # --- verify: portal serves + admin permission granted ---
 echo "verifying portal is serving…"
