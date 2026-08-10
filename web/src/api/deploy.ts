@@ -127,7 +127,13 @@ const throwOnError = async (resp: Response): Promise<unknown> => {
 
 export const startDeploy = async (
   id: string,
-  opts?: { hostnames?: string[]; manual?: boolean; image?: string },
+  opts?: {
+    hostnames?: string[]
+    manual?: boolean
+    image?: string
+    optOutRepair?: boolean
+    simulateAirgap?: boolean
+  },
 ): Promise<void> => {
   await throwOnError(
     await fetch(`/api/v1/clusters/${encodeURIComponent(id)}/deploy`, {
@@ -138,6 +144,8 @@ export const startDeploy = async (
         hostnames: opts?.hostnames,
         manual: opts?.manual ?? false,
         image: opts?.image ?? '',
+        optOutRepair: opts?.optOutRepair ?? false,
+        simulateAirgap: opts?.simulateAirgap ?? false,
       }),
     }),
   )

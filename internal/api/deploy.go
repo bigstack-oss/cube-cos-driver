@@ -263,11 +263,12 @@ func (h *deployHandlers) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Confirm      bool     `json:"confirm"`
-		Hostnames    []string `json:"hostnames"`
-		Manual       bool     `json:"manual"`
-		Image        string   `json:"image"`
-		OptOutRepair bool     `json:"optOutRepair"` // hidden: agent drops the repair opt-out marker
+		Confirm        bool     `json:"confirm"`
+		Hostnames      []string `json:"hostnames"`
+		Manual         bool     `json:"manual"`
+		Image          string   `json:"image"`
+		OptOutRepair   bool     `json:"optOutRepair"`   // hidden: agent drops the repair opt-out marker
+		SimulateAirgap bool     `json:"simulateAirgap"` // hidden: agent applies the CUBE_AIRGAP egress block
 	}
 	json.NewDecoder(r.Body).Decode(&body)
 	if !body.Confirm {
@@ -314,7 +315,7 @@ func (h *deployHandlers) start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no matching nodes to deploy")
 		return
 	}
-	dep, err := h.mgr.Start(id, nodes, master, h.verifyTargets(id), body.Manual, body.Image, body.OptOutRepair)
+	dep, err := h.mgr.Start(id, nodes, master, h.verifyTargets(id), body.Manual, body.Image, body.OptOutRepair, body.SimulateAirgap)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
@@ -792,15 +793,16 @@ func (h *deployHandlers) preflightCheckin(w http.ResponseWriter, r *http.Request
 		scheme = "https://"
 	}
 	writeJSON(w, http.StatusOK, agent.PreflightCheckinResponse{
-		Appointed:     true,
-		ClusterID:     cid,
-		Hostname:      host,
-		ServerTimeUTC: time.Now().UTC().Format(time.RFC3339),
-		Bundle:        bundle,
-		SnapshotURL:   scheme + r.Host + "/api/v1/clusters/" + cid + "/nodes/" + host + "/download",
-		IsMaster:      host == h.mgr.Master(cid),
-		OptOutRepair:  h.mgr.OptOutRepair(cid),
-		OSDisk:        assn.OSDisk,
+		Appointed:      true,
+		ClusterID:      cid,
+		Hostname:       host,
+		ServerTimeUTC:  time.Now().UTC().Format(time.RFC3339),
+		Bundle:         bundle,
+		SnapshotURL:    scheme + r.Host + "/api/v1/clusters/" + cid + "/nodes/" + host + "/download",
+		IsMaster:       host == h.mgr.Master(cid),
+		OptOutRepair:   h.mgr.OptOutRepair(cid),
+		SimulateAirgap: h.mgr.SimulateAirgap(cid),
+		OSDisk:         assn.OSDisk,
 	})
 }
 

@@ -32,7 +32,7 @@ type PreflightDeps struct {
 	// StampEnv records the node's OS-phase identity (hostname, cluster, master
 	// role, and the operator-picked OS disk) to RAM so the installer can persist
 	// it into the restored OS and target the restore at the chosen disk.
-	StampEnv func(host, cluster string, isMaster bool, osDisk string, optOutRepair bool)
+	StampEnv func(host, cluster string, isMaster bool, osDisk string, optOutRepair, simulateAirgap bool)
 	// Carrier reports whether every intended bond member has carrier (link up);
 	// detail names the offending member when not.
 	Carrier func(b model.PreflightBundle) (ok bool, detail string)
@@ -108,8 +108,8 @@ recheck:
 			}
 		}
 		if d.StampEnv != nil {
-			d.StampEnv(resp.Hostname, resp.ClusterID, resp.IsMaster, resp.OSDisk, resp.OptOutRepair)
-			log.Printf("preflight: stamped OS-phase identity host=%s master=%v osDisk=%s optOutRepair=%v", resp.Hostname, resp.IsMaster, resp.OSDisk, resp.OptOutRepair)
+			d.StampEnv(resp.Hostname, resp.ClusterID, resp.IsMaster, resp.OSDisk, resp.OptOutRepair, resp.SimulateAirgap)
+			log.Printf("preflight: stamped OS-phase identity host=%s master=%v osDisk=%s optOutRepair=%v simulateAirgap=%v", resp.Hostname, resp.IsMaster, resp.OSDisk, resp.OptOutRepair, resp.SimulateAirgap)
 		}
 		// Pre-fetch the operator's set_ready params now (network up), like the
 		// snapshot, so the master can finalize the cluster offline. Best-effort.

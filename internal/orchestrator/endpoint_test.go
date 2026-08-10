@@ -69,7 +69,7 @@ func TestDeployStampsEndpoint(t *testing.T) {
 	fg := &fakeGate{}
 	m.SetGateWriter(fg)
 	m.SetAdvertise([4]byte{10, 32, 0, 202}, 80)
-	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, "", false); err != nil {
+	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, "", false, false); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, m, "cm", "m", StateImaged)
@@ -87,7 +87,7 @@ func TestDeployNoStampWithoutAdvertise(t *testing.T) {
 	m := newSettleManager(t)
 	fg := &fakeGate{}
 	m.SetGateWriter(fg)
-	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, "", false); err != nil {
+	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, "", false, false); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, m, "cm", "m", StateImaged)
@@ -119,7 +119,7 @@ func TestDeployFlipsAndRestoresImage(t *testing.T) {
 	m := newSettleManager(t)
 	ff := &fakeFlipper{}
 	m.SetPXEFlipper(ff)
-	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, "v3.1.0-rc6 (UEFI)", false); err != nil {
+	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, "v3.1.0-rc6 (UEFI)", false, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(ff.flipped) != 1 || ff.flipped[0] != "v3.1.0-rc6 (UEFI)" {
@@ -140,7 +140,7 @@ func TestDeployFlipsAndRestoresImage(t *testing.T) {
 func TestDeployAbortsWhenPXELocked(t *testing.T) {
 	m := newSettleManager(t)
 	m.SetPXEFlipper(&fakeFlipper{failWith: errors.New("PXE default is busy")})
-	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, "other (UEFI)", false); err == nil {
+	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, "other (UEFI)", false, false); err == nil {
 		t.Fatal("Start should abort when the PXE default is locked")
 	}
 	if _, err := m.store.Load("cm"); err == nil {
@@ -156,7 +156,7 @@ func TestStartClearsStaleSetReadyResult(t *testing.T) {
 	if err := m.store.SaveSetReady("cm", SetReadyInput{CIDR: "10.0.0.0/16", Ready: true, Message: "ok"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, "v (UEFI)", false); err != nil {
+	if _, err := m.Start("cm", []Node{{Hostname: "m", MachineID: "1"}}, "m", nil, false, "v (UEFI)", false, false); err != nil {
 		t.Fatal(err)
 	}
 	in, ok := m.store.LoadSetReady("cm")

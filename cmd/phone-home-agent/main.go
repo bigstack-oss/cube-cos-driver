@@ -120,7 +120,7 @@ const stagedSnapshot = "/run/appointed.snapshot"
 // also drops the picked OS disk to /run/os-disk, which hex_autoinstall reads to
 // target the restore (overriding its auto-detect) so the OS lands on the
 // operator-chosen local disk, never a SAN LUN.
-func stampEnv(host, cluster string, isMaster bool, osDisk string, optOutRepair bool) {
+func stampEnv(host, cluster string, isMaster bool, osDisk string, optOutRepair, simulateAirgap bool) {
 	m := "0"
 	if isMaster {
 		m = "1"
@@ -129,7 +129,11 @@ func stampEnv(host, cluster string, isMaster bool, osDisk string, optOutRepair b
 	if optOutRepair {
 		o = "1"
 	}
-	content := fmt.Sprintf("CUBE_HOSTNAME=%s\nCUBE_CLUSTER_ID=%s\nIS_MASTER=%s\nCUBE_OS_DISK=%s\nOPT_OUT_REPAIR=%s\n", host, cluster, m, osDisk, o)
+	a := "0"
+	if simulateAirgap {
+		a = "1"
+	}
+	content := fmt.Sprintf("CUBE_HOSTNAME=%s\nCUBE_CLUSTER_ID=%s\nIS_MASTER=%s\nCUBE_OS_DISK=%s\nOPT_OUT_REPAIR=%s\nSIMULATE_AIRGAP=%s\n", host, cluster, m, osDisk, o, a)
 	_ = os.WriteFile("/run/phone-home-agent.env", []byte(content), 0o644)
 	if osDisk != "" {
 		_ = os.WriteFile("/run/os-disk", []byte(osDisk+"\n"), 0o644)
@@ -410,6 +414,30 @@ func setRepairOptOut(on bool) {
 	}
 }
 
+// startAirgapSim, when the deploy opted into air-gap simulation, applies and
+// then re-applies (on a loop) cubecos's CUBE_AIRGAP egress block so any install
+// step reaching the internet fails. It re-applies because snapshot apply /
+// set_ready reconfigure the network and can flush the chain; the block is left
+// in place afterwards (cleared with `cubectl exec -p 'hex_sdk airgap_sim_clear'`).
+func startAirgapSim() {
+	if os.Getenv("SIMULATE_AIRGAP") != "1" {
+		return
+	}
+	apply := func() {
+		if out, err := exec.Command("hex_sdk", "airgap_sim_apply").CombinedOutput(); err != nil {
+			log.Printf("local-apply: airgap_sim_apply failed: %v: %s", err, out)
+		}
+	}
+	log.Printf("local-apply: air-gap simulation ON — applying + holding CUBE_AIRGAP egress block")
+	apply()
+	go func() {
+		for {
+			time.Sleep(5 * time.Second)
+			apply()
+		}
+	}()
+}
+
 // reportApplyFailed tells the server the snapshot apply failed terminally, so
 // the deploy UI shows the node errored instead of hanging on "applying".
 func reportApplyFailed(srv, cluster, host, msg string) {
@@ -535,6 +563,10 @@ func runLocalApply(srv string, poll time.Duration) {
 	// HTTP (which can be unreachable before apply configures the network). Set/
 	// clear the marker early so cluster_check_repair_async + auto_repair honor it.
 	setRepairOptOut(os.Getenv("OPT_OUT_REPAIR") == "1")
+
+	// Hidden air-gap simulation (same rootfs-env stamping): apply + hold the
+	// CUBE_AIRGAP egress block for the whole install so any online step fails.
+	startAirgapSim()
 
 	// A prior boot already reached a terminal failure — never re-apply a genuine
 	// failure. Re-report it (in case the server missed it) and stop.
