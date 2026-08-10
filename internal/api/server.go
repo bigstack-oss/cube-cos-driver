@@ -19,6 +19,9 @@ import (
 )
 
 type Config struct {
+	// Version is the build stamp (git describe), surfaced at GET /api/v1/version
+	// so each running instance reports which build it is.
+	Version   string
 	DataDir   string
 	ExportDir string
 	// SecretKey / SecretKeyFile locate the AES key for BMC passwords.
@@ -111,6 +114,13 @@ func newHandler(cfg Config) (http.Handler, *orchestrator.Manager, error) {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
+	})
+	version := cfg.Version
+	if version == "" {
+		version = "dev"
+	}
+	mux.HandleFunc("GET /api/v1/version", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"version": version})
 	})
 	h := &handlers{store: clusterStore, machines: machineStore, mgr: mgr}
 	h.register(mux)

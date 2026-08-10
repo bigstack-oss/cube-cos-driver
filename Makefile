@@ -9,7 +9,10 @@
 
 BIN := bin/cube-cos-driver
 AGENT := bin/phone-home-agent
-GOFLAGS := -trimpath -ldflags '-s -w'
+# Build-time version stamp: git describe (tag+commit), or the short SHA, with a
+# -dirty suffix for uncommitted trees. Overridable: `make build VERSION=…`.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+GOFLAGS := -trimpath -ldflags '-s -w -X main.version=$(VERSION)'
 
 .PHONY: all build test web ensure-dist clean
 
