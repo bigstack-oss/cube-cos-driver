@@ -8,9 +8,12 @@ FROM golang:1.25-alpine AS build
 WORKDIR /src
 COPY . .
 COPY --from=web /src/web/dist internal/webui/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' \
+# Version stamp: passed as a build-arg by CI (git describe); "dev" for a plain
+# docker build. Injected into main.version so /api/v1/version reports the build.
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
       -o /out/cube-cos-driver ./cmd/cube-cos-driver && \
-    CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' \
+    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
       -o /out/phone-home-agent ./cmd/phone-home-agent
 
 FROM alpine:3.22
