@@ -23,7 +23,11 @@ fi
 # a fresh cluster; strip everything before the first { so jq sees clean JSON.
 RT="$(terraform-cube.sh state pull 2>/dev/null | sed -n '/^{/,$p' | jq -r '.resources[]|select(.type=="rancher2_bootstrap").instances[0].attributes.token')"
 [ -n "$RT" ] || fail "could not read rancher token"
-echo yes | sudo /usr/local/bin/rancher login --skip-verify --token "$RT" "https://${CTRL}:10443" >/dev/null 2>&1
+# --skip-verify suppresses the trust prompt, so once >1 project exists (the
+# framework adds its own) login lands on an interactive "Select a Project" prompt.
+# Feed "1" (always a valid choice) so login persists non-interactively; the picked
+# project is irrelevant since `cluster kf` takes the cluster name explicitly.
+yes 1 | sudo /usr/local/bin/rancher login --skip-verify --token "$RT" "https://${CTRL}:10443" >/dev/null 2>&1
 KC="/tmp/${FRAMEWORK}-portal.kc"
 sudo /usr/local/bin/rancher cluster kf "$FRAMEWORK" 2>/dev/null > "$KC"
 SRV="$(kubectl config view --kubeconfig="$KC" -o jsonpath='{.clusters[0].cluster.server}')"

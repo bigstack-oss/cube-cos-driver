@@ -109,7 +109,7 @@ func TestEnterpriseInstallStartSingleNodeNoVIP(t *testing.T) {
 	})
 
 	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+detail.ShortID()+"/enterprise/install",
-		[]byte(`{"module":"appfw","manual":true}`))
+		[]byte(`{"module":"appfw","manual":true,"params":{"OSImage":"rancher.raw"}}`))
 	if resp.StatusCode != 202 {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("single-node (no VIP) start = %d, want 202: %s", resp.StatusCode, b)
@@ -141,6 +141,21 @@ func TestEnterpriseInstallStartUnknownModuleRejected(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dataDir, "installs", id+"-bogus.pw")); err == nil {
 		t.Fatal("sidecar should not exist for a rejected module")
 	}
+}
+
+// A missing OSImage must be rejected before mgr.Start — the plan imports the
+// rancher image + framework_create keyed on it, and an empty value would scp
+// the artifacts directory instead of a file.
+func TestEnterpriseInstallStartRequiresOSImage(t *testing.T) {
+	srv, id, _ := enterpriseFixture(t)
+
+	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+id+"/enterprise/install",
+		[]byte(`{"module":"appfw","manual":true}`))
+	if resp.StatusCode != 400 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("start without OSImage = %d, want 400: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
 }
 
 func TestEnterpriseArtifacts(t *testing.T) {
