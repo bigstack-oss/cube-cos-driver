@@ -386,10 +386,26 @@ func (m *Manager) preflight(ctx context.Context, client clusterssh.Client, in *I
 
 	// framework_create is idempotent (skip if active, wait if still provisioning,
 	// create if absent), so a present framework is not an error — just note it.
+	// When it WILL create fresh, the chosen LB IP must be free: the ingress LB
+	// can't get its external FIP if a port already holds that address (e.g. the
+	// external network's OVN metadata port squats the range start), which then
+	// leaves the framework registry unreachable.
 	if planHasStep(plan, "framework_create") {
 		name := in.Params.Project
-		if name != "" && listHasName(fw, name) {
+		present := name != "" && listHasName(fw, name)
+		if present {
 			onLine(fmt.Sprintf("App-framework %q already present — the create step will verify it's active (or wait), not recreate it.", name))
+		} else if in.Params.LBIP != "" {
+			onLine(fmt.Sprintf("Checking LB IP %s is free…", in.Params.LBIP))
+			var taken []string
+			probe := fmt.Sprintf(lbIPTakenProbe, in.Params.LBIP, in.Params.LBIP)
+			if err := client.Run(ctx, probe, func(l string) { taken = append(taken, strings.TrimSpace(l)) }); err == nil {
+				for _, l := range taken {
+					if l == "taken" {
+						return fmt.Errorf("LB IP %s is already allocated on the cluster (a port or floating IP holds it) — pick a free address in the external range", in.Params.LBIP)
+					}
+				}
+			}
 		}
 	}
 
@@ -859,9 +875,32 @@ type ClusterQuery struct {
 	Manifests        []string // available manifest names, for the version picker
 }
 
-// lbIPProbe extracts the start of the "public" network's allocation pool — a
-// sensible default LB IP (an address in the cluster's external range).
-const lbIPProbe = `source /etc/admin-openrc.sh && sub=$(openstack subnet list --network public -f value -c ID | head -1) && [ -n "$sub" ] && openstack subnet show "$sub" -f json | python3 -c 'import sys,json; p=json.load(sys.stdin).get("allocation_pools") or []; print(p[0]["start"] if p else "")'`
+// lbIPProbe returns the first FREE IP in the "public" network's allocation pool.
+// Not the pool start: neutron/OVN grabs the first pool address for the network's
+// metadata port on a freshly-created external network, so a range-start default
+// collides with it and the framework's ingress LB never gets its external FIP.
+// Skipping every IP already held by a port on the network (metadata, router
+// gateway, existing FIPs) gives a default that actually works.
+const lbIPProbe = `source /etc/admin-openrc.sh && sub=$(openstack subnet list --network public -f value -c ID | head -1) && [ -n "$sub" ] && python3 -c '
+import json,subprocess,ipaddress,re,sys
+sub=sys.argv[1]
+subj=json.loads(subprocess.check_output(["openstack","subnet","show",sub,"-f","json"]))
+pools=subj.get("allocation_pools") or []
+portj=json.loads(subprocess.check_output(["openstack","port","list","--network","public","-f","json"]))
+used=set(re.findall(r"\d+\.\d+\.\d+\.\d+", json.dumps(portj)))
+for p in pools:
+    a=int(ipaddress.ip_address(p["start"])); b=int(ipaddress.ip_address(p["end"]))
+    for i in range(a,b+1):
+        ip=str(ipaddress.ip_address(i))
+        if ip not in used:
+            print(ip); sys.exit()
+print("")
+' "$sub"`
+
+// lbIPTakenProbe (preflight backstop) prints "taken" if the chosen LB IP is
+// already held by a port or floating IP on the cluster — catches a manually
+// entered colliding IP that the first-free suggestion would have avoided.
+const lbIPTakenProbe = `source /etc/admin-openrc.sh && { openstack port list --fixed-ip ip-address=%s -f value -c id 2>/dev/null; openstack floating ip list --floating-ip-address %s -f value -c id 2>/dev/null; } | grep -q . && echo taken || echo free`
 
 // storageProbe reads the cluster's default cinder volume type (falling back to
 // the first type) — the storage_backend the image-import CLI validates against.
