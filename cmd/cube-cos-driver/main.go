@@ -12,6 +12,10 @@ import (
 	"github.com/bigstack-oss/cube-cos-driver/internal/orchestrator"
 )
 
+// version is stamped at build time via -ldflags "-X main.version=…" (see the
+// Makefile). Defaults to "dev" for a plain `go build`.
+var version = "dev"
+
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -40,6 +44,7 @@ func main() {
 	}
 
 	cfg := api.Config{
+		Version:       version,
 		DataDir:       *dataDir,
 		ExportDir:     *exportDir,
 		SecretKey:     os.Getenv("SNAPSHOT_SECRET_KEY"),
@@ -58,7 +63,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("init: %v", err)
 	}
-	log.Printf("cube-cos-driver listening on :%s (data-dir=%s export-dir=%s)", *port, *dataDir, *exportDir)
+	log.Printf("cube-cos-driver %s listening on :%s (data-dir=%s export-dir=%s)", version, *port, *dataDir, *exportDir)
 	if err := http.ListenAndServe(":"+*port, handler); err != nil {
 		log.Fatal(err)
 	}
