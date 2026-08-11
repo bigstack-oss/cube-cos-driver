@@ -609,6 +609,10 @@ func remoteFileSize(ctx context.Context, client clusterssh.Client, path string) 
 var (
 	frameworkReadyTimeout = time.Hour
 	frameworkPollInterval = 30 * time.Second
+	// A freshly-created framework registers in appctl's list within this window
+	// (before the long VM-provisioning wait). If it never registers, the create
+	// failed silently — fail fast instead of polling to frameworkReadyTimeout.
+	frameworkRegisterGrace = 2 * time.Minute
 )
 
 // frameworkStates classifies the STATUS column of `framework_list` (which is the
@@ -760,6 +764,7 @@ func runFramework(ctx context.Context, client clusterssh.Client, ps plannedStep,
 		return false, err
 	}
 	st, found := frameworkStatus(ctx, client, name)
+	justCreated := false
 	switch {
 	case found && st == "active":
 		onLine(fmt.Sprintf("App-framework %q is already active — skipping creation.", name))
@@ -767,6 +772,7 @@ func runFramework(ctx context.Context, client clusterssh.Client, ps plannedStep,
 	case found:
 		onLine(fmt.Sprintf("App-framework %q already exists (state: %s) — not recreating; waiting for it to become active.", name, statusLabel(st)))
 	default:
+		justCreated = true
 		onLine(fmt.Sprintf("Creating app-framework %q (this provisions an RKE2 cluster and can take many minutes)…", name))
 		var out []string
 		tee := func(l string) { out = append(out, l); onLine(l) }
@@ -780,8 +786,12 @@ func runFramework(ctx context.Context, client clusterssh.Client, ps plannedStep,
 
 	// Poll until active / error / timeout.
 	start := time.Now()
+	everFound := found
 	for {
 		st, found := frameworkStatus(ctx, client, name)
+		if found {
+			everFound = true
+		}
 		switch {
 		case found && st == "active":
 			onLine(fmt.Sprintf("App-framework %q is active.", name))
@@ -790,6 +800,13 @@ func runFramework(ctx context.Context, client clusterssh.Client, ps plannedStep,
 			return false, fmt.Errorf("app-framework %q entered state %q — check `hex_cli -c app -c framework_list` and the Rancher cluster", name, st)
 		}
 		elapsed := time.Since(start)
+		// framework_create ran but nothing ever registered: it failed silently
+		// (e.g. hex_cli swallowed appctl's non-zero exit — a leftover project 409).
+		// Surface the appctl error now instead of polling to frameworkReadyTimeout.
+		if justCreated && !everFound && elapsed >= frameworkRegisterGrace {
+			return false, fmt.Errorf("app-framework %q was not created: framework_create returned but the framework never registered within %s — it failed silently. Last appctl error: %s",
+				name, frameworkRegisterGrace, appctlLastError(ctx, client))
+		}
 		progress := frameworkProgress(ctx, client, name)
 		if elapsed >= frameworkReadyTimeout {
 			detail := ""
@@ -810,6 +827,23 @@ func runFramework(ctx context.Context, client clusterssh.Client, ps plannedStep,
 		case <-time.After(frameworkPollInterval):
 		}
 	}
+}
+
+// appctlLastError returns the most recent error line(s) from the appctl log so
+// a silently-swallowed framework_create failure (e.g. a leftover-project 409)
+// is surfaced to the operator instead of an opaque timeout.
+func appctlLastError(ctx context.Context, client clusterssh.Client) string {
+	var lines []string
+	cmd := `grep -aiE 'erro|error|failed|conflict|[0-9]{3} instead' /var/log/appctl/appctl.log 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | tail -n 2`
+	_ = client.Run(ctx, cmd, func(l string) {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	})
+	if len(lines) == 0 {
+		return "(see /var/log/appctl/appctl.log on the cluster)"
+	}
+	return strings.Join(lines, " | ")
 }
 
 // statusLabel renders a framework status token for narration ("unknown" when
