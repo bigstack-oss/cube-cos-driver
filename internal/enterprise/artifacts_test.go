@@ -34,7 +34,7 @@ func TestDiscoverArtifacts_BasicDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := DiscoverArtifacts(tmp)
+	got := DiscoverArtifacts(filepath.Join(tmp, "enterprise"))
 
 	// Verify AppFW names are sorted
 	if len(got.AppFW) != 2 {
@@ -56,7 +56,7 @@ func TestDiscoverArtifacts_BasicDiscovery(t *testing.T) {
 func TestDiscoverArtifacts_NoEnterpriseDir(t *testing.T) {
 	tmp := t.TempDir()
 	// Don't create any enterprise dir
-	got := DiscoverArtifacts(tmp)
+	got := DiscoverArtifacts(filepath.Join(tmp, "enterprise"))
 
 	// Should return empty slices, not nil and not panic
 	if got.AppFW == nil {
@@ -108,7 +108,7 @@ func TestDiscoverArtifacts_SkipDotfilesAndDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := DiscoverArtifacts(tmp)
+	got := DiscoverArtifacts(filepath.Join(tmp, "enterprise"))
 
 	// Only valid files at top level should be returned
 	if len(got.AppFW) != 1 || got.AppFW[0] != "valid-artifact.raw" {
@@ -134,7 +134,7 @@ func TestDiscoverArtifacts_EmptyDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := DiscoverArtifacts(tmp)
+	got := DiscoverArtifacts(filepath.Join(tmp, "enterprise"))
 
 	// Empty dirs should return empty slices
 	if len(got.AppFW) != 0 || len(got.CMP) != 0 {

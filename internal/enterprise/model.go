@@ -40,12 +40,16 @@ type Step struct {
 	State       StepState
 	Output      string
 	Err         string
+	StartedAt   string // RFC3339, stamped when the step goes active
+	FinishedAt  string // RFC3339, stamped when the step reaches done/skipped/error
 }
 
 // Install is the persisted record of one install run for a cluster+module.
 type Install struct {
 	ClusterID      string
 	Module         string
+	Op             string // "install" (default) | "uninstall"
+	Host           string // the dialed target (cluster VIP or ad-hoc VIP); cascade identity
 	StartedAt      string
 	Manual         bool
 	ManualStep     int

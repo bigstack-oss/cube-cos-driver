@@ -20,7 +20,7 @@ import (
 // Manager orchestrates enterprise install runs, one goroutine per (cluster,module).
 type Manager struct {
 	store   *Store
-	dataDir string
+	dir *Dir
 	dial    func(host, user, pw string) (clusterssh.Client, error)
 
 	mu       sync.Mutex
@@ -34,11 +34,12 @@ type Manager struct {
 	cancelReq map[string]bool
 }
 
-// NewManager returns a Manager persisting to store and reading artifacts from dataDir.
-func NewManager(store *Store, dataDir string, dial func(host, user, pw string) (clusterssh.Client, error)) *Manager {
+// NewManager returns a Manager persisting to store and reading artifacts from
+// the enterprise images folder (dir, runtime-configurable).
+func NewManager(store *Store, dir *Dir, dial func(host, user, pw string) (clusterssh.Client, error)) *Manager {
 	m := &Manager{
 		store:    store,
-		dataDir:  dataDir,
+		dir:      dir,
 		dial:     dial,
 		installs:  map[string]*Install{},
 		cancels:   map[string]context.CancelFunc{},
@@ -48,7 +49,7 @@ func NewManager(store *Store, dataDir string, dial func(host, user, pw string) (
 		cancelReq: map[string]bool{},
 	}
 	m.rehydrate()
-	materializePortalScript(dataDir)
+	materializePortalScript(dir.Get())
 	return m
 }
 
@@ -95,11 +96,28 @@ func (m *Manager) Start(clusterID, module, vip, password string, p InstallParams
 	if len(mf) > 0 {
 		manifest = mf[0]
 	}
+	return m.launch(clusterID, module, vip, password, p, manual, airgap, "install",
+		func() []plannedStep { return BuildPlan(module, p, airgap, m.dir.Get(), manifest) })
+}
+
+// StartUninstall tears a module down (CMP: helm-uninstall the portal; App-Framework:
+// framework_delete, which removes the framework and every app on it). It shares the
+// install run machinery — same key, store, progress, and (auto/manual) runner.
+func (m *Manager) StartUninstall(clusterID, module, vip, password string, p InstallParams, manual bool) (*Install, error) {
+	return m.launch(clusterID, module, vip, password, p, manual, false, "uninstall",
+		func() []plannedStep { return BuildUninstallPlan(module, p, m.dir.Get()) })
+}
+
+// launch reserves the (cluster, module) key, dials, builds the plan for the op, and
+// starts the runner. Shared by Start (install) and StartUninstall (uninstall).
+func (m *Manager) launch(clusterID, module, vip, password string, p InstallParams, manual, airgap bool, op string, buildPlan func() []plannedStep) (*Install, error) {
 	k := key(clusterID, module)
 
 	in := &Install{
 		ClusterID:      clusterID,
 		Module:         module,
+		Op:             op,
+		Host:           vip, // the resolved dial target (cluster VIP or ad-hoc VIP)
 		StartedAt:      time.Now().UTC().Format(time.RFC3339),
 		Manual:         manual,
 		SimulateAirgap: airgap,
@@ -113,7 +131,7 @@ func (m *Manager) Start(clusterID, module, vip, password string, p InstallParams
 	m.mu.Lock()
 	if ex, ok := m.installs[k]; ok && ex.State == "running" {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("install already running for %s/%s", clusterID, module)
+		return nil, fmt.Errorf("%s already running for %s/%s", ex.Op, clusterID, module)
 	}
 	m.installs[k] = in
 	m.mu.Unlock()
@@ -124,7 +142,7 @@ func (m *Manager) Start(clusterID, module, vip, password string, p InstallParams
 		return nil, err
 	}
 
-	plan := BuildPlan(module, p, airgap, m.dataDir, manifest)
+	plan := buildPlan()
 
 	steps := make([]*Step, 0, len(plan))
 	for _, ps := range plan {
@@ -280,6 +298,7 @@ func (m *Manager) runAll(ctx context.Context, cancel context.CancelFunc, k strin
 	m.mu.Lock()
 	in.State = "done"
 	m.store.Save(in)
+	m.cascadeAfterUninstall(in)
 	m.mu.Unlock()
 }
 
@@ -290,6 +309,7 @@ func (m *Manager) execStep(ctx context.Context, k string, client clusterssh.Clie
 
 	m.mu.Lock()
 	step.State = StepActive
+	step.StartedAt = time.Now().UTC().Format(time.RFC3339)
 	m.store.Save(in)
 	m.mu.Unlock()
 
@@ -330,6 +350,7 @@ func (m *Manager) execStep(ctx context.Context, k string, client clusterssh.Clie
 			runErr = fmt.Errorf("%s (see output)", marker)
 		}
 	}
+	step.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	if runErr != nil {
 		step.State = StepError
 		step.Err = runErr.Error()
@@ -349,11 +370,35 @@ func (m *Manager) execStep(ctx context.Context, k string, client clusterssh.Clie
 		}
 	}
 	if ps.Kind == "complete" {
-		in.Portal = "https://" + in.Params.LBIP + "/portal"
+		if in.Op != "uninstall" {
+			in.Portal = "https://" + in.Params.LBIP + "/portal"
+		}
 		in.State = "done"
 	}
 	m.store.Save(in)
+	m.cascadeAfterUninstall(in)
 	return nil
+}
+
+// cascadeAfterUninstall drops dependent records once a parent module is removed.
+// Deleting the App-Framework removes every app on it (CubeCMP included), so any
+// CubeCMP record for the same physical cluster is now stale and must go too.
+// Records are keyed by cluster id OR ad-hoc VIP, but both resolve to the same
+// dialed Host (the cluster VIP), so match on Host to catch either keying.
+// Caller holds m.mu.
+func (m *Manager) cascadeAfterUninstall(in *Install) {
+	if in.Op != "uninstall" || in.State != "done" || in.Module != ModuleAppFW {
+		return
+	}
+	for ck, cmp := range m.installs {
+		if cmp.Module != ModuleCMP {
+			continue
+		}
+		if cmp.ClusterID == in.ClusterID || (in.Host != "" && cmp.Host == in.Host) {
+			delete(m.installs, ck)
+			_ = m.store.Delete(cmp.ClusterID, cmp.Module)
+		}
+	}
 }
 
 // cliFailureMarker returns a human message when the step output contains a
@@ -906,9 +951,21 @@ const lbIPTakenProbe = `source /etc/admin-openrc.sh && { openstack port list --f
 // the first type) — the storage_backend the image-import CLI validates against.
 const storageProbe = `source /etc/admin-openrc.sh && { openstack volume type list --default -f value -c Name 2>/dev/null; openstack volume type list -f value -c Name 2>/dev/null; } | grep -v '^$' | head -1`
 
+// existingFrameworkLBProbe resolves a framework's registry hostname; a non-empty
+// result is that framework's existing ingress IP. Reusing it means a CMP install
+// into an already-created framework points its registry check at the real
+// ingress instead of a new first-free address that nothing is listening on.
+func existingFrameworkLBProbe(framework string) string {
+	// Resolve via the node's own IP (its designate/dnsmasq resolves cluster
+	// hostnames; the default resolver does not).
+	return fmt.Sprintf(`ip=$(hostname -I | awk '{print $1}'); dig @$ip +short %s.registry.cubecos.com 2>/dev/null | grep -oE '^([0-9]+\.){3}[0-9]+$' | head -1`, framework)
+}
+
 // Introspect dials the cluster and gathers projects, networks, air-gap support,
-// and a suggested LB IP for the install form. The client is closed on return.
-func (m *Manager) Introspect(host, password string) (ClusterQuery, error) {
+// and a suggested LB IP for the install form. framework (may be "") is the
+// target app-framework: if it already exists, its ingress IP is suggested
+// instead of a first-free address. The client is closed on return.
+func (m *Manager) Introspect(host, password, framework string) (ClusterQuery, error) {
 	var q ClusterQuery
 	c, err := m.dial(host, "root", password)
 	if err != nil {
@@ -929,16 +986,24 @@ func (m *Manager) Introspect(host, password string) (ClusterQuery, error) {
 	// images (absent on e.g. 3.1.0).
 	out, _ := sshList(c, "grep -rlqw airgap_sim_apply /usr/lib/hex_sdk/modules/ && echo yes || echo no")
 	q.AirgapSupported = len(out) > 0 && out[0] == "yes"
-	// Best-effort suggested LB IP; empty when the probe can't determine one.
-	if lb, _ := sshList(c, lbIPProbe); len(lb) > 0 {
-		q.SuggestedLBIP = lb[0]
+	// If the target framework already exists, reuse its ingress IP; otherwise
+	// suggest the first free IP for a fresh framework.
+	if framework != "" {
+		if ip, _ := sshList(c, existingFrameworkLBProbe(framework)); len(ip) > 0 && ip[0] != "" {
+			q.SuggestedLBIP = ip[0]
+		}
+	}
+	if q.SuggestedLBIP == "" {
+		if lb, _ := sshList(c, lbIPProbe); len(lb) > 0 {
+			q.SuggestedLBIP = lb[0]
+		}
 	}
 	// Default storage backend read from the cluster (not hardcoded).
 	if st, _ := sshList(c, storageProbe); len(st) > 0 {
 		q.SuggestedStorage = st[0]
 	}
 	// Detect the CubeCOS version and auto-match a manifest.
-	manifests := LoadManifests(m.dataDir)
+	manifests := LoadManifests(m.dir.Get())
 	q.Manifests = ManifestNames(manifests)
 	if ver, _ := sshList(c, "cat /etc/version"); len(ver) > 0 {
 		version, build, commit := ParseVersion(ver[0])

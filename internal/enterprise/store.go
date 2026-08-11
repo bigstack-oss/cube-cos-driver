@@ -34,6 +34,21 @@ func (s *Store) Save(in *Install) error {
 	return os.Rename(tmp, p)
 }
 
+// Delete removes a persisted install record and its password sidecar (used to
+// cascade-drop a dependent module's record when its parent is uninstalled).
+// Absent files are ignored.
+func (s *Store) Delete(clusterID, module string) error {
+	base := filepath.Join(s.dir, clusterID+"-"+module)
+	err := os.Remove(base + ".json")
+	if os.IsNotExist(err) {
+		err = nil
+	}
+	if pwErr := os.Remove(base + ".pw"); pwErr != nil && !os.IsNotExist(pwErr) && err == nil {
+		err = pwErr
+	}
+	return err
+}
+
 func (s *Store) Load(clusterID, module string) (*Install, bool) {
 	data, err := os.ReadFile(s.path(clusterID, module))
 	if err != nil {

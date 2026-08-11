@@ -12,9 +12,29 @@ const (
 	cephfsUpdate = "/mnt/cephfs/update"
 )
 
-// localPath builds the datadir-relative path to a bundled artifact.
-func localPath(dataDir, sub, file string) string {
-	return filepath.Join(dataDir, "enterprise", sub, file)
+// frameworkLBSweep reaps the Octavia load balancers the framework's Kubernetes
+// cloud-provider created (kube_service_<fw>_*) and their floating IPs. Run after
+// framework_delete: it removes the rke2 VMs directly, so nothing in-cluster is
+// left to delete these — they orphan and hold their LB IP, blocking a re-create.
+// %s = framework name.
+const frameworkLBSweep = `source /etc/admin-openrc.sh 2>/dev/null
+fw=%s
+found=0
+for lb in $(openstack loadbalancer list -f value -c id -c name 2>/dev/null | awk -v p="kube_service_${fw}_" '$2 ~ ("^" p){print $1}'); do
+  found=1
+  vip=$(openstack loadbalancer show "$lb" -f value -c vip_address 2>/dev/null)
+  for fip in $(openstack floating ip list --fixed-ip-address "$vip" -f value -c ID 2>/dev/null); do
+    openstack floating ip delete "$fip" 2>/dev/null && echo "freed floating IP mapped to $vip"
+  done
+  openstack loadbalancer delete "$lb" --cascade 2>/dev/null && echo "deleted orphaned ingress LB $lb"
+done
+[ "$found" = 0 ] && echo "no orphaned kube_service_${fw}_* load balancers to reap"
+`
+
+// localPath builds the path to a bundled artifact under the enterprise images
+// folder (root/<sub>/<file>). root is the configurable enterprise dir.
+func localPath(root, sub, file string) string {
+	return filepath.Join(root, sub, file)
 }
 
 func fileExists(path string) bool {
@@ -50,7 +70,9 @@ func BuildPlan(module string, p InstallParams, airgap bool, dataDir string, m *M
 			Name:  "airgap-apply",
 			Title: "Apply air-gap simulation",
 			Kind:  "airgap",
-			Cmd:   "cubectl node exec -p 'hex_sdk airgap_sim_apply'",
+			// Skip cleanly (don't dump hex_sdk usage) on images without the
+			// airgap_sim_apply function instead of running a no-op.
+			Cmd: "cubectl node exec -p 'if grep -rqw airgap_sim_apply /usr/lib/hex_sdk/modules/; then hex_sdk airgap_sim_apply; else echo \"airgap_sim_apply not on this image — air-gap simulation skipped\"; fi'",
 		})
 	}
 
@@ -145,5 +167,55 @@ func BuildPlan(module string, p InstallParams, airgap bool, dataDir string, m *M
 		)
 	}
 
+	return steps
+}
+
+// BuildUninstallPlan returns the ordered steps to tear a module down.
+//   - cmp:   helm-uninstall the portal + delete its namespace (App-Framework,
+//     pushed chart, and imported images are left in place).
+//   - appfw: framework_delete, which removes the framework and every app on it
+//     (CubeCMP is one such app).
+func BuildUninstallPlan(module string, p InstallParams, dataDir string) []plannedStep {
+	steps := []plannedStep{
+		{Name: "preflight", Title: "Preflight checks", Kind: "detect"},
+	}
+	switch module {
+	case ModuleCMP:
+		fw := p.Framework
+		if fw == "" {
+			fw = p.Project
+		}
+		steps = append(steps, plannedStep{
+			Name:       "uninstall_portal",
+			Title:      "Uninstall CubeCMP portal",
+			Kind:       "scp+run",
+			Cmd:        fmt.Sprintf("bash /tmp/%s %s", portalUninstallScriptName, fw),
+			LocalPath:  localPath(dataDir, "cubecmp", portalUninstallScriptName),
+			RemotePath: "/tmp",
+		})
+	case ModuleAppFW:
+		fw := p.Project
+		if fw == "" {
+			fw = p.Framework
+		}
+		steps = append(steps,
+			plannedStep{
+				Name:  "framework_delete",
+				Title: "Delete app framework (removes all apps on it)",
+				Kind:  "run",
+				Cmd:   fmt.Sprintf("hex_cli -c app -c framework_delete %s", fw),
+			},
+			// framework_delete tears down the rke2 VMs directly, so the in-cluster
+			// k8s cloud-provider never reaps the ingress LBs it created — they
+			// orphan and hold their LB IP. Sweep them (+ their floating IPs) here.
+			plannedStep{
+				Name:  "lb_sweep",
+				Title: "Reap orphaned ingress load balancers",
+				Kind:  "run",
+				Cmd:   fmt.Sprintf(frameworkLBSweep, fw),
+			},
+		)
+	}
+	steps = append(steps, plannedStep{Name: "complete", Title: "Uninstall complete", Kind: "complete"})
 	return steps
 }
