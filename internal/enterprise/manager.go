@@ -419,12 +419,9 @@ func (m *Manager) execStep(ctx context.Context, k string, client clusterssh.Clie
 	return nil
 }
 
-// cascadeAfterUninstall drops dependent records once a parent module is removed.
-// Deleting the App-Framework removes every app on it (CubeCMP included), so any
-// CubeCMP record for the same physical cluster is now stale and must go too.
-// Records are keyed by cluster id OR ad-hoc VIP, but both resolve to the same
-// dialed Host (the cluster VIP), so match on Host to catch either keying.
-// Caller holds m.mu.
+// cascadeAfterUninstall drops the CubeCMP record when its App-Framework is
+// removed (CMP runs on it). Matches on dialed Host so it catches both the
+// configured-cluster and ad-hoc-VIP record keys. Caller holds m.mu.
 func (m *Manager) cascadeAfterUninstall(in *Install) {
 	if in.Op != "uninstall" || in.State != "done" || in.Module != ModuleAppFW {
 		return
