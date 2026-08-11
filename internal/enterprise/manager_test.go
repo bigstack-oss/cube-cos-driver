@@ -258,6 +258,8 @@ func TestManager_Framework_FailsWhenRegistryUnreachable(t *testing.T) {
 		}
 		return nil, nil
 	})
+	defer func(to, iv time.Duration) { registryReadyTimeout, registryPollInterval = to, iv }(registryReadyTimeout, registryPollInterval)
+	registryReadyTimeout, registryPollInterval = 20*time.Millisecond, 2*time.Millisecond
 	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false)
 	waitState(t, m, "cl1", "appfw", "error")
 	in, _ := m.Status("cl1", "appfw")
