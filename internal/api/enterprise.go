@@ -29,6 +29,7 @@ func (h *enterpriseHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/enterprise/dir", h.getDir)
 	mux.HandleFunc("PUT /api/v1/enterprise/dir", h.setDir)
 	mux.HandleFunc("GET /api/v1/enterprise/installs", h.installs)
+	mux.HandleFunc("GET /api/v1/enterprise/step-stats", h.stepStats)
 	mux.HandleFunc("POST /api/v1/clusters/{id}/enterprise/cluster-info", h.clusterInfo)
 	mux.HandleFunc("POST /api/v1/clusters/{id}/enterprise/install", h.start)
 	mux.HandleFunc("POST /api/v1/clusters/{id}/enterprise/uninstall", h.uninstall)
@@ -40,6 +41,12 @@ func (h *enterpriseHandlers) register(mux *http.ServeMux) {
 // installs lists every known install run (across all clusters) for the dashboard.
 func (h *enterpriseHandlers) installs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.mgr.List())
+}
+
+// stepStats returns the median observed duration (seconds) per step name across
+// past runs — the data-driven "typical" the progress view shows next to elapsed.
+func (h *enterpriseHandlers) stepStats(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"stepDurations": h.mgr.StepDurations()})
 }
 
 // artifacts lists pre-staged install artifacts under the enterprise images folder.

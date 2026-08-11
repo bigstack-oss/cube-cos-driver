@@ -181,6 +181,17 @@ export const startUninstall = async (
 export const listInstalls = async (): Promise<Install[]> =>
   (await jsonOrThrow(await fetch('/api/v1/enterprise/installs'))) as Install[]
 
+// StepStats maps a step Name to its median observed duration (seconds) across
+// past runs — the data-driven "typical" baseline for the progress view.
+export type StepStats = Record<string, number>
+
+export const getStepStats = async (): Promise<StepStats> => {
+  const resp = await fetch('/api/v1/enterprise/step-stats')
+  if (!resp.ok) return {}
+  const body = (await resp.json()) as { stepDurations?: StepStats }
+  return body.stepDurations ?? {}
+}
+
 export const getInstall = async (
   id: string,
   module: Module,

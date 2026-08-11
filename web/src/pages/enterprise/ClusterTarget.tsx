@@ -59,6 +59,7 @@ export function ClusterTargetPicker({
       </div>
       {value.mode === 'cluster' ? (
         <select
+          aria-label="Cluster"
           className={inputClass}
           value={value.clusterId}
           disabled={disabled}
@@ -73,6 +74,7 @@ export function ClusterTargetPicker({
         </select>
       ) : (
         <input
+          aria-label="Cluster VIP"
           className={inputClass}
           value={value.vip}
           placeholder="cluster VIP, e.g. 10.32.10.140"
