@@ -19,9 +19,9 @@ import (
 
 // Manager orchestrates enterprise install runs, one goroutine per (cluster,module).
 type Manager struct {
-	store   *Store
-	dir *Dir
-	dial    func(host, user, pw string) (clusterssh.Client, error)
+	store *Store
+	dir   *Dir
+	dial  func(host, user, pw string) (clusterssh.Client, error)
 
 	mu       sync.Mutex
 	installs map[string]*Install
@@ -38,9 +38,9 @@ type Manager struct {
 // the enterprise images folder (dir, runtime-configurable).
 func NewManager(store *Store, dir *Dir, dial func(host, user, pw string) (clusterssh.Client, error)) *Manager {
 	m := &Manager{
-		store:    store,
-		dir:      dir,
-		dial:     dial,
+		store:     store,
+		dir:       dir,
+		dial:      dial,
 		installs:  map[string]*Install{},
 		cancels:   map[string]context.CancelFunc{},
 		clients:   map[string]clusterssh.Client{},
@@ -652,6 +652,11 @@ var (
 	// (before the long VM-provisioning wait). If it never registers, the create
 	// failed silently — fail fast instead of polling to frameworkReadyTimeout.
 	frameworkRegisterGrace = 2 * time.Minute
+	// After a framework becomes active its ingress Octavia LB + Harbor still take
+	// minutes to serve, so the registry probe retries over this window before
+	// failing (a single shot false-fails a just-created framework).
+	registryReadyTimeout = 5 * time.Minute
+	registryPollInterval = 15 * time.Second
 )
 
 // frameworkStates classifies the STATUS column of `framework_list` (which is the
@@ -779,14 +784,29 @@ func verifyFrameworkRegistry(ctx context.Context, client clusterssh.Client, name
 	onLine("Verifying the app-framework registry (Harbor) is reachable…")
 	cmd := fmt.Sprintf("curl -sk -o /dev/null -w '%%{http_code}' --resolve %s:443:%s --max-time 15 https://%s/api/v2.0/systeminfo 2>/dev/null",
 		host, lbip, host)
-	var out []string
-	client.Run(ctx, cmd, func(l string) { out = append(out, strings.TrimSpace(l)) })
-	code := strings.Join(out, "")
-	if code == "200" {
-		onLine("App-framework registry reachable.")
-		return nil
+	// A just-created framework's ingress LB + Harbor take minutes to serve, so
+	// retry over registryReadyTimeout before failing rather than one-shotting it.
+	start := time.Now()
+	var code string
+	for {
+		var out []string
+		client.Run(ctx, cmd, func(l string) { out = append(out, strings.TrimSpace(l)) })
+		code = strings.Join(out, "")
+		if code == "200" {
+			onLine("App-framework registry reachable.")
+			return nil
+		}
+		if time.Since(start) >= registryReadyTimeout {
+			break
+		}
+		onLine(fmt.Sprintf("Registry not serving yet (HTTP %q) — ingress LB + Harbor still starting; retrying…", code))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(registryPollInterval):
+		}
 	}
-	return fmt.Errorf("app-framework registry (Harbor at %s → %s:443) not reachable (HTTP %q); appctl's registry setup did not complete, so app_register will produce broken image refs — check the ingress Octavia LB (openstack loadbalancer list) and the amphora image tag", host, lbip, code)
+	return fmt.Errorf("app-framework registry (Harbor at %s → %s:443) not reachable after %s (last HTTP %q); appctl's registry setup did not complete, so app_register will produce broken image refs — check the ingress Octavia LB (openstack loadbalancer list) and the amphora image tag", host, lbip, registryReadyTimeout, code)
 }
 
 // runFramework creates the app-framework if absent, then polls until its Rancher
