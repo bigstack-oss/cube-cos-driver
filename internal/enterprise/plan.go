@@ -12,11 +12,9 @@ const (
 	cephfsUpdate = "/mnt/cephfs/update"
 )
 
-// frameworkLBSweep reaps the Octavia load balancers the framework's Kubernetes
-// cloud-provider created (kube_service_<fw>_*) and their floating IPs. Run after
-// framework_delete: it removes the rke2 VMs directly, so nothing in-cluster is
-// left to delete these — they orphan and hold their LB IP, blocking a re-create.
-// %s = framework name.
+// frameworkLBSweep reaps the framework's k8s-created ingress LBs
+// (kube_service_<fw>_*) and their floating IPs after framework_delete, which
+// deletes the VMs directly and orphans them. %s = framework name.
 const frameworkLBSweep = `source /etc/admin-openrc.sh 2>/dev/null
 fw=%s
 found=0
