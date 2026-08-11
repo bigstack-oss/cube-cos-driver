@@ -90,6 +90,45 @@ func (m *Manager) List() []*Install {
 
 func key(clusterID, module string) string { return clusterID + "/" + module }
 
+// StepDurations returns the median observed duration (seconds) per step name
+// across all persisted runs, for a data-driven "typical" estimate. Only steps
+// that completed (both timestamps set, positive span) count; an in-flight step
+// is excluded. Steps with no history are absent so the UI falls back to a
+// static default. Aggregated across clusters — more samples, and step cost is
+// dominated by artifact size / provisioning, not the specific cluster.
+func (m *Manager) StepDurations() map[string]float64 {
+	m.mu.Lock()
+	byName := map[string][]float64{}
+	for _, in := range m.installs {
+		for _, s := range in.Steps {
+			if s.StartedAt == "" || s.FinishedAt == "" {
+				continue
+			}
+			t0, e0 := time.Parse(time.RFC3339, s.StartedAt)
+			t1, e1 := time.Parse(time.RFC3339, s.FinishedAt)
+			if e0 != nil || e1 != nil {
+				continue
+			}
+			if d := t1.Sub(t0).Seconds(); d > 0 {
+				byName[s.Name] = append(byName[s.Name], d)
+			}
+		}
+	}
+	m.mu.Unlock()
+
+	out := map[string]float64{}
+	for name, ds := range byName {
+		sort.Float64s(ds)
+		n := len(ds)
+		if n%2 == 1 {
+			out[name] = ds[n/2]
+		} else {
+			out[name] = (ds[n/2-1] + ds[n/2]) / 2
+		}
+	}
+	return out
+}
+
 // Start reserves the key, builds the plan, persists the Install, and (unless manual) runs it.
 func (m *Manager) Start(clusterID, module, vip, password string, p InstallParams, manual, airgap bool, mf ...*Manifest) (*Install, error) {
 	var manifest *Manifest

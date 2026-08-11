@@ -35,6 +35,14 @@ const MODULE_LABEL: Record<string, string> = {
   cmp: 'CubeCMP',
 }
 
+// Label a run with its framework/project — "CubeCMP@appfw", "App-Framework@appfw"
+// — so runs on different frameworks are distinguishable at a glance.
+const runLabel = (inst: Install): string => {
+  const base = MODULE_LABEL[inst.Module] ?? inst.Module
+  const fw = inst.Params?.Framework || inst.Params?.Project
+  return fw ? `${base}@${fw}` : base
+}
+
 const STATE_TAG: Record<
   InstallState,
   { color: 'default' | 'primary-blue' | 'cyan' | 'dark'; variant: 'filled' | 'stroke' }
@@ -107,7 +115,7 @@ export const EnterprisePage = () => {
         {clusterNames[inst.ClusterID] ?? inst.ClusterID}
       </span>
       <span className="secondary-body5 text-functional-text-light">
-        {MODULE_LABEL[inst.Module] ?? inst.Module}
+        {runLabel(inst)}
       </span>
       <div className="flex-1" />
       <span className="secondary-body5 font-mono text-functional-text-light">

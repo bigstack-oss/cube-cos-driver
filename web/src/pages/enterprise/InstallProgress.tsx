@@ -7,11 +7,13 @@ import { useEffect, useRef, useState } from 'react'
 import {
   cancelInstall,
   getInstall,
+  getStepStats,
   Install,
   Module,
   nextStep,
   Step,
   StepState,
+  StepStats,
 } from '../../api/enterprise'
 
 export type InstallProgressProps = {
@@ -36,11 +38,13 @@ const stepStateColor: Record<StepState, 'default' | 'primary-blue' | 'cyan' | 'd
 
 const RUNBOOK_URL = 'https://docs.bigstack.co/docs/cubecos/enterprise-modules'
 
-// Typical per-step durations (seconds), from lab e2e runs — a rough "what's
-// normal" hint so an operator can tell a slow step from a wedged one. Keyed by
-// step Name; unknown steps show elapsed only.
+// Fallback per-step durations (seconds) — used only for a step with no run
+// history yet; otherwise the server-computed median (getStepStats) wins. A rough
+// "what's normal" hint so an operator can tell a slow step from a wedged one.
 const TYPICAL_SECONDS: Record<string, number> = {
-  preflight: 8,
+  // preflight also md5-verifies the staged artifacts (~40 GiB rancher image
+  // dominates), so it runs a couple of minutes, not seconds.
+  preflight: 180,
   'airgap-apply': 15,
   update_appctl: 12,
   import_fs: 40,
@@ -92,8 +96,17 @@ const stepBadgeColor = (s: StepState): string => {
 export function InstallProgress({ clusterId, module, install, onClose }: InstallProgressProps) {
   const [inst, setInst] = useState<Install>(install)
   const [now, setNow] = useState(Date.now())
+  const [stats, setStats] = useState<StepStats>({})
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const preflightFired = useRef(false)
+
+  // Data-driven "typical" per step: median of past runs (server-computed),
+  // falling back to the static estimate for steps with no history yet.
+  useEffect(() => {
+    getStepStats().then(setStats).catch(() => {})
+  }, [])
+  const typicalFor = (name: string): number | undefined =>
+    stats[name] ?? TYPICAL_SECONDS[name]
 
   const refresh = () => getInstall(clusterId, module).then(setInst).catch(() => {})
 
@@ -233,7 +246,7 @@ export function InstallProgress({ clusterId, module, install, onClose }: Install
             </CosTag>
             {(() => {
               const el = stepElapsedSec(detailStep, now)
-              const typ = TYPICAL_SECONDS[detailStep.Name]
+              const typ = typicalFor(detailStep.Name)
               if (el <= 0 && !typ) return null
               // Flag an active step running well past its typical time — the
               // signal that would have caught the wedged framework_delete.
