@@ -5,6 +5,7 @@ import { Install, InstallState, listInstalls, Module } from '../../api/enterpris
 import { ClusterDigest } from '../../model/types'
 import cubecmpLogo from '../../assets/cubecmp-logo.svg'
 import { InstallModal } from './InstallModal'
+import { UninstallModal } from './UninstallModal'
 
 // logo (when set) is shown in place of the title text on the module card.
 type ModuleCard = {
@@ -57,6 +58,7 @@ const progressLabel = (inst: Install): string => {
 
 export const EnterprisePage = () => {
   const [selected, setSelected] = useState<OpenTarget | null>(null)
+  const [uninstalling, setUninstalling] = useState<OpenTarget | null>(null)
   const [installs, setInstalls] = useState<Install[]>([])
   const [clusterNames, setClusterNames] = useState<Record<string, string>>({})
 
@@ -80,7 +82,11 @@ export const EnterprisePage = () => {
   }, [])
 
   const running = installs.filter((i) => i.State === 'running')
-  const recent = installs.filter((i) => i.State !== 'running')
+  // A completed uninstall is a teardown — drop it from the list once done (the
+  // module is gone; nothing to reattach to). Running uninstalls still show.
+  const recent = installs.filter(
+    (i) => i.State !== 'running' && i.Op !== 'uninstall',
+  )
 
   const Row = (inst: Install) => (
     <button
@@ -133,9 +139,15 @@ export const EnterprisePage = () => {
             <p className="secondary-body4 text-functional-text-light">
               {m.description}
             </p>
-            <div className="pt-2">
+            <div className="flex gap-x-2 pt-2">
               <CosButton onClick={() => setSelected({ module: m.module })}>
                 Install
+              </CosButton>
+              <CosButton
+                type="warning"
+                onClick={() => setUninstalling({ module: m.module })}
+              >
+                Uninstall
               </CosButton>
             </div>
           </div>
@@ -164,6 +176,14 @@ export const EnterprisePage = () => {
           module={selected.module}
           initialClusterId={selected.clusterId}
           onClose={() => setSelected(null)}
+        />
+      )}
+
+      {uninstalling && (
+        <UninstallModal
+          module={uninstalling.module}
+          initialClusterId={uninstalling.clusterId}
+          onClose={() => setUninstalling(null)}
         />
       )}
     </div>

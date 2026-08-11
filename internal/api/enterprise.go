@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -18,15 +19,19 @@ import (
 type enterpriseHandlers struct {
 	clusters *storage.Store
 	mgr      *enterprise.Manager
-	dataDir  string
+	dataDir  string           // runtime state (installs, pw sidecars)
+	dir      *enterprise.Dir  // enterprise images folder (appfw+cmp artifacts)
 	box      *secret.Box
 }
 
 func (h *enterpriseHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/enterprise/artifacts", h.artifacts)
+	mux.HandleFunc("GET /api/v1/enterprise/dir", h.getDir)
+	mux.HandleFunc("PUT /api/v1/enterprise/dir", h.setDir)
 	mux.HandleFunc("GET /api/v1/enterprise/installs", h.installs)
 	mux.HandleFunc("POST /api/v1/clusters/{id}/enterprise/cluster-info", h.clusterInfo)
 	mux.HandleFunc("POST /api/v1/clusters/{id}/enterprise/install", h.start)
+	mux.HandleFunc("POST /api/v1/clusters/{id}/enterprise/uninstall", h.uninstall)
 	mux.HandleFunc("GET /api/v1/clusters/{id}/enterprise/install", h.status)
 	mux.HandleFunc("POST /api/v1/clusters/{id}/enterprise/install/step/next", h.next)
 	mux.HandleFunc("POST /api/v1/clusters/{id}/enterprise/install/cancel", h.cancel)
@@ -37,9 +42,35 @@ func (h *enterpriseHandlers) installs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.mgr.List())
 }
 
-// artifacts lists pre-staged install artifacts discovered under dataDir.
+// artifacts lists pre-staged install artifacts under the enterprise images folder.
 func (h *enterpriseHandlers) artifacts(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, enterprise.DiscoverArtifacts(h.dataDir))
+	writeJSON(w, http.StatusOK, enterprise.DiscoverArtifacts(h.dir.Get()))
+}
+
+// getDir returns the enterprise images folder + whether it's mounted and how
+// many appfw/cmp artifacts it holds. The UI settings modal reads this.
+func (h *enterpriseHandlers) getDir(w http.ResponseWriter, r *http.Request) {
+	dir, mounted, appfw, cmp := h.dir.Status()
+	writeJSON(w, http.StatusOK, map[string]any{"imageDir": dir, "mounted": mounted, "appfwCount": appfw, "cmpCount": cmp})
+}
+
+// setDir points the driver at a new enterprise images folder (e.g. a mounted
+// USB / virtual media). Validated (must exist), persisted, and the portal
+// scripts are re-materialized there. Returns the refreshed status.
+func (h *enterpriseHandlers) setDir(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ImageDir string `json:"imageDir"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+	if err := h.dir.Set(strings.TrimSpace(body.ImageDir)); err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	dir, mounted, appfw, cmp := h.dir.Status()
+	writeJSON(w, http.StatusOK, map[string]any{"imageDir": dir, "mounted": mounted, "appfwCount": appfw, "cmpCount": cmp})
 }
 
 // clusterInfo live-queries the selected cluster's OpenStack for its projects
@@ -50,28 +81,21 @@ func (h *enterpriseHandlers) clusterInfo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var body struct {
-		Password string `json:"password"`
+		Password  string `json:"password"`
+		Vip       string `json:"vip"`       // ad-hoc target by VIP instead of a configured cluster
+		Framework string `json:"framework"` // target framework, to suggest its ingress IP if it exists
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // password optional; default when blank
-	detail, err := h.clusters.Detail(id)
-	if errors.Is(err, storage.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "cluster %s not found", id)
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "%v", err)
-		return
-	}
-	host := connectHost(detail)
-	if host == "" {
-		writeError(w, http.StatusBadRequest, "cluster has no reachable VIP or management IP")
+	host, code, msg := h.resolveHost(id, body.Vip)
+	if code != 0 {
+		writeError(w, code, "%s", msg)
 		return
 	}
 	password := body.Password
 	if password == "" {
 		password = defaultPassword(host)
 	}
-	q, err := h.mgr.Introspect(host, password)
+	q, err := h.mgr.Introspect(host, password, body.Framework)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "cluster query failed: %v", err)
 		return
@@ -116,6 +140,27 @@ func connectHost(d model.ClusterDetail) string {
 	return ""
 }
 
+// resolveHost picks the SSH host for an enterprise op: an explicit vip from the
+// request (an ad-hoc target not in the store) wins; otherwise the configured
+// cluster's connect IP. Returns (host, httpCode, message); code == 0 on success.
+func (h *enterpriseHandlers) resolveHost(id, vip string) (string, int, string) {
+	if v := strings.TrimSpace(vip); v != "" {
+		return v, 0, ""
+	}
+	detail, err := h.clusters.Detail(id)
+	if errors.Is(err, storage.ErrNotFound) {
+		return "", http.StatusNotFound, fmt.Sprintf("cluster %s not found", id)
+	}
+	if err != nil {
+		return "", http.StatusInternalServerError, err.Error()
+	}
+	host := connectHost(detail)
+	if host == "" {
+		return "", http.StatusBadRequest, "cluster has no reachable VIP or management IP"
+	}
+	return host, 0, ""
+}
+
 // persistPassword encrypts the install password at rest as a sidecar file
 // (mirrors the inventory store's box.Encrypt idiom for BMC passwords).
 // Best-effort: Start already has the plaintext it needs to dial.
@@ -149,6 +194,7 @@ func (h *enterpriseHandlers) start(w http.ResponseWriter, r *http.Request) {
 		SimulateAirgap bool                     `json:"simulateAirgap"`
 		Password       string                   `json:"password"`
 		Manifest       string                   `json:"manifest"`
+		Vip            string                   `json:"vip"` // ad-hoc target by VIP
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
@@ -167,25 +213,16 @@ func (h *enterpriseHandlers) start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "params.OSImage is required (the rancher cluster image .raw)")
 		return
 	}
-	detail, err := h.clusters.Detail(id)
-	if errors.Is(err, storage.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "cluster %s not found", id)
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "%v", err)
-		return
-	}
-	host := connectHost(detail)
-	if host == "" {
-		writeError(w, http.StatusBadRequest, "cluster has no reachable VIP or management IP")
+	host, code, msg := h.resolveHost(id, body.Vip)
+	if code != 0 {
+		writeError(w, code, "%s", msg)
 		return
 	}
 	password := body.Password
 	if password == "" {
 		password = defaultPassword(host)
 	}
-	manifest := enterprise.FindManifest(enterprise.LoadManifests(h.dataDir), body.Manifest)
+	manifest := enterprise.FindManifest(enterprise.LoadManifests(h.dir.Get()), body.Manifest)
 	in, err := h.mgr.Start(id, body.Module, host, password, body.Params, body.Manual, body.SimulateAirgap, manifest)
 	if err != nil {
 		writeError(w, http.StatusConflict, "%v", err)
@@ -193,6 +230,54 @@ func (h *enterpriseHandlers) start(w http.ResponseWriter, r *http.Request) {
 	}
 	// Only persist the password sidecar once Start actually reserved the run —
 	// a failed Start (e.g. duplicate in-flight) must not leave a stray file.
+	h.persistPassword(id, body.Module, password)
+	writeJSON(w, http.StatusAccepted, in)
+}
+
+// uninstall tears a module down — CMP: helm-uninstall the portal; App-Framework:
+// framework_delete (removes the framework and every app on it). Shares the
+// install run machinery (same status/progress/cancel endpoints).
+func (h *enterpriseHandlers) uninstall(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathValue(w, r, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		Module   string                   `json:"module"`
+		Params   enterprise.InstallParams `json:"params"`
+		Manual   bool                     `json:"manual"`
+		Password string                   `json:"password"`
+		Vip      string                   `json:"vip"` // ad-hoc target by VIP
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+	if body.Module != enterprise.ModuleAppFW && body.Module != enterprise.ModuleCMP {
+		writeError(w, http.StatusBadRequest, "unknown module %q", body.Module)
+		return
+	}
+	// Uninstall needs a framework name, not the image params; default to "appfw".
+	if body.Params.Project == "" {
+		body.Params.Project = "appfw"
+	}
+	if body.Params.Framework == "" {
+		body.Params.Framework = body.Params.Project
+	}
+	host, code, msg := h.resolveHost(id, body.Vip)
+	if code != 0 {
+		writeError(w, code, "%s", msg)
+		return
+	}
+	password := body.Password
+	if password == "" {
+		password = defaultPassword(host)
+	}
+	in, err := h.mgr.StartUninstall(id, body.Module, host, password, body.Params, body.Manual)
+	if err != nil {
+		writeError(w, http.StatusConflict, "%v", err)
+		return
+	}
 	h.persistPassword(id, body.Module, password)
 	writeJSON(w, http.StatusAccepted, in)
 }

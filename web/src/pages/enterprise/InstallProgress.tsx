@@ -10,6 +10,7 @@ import {
   Install,
   Module,
   nextStep,
+  Step,
   StepState,
 } from '../../api/enterprise'
 
@@ -35,6 +36,43 @@ const stepStateColor: Record<StepState, 'default' | 'primary-blue' | 'cyan' | 'd
 
 const RUNBOOK_URL = 'https://docs.bigstack.co/docs/cubecos/enterprise-modules'
 
+// Typical per-step durations (seconds), from lab e2e runs — a rough "what's
+// normal" hint so an operator can tell a slow step from a wedged one. Keyed by
+// step Name; unknown steps show elapsed only.
+const TYPICAL_SECONDS: Record<string, number> = {
+  preflight: 8,
+  'airgap-apply': 15,
+  update_appctl: 12,
+  import_fs: 40,
+  import_lb: 40,
+  import: 90,
+  framework_create: 420,
+  app_register: 40,
+  install_portal: 180,
+  uninstall_portal: 120,
+  framework_delete: 150,
+  complete: 2,
+}
+
+// mm:ss (or h:mm:ss past an hour); '' for non-positive.
+const fmtDur = (sec: number): string => {
+  if (!Number.isFinite(sec) || sec <= 0) return ''
+  const s = Math.floor(sec % 60)
+  const m = Math.floor((sec / 60) % 60)
+  const h = Math.floor(sec / 3600)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
+}
+
+// Seconds a step has run: finished → its span; active → since it started (live).
+const stepElapsedSec = (s: Step, nowMs: number): number => {
+  if (!s.StartedAt) return 0
+  const start = Date.parse(s.StartedAt)
+  if (Number.isNaN(start)) return 0
+  const end = s.FinishedAt ? Date.parse(s.FinishedAt) : nowMs
+  return (end - start) / 1000
+}
+
 // Step number-badge colour: green once passed, dark while active, red on
 // error, grey while pending.
 const stepBadgeColor = (s: StepState): string => {
@@ -53,6 +91,7 @@ const stepBadgeColor = (s: StepState): string => {
 
 export function InstallProgress({ clusterId, module, install, onClose }: InstallProgressProps) {
   const [inst, setInst] = useState<Install>(install)
+  const [now, setNow] = useState(Date.now())
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const preflightFired = useRef(false)
 
@@ -92,6 +131,13 @@ export function InstallProgress({ clusterId, module, install, onClose }: Install
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inst.State])
 
+  // Tick once a second while running so the active step's elapsed time advances.
+  useEffect(() => {
+    if (inst.State !== 'running') return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [inst.State])
+
   const currentStep = inst.Steps[inst.Current] ?? inst.Steps[inst.Steps.length - 1]
   const errorStep = inst.Steps.find((s) => s.State === 'error')
   // Show the furthest-progressed step's result (the one that just ran or is
@@ -101,6 +147,7 @@ export function InstallProgress({ clusterId, module, install, onClose }: Install
     .find((s) => s.State !== 'pending')
   const detailStep = errorStep ?? lastResulted ?? currentStep
   const running = inst.State === 'running'
+  const isUninstall = (inst.Op ?? 'install') === 'uninstall'
   const showNext = running && inst.Manual === true
   const nextDisabled = currentStep?.State === 'active'
 
@@ -146,15 +193,22 @@ export function InstallProgress({ clusterId, module, install, onClose }: Install
               >
                 {i + 1}
               </div>
-              <p
-                className={`primary-body3 ${
-                  s.State === 'pending'
-                    ? 'text-functional-disable-text'
-                    : 'font-semibold text-functional-text'
-                }`}
-              >
-                {s.Title || s.Name}
-              </p>
+              <div className="flex flex-col">
+                <p
+                  className={`primary-body3 ${
+                    s.State === 'pending'
+                      ? 'text-functional-disable-text'
+                      : 'font-semibold text-functional-text'
+                  }`}
+                >
+                  {s.Title || s.Name}
+                </p>
+                {stepElapsedSec(s, now) > 0 && (
+                  <span className="secondary-body7 text-functional-text-light">
+                    {fmtDur(stepElapsedSec(s, now))}
+                  </span>
+                )}
+              </div>
             </div>
             {i < inst.Steps.length - 1 && (
               <ChevronRight className="icon-lg text-functional-text-light" />
@@ -177,6 +231,26 @@ export function InstallProgress({ clusterId, module, install, onClose }: Install
             >
               {detailStep.State}
             </CosTag>
+            {(() => {
+              const el = stepElapsedSec(detailStep, now)
+              const typ = TYPICAL_SECONDS[detailStep.Name]
+              if (el <= 0 && !typ) return null
+              // Flag an active step running well past its typical time — the
+              // signal that would have caught the wedged framework_delete.
+              const overrun =
+                detailStep.State === 'active' && typ && el > typ * 1.5
+              return (
+                <span
+                  className={`secondary-body6 ${
+                    overrun ? 'text-status-negative' : 'text-functional-text-light'
+                  }`}
+                >
+                  {fmtDur(el) && `${fmtDur(el)} elapsed`}
+                  {typ ? ` · typical ~${fmtDur(typ)}` : ''}
+                  {overrun ? ' · running long' : ''}
+                </span>
+              )
+            })()}
           </div>
           {detailStep.Output && (
             <pre className="secondary-body6 max-h-64 overflow-y-auto rounded-md bg-functional-hover-grey p-2 font-mono text-functional-text-light">
@@ -189,9 +263,9 @@ export function InstallProgress({ clusterId, module, install, onClose }: Install
       {inst.State === 'done' && (
         <div className="flex flex-col gap-y-2 rounded-md border border-status-positive/40 bg-status-positive/5 p-3">
           <span className="primary-body3 font-semibold">
-            {`✅ ${MODULE_LABEL[module]} installed`}
+            {`✅ ${MODULE_LABEL[module]} ${isUninstall ? 'uninstalled' : 'installed'}`}
           </span>
-          {module === 'cmp' && (
+          {module === 'cmp' && !isUninstall && (
             <>
               <p className="secondary-body5">
                 Portal:{' '}
@@ -222,7 +296,7 @@ export function InstallProgress({ clusterId, module, install, onClose }: Install
       {inst.State === 'error' && (
         <div className="flex flex-col gap-y-1 rounded-md border border-status-negative/40 bg-status-negative/5 p-3">
           <span className="primary-body3 font-semibold text-status-negative">
-            Install failed
+            {isUninstall ? 'Uninstall failed' : 'Install failed'}
           </span>
           {errorStep && (
             <p className="secondary-body5 text-status-negative">{errorStep.Err}</p>
@@ -233,7 +307,7 @@ export function InstallProgress({ clusterId, module, install, onClose }: Install
       {inst.State === 'cancelled' && (
         <div className="rounded-md border border-functional-border-divider p-3">
           <span className="secondary-body5 text-functional-text-light">
-            Installation cancelled
+            {isUninstall ? 'Uninstall cancelled' : 'Installation cancelled'}
           </span>
         </div>
       )}

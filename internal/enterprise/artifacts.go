@@ -12,11 +12,12 @@ type Artifacts struct {
 	CMP   []string // cube-portal and related files
 }
 
-// DiscoverArtifacts scans dataDir for enterprise/{appfw,cubecmp} and returns basenames.
-func DiscoverArtifacts(dataDir string) Artifacts {
+// DiscoverArtifacts scans the enterprise root for appfw/ and cubecmp/ and
+// returns basenames. root is the configurable enterprise images folder.
+func DiscoverArtifacts(root string) Artifacts {
 	return Artifacts{
-		AppFW: readDir(dataDir, "enterprise/appfw"),
-		CMP:   readDir(dataDir, "enterprise/cubecmp"),
+		AppFW: readDir(root, "appfw"),
+		CMP:   readDir(root, "cubecmp"),
 	}
 }
 

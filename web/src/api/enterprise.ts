@@ -26,11 +26,15 @@ export type Step = {
   State: StepState
   Output: string
   Err: string
+  StartedAt?: string
+  FinishedAt?: string
 }
 
 export type Install = {
   ClusterID: string
   Module: string
+  Op?: 'install' | 'uninstall'
+  Host?: string
   StartedAt: string
   Manual: boolean
   ManualStep: number
@@ -53,6 +57,8 @@ export type StartInstallBody = {
   simulateAirgap: boolean
   password: string
   manifest: string
+  // ad-hoc target by VIP instead of a configured cluster (optional)
+  vip?: string
 }
 
 const jsonOrThrow = async (resp: Response): Promise<unknown> => {
@@ -72,12 +78,99 @@ const jsonOrThrow = async (resp: Response): Promise<unknown> => {
 export const getArtifacts = async (): Promise<Artifacts> =>
   (await jsonOrThrow(await fetch('/api/v1/enterprise/artifacts'))) as Artifacts
 
+// The enterprise images folder (App-Framework + CubeCMP install artifacts).
+// Large; can live on separately-mounted media (USB / virtual media), pointed at
+// from the UI — kept apart from the cluster snapshot store.
+export type EnterpriseDir = {
+  imageDir: string
+  mounted: boolean
+  appfwCount: number
+  cmpCount: number
+}
+
+export const getEnterpriseDir = async (): Promise<EnterpriseDir> =>
+  (await jsonOrThrow(await fetch('/api/v1/enterprise/dir'))) as EnterpriseDir
+
+// Server-side directory listing so the UI can browse the driver host's
+// filesystem to the enterprise images folder (e.g. a mounted USB).
+export type DirListing = { path: string; parent: string; dirs: string[] }
+
+export const listDirs = async (path: string): Promise<DirListing> =>
+  (await jsonOrThrow(
+    await fetch(`/api/v1/fs/dirs?path=${encodeURIComponent(path)}`),
+  )) as DirListing
+
+// Block devices (removable media etc.) the operator can mount to reach images.
+export type BlockDevice = {
+  name: string
+  size: string
+  fstype: string
+  label: string
+  mountpoint: string
+  removable: boolean
+}
+
+export const getDevices = async (): Promise<BlockDevice[]> => {
+  const r = (await jsonOrThrow(await fetch('/api/v1/fs/devices'))) as {
+    devices?: BlockDevice[]
+  }
+  return r.devices ?? []
+}
+
+// mountDevice mounts a /dev device and returns its mountpoint; throws the
+// server's message on failure.
+export const mountDevice = async (device: string): Promise<string> => {
+  const r = (await jsonOrThrow(
+    await fetch('/api/v1/fs/mount', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device }),
+    }),
+  )) as { mountpoint: string }
+  return r.mountpoint
+}
+
+// setEnterpriseDir points the driver at a new enterprise images folder; throws
+// the server's message on a bad path (not a directory / not mounted).
+export const setEnterpriseDir = async (
+  imageDir: string,
+): Promise<EnterpriseDir> =>
+  (await jsonOrThrow(
+    await fetch('/api/v1/enterprise/dir', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageDir }),
+    }),
+  )) as EnterpriseDir
+
 export const startInstall = async (
   id: string,
   body: StartInstallBody,
 ): Promise<Install> =>
   (await jsonOrThrow(
     await fetch(`/api/v1/clusters/${encodeURIComponent(id)}/enterprise/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  )) as Install
+
+export type StartUninstallBody = {
+  module: Module
+  // framework name to tear down (defaults to "appfw" server-side); the backend
+  // needs a name, not the install image params.
+  params: { Project?: string; Framework?: string }
+  manual: boolean
+  // ad-hoc target by VIP instead of a configured cluster (optional)
+  vip?: string
+}
+
+export const startUninstall = async (
+  id: string,
+  body: StartUninstallBody,
+): Promise<Install> =>
+  (await jsonOrThrow(
+    await fetch(`/api/v1/clusters/${encodeURIComponent(id)}/enterprise/uninstall`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -131,6 +224,8 @@ export type ClusterInfo = {
 export const clusterInfo = async (
   id: string,
   password: string,
+  vip?: string,
+  framework?: string,
 ): Promise<ClusterInfo> =>
   (await jsonOrThrow(
     await fetch(
@@ -138,7 +233,7 @@ export const clusterInfo = async (
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ password, vip, framework }),
       },
     ),
   )) as ClusterInfo

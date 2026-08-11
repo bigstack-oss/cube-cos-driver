@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, NavLink } from 'react-router'
 import logoUrl from '../assets/cubedriver-logo.svg'
 import { listPxeImages, stripBootMode } from '../api/deploy'
+import { SettingsModal } from './SettingsModal'
 
 type NavItem = { to: string; label: string; end?: boolean }
 
@@ -60,11 +61,13 @@ export const AppSidebar = () => {
   // Current default PXE image (what a node boots by default). Falls back to the
   // mode label when no PXE root is configured.
   const [defaultImage, setDefaultImage] = useState('')
-  useEffect(() => {
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const loadDefaultImage = () => {
     listPxeImages()
       .then((imgs) => setDefaultImage(imgs.find((i) => i.default)?.name ?? ''))
       .catch(() => {})
-  }, [])
+  }
+  useEffect(loadDefaultImage, [])
 
   return (
     <nav
@@ -97,12 +100,25 @@ export const AppSidebar = () => {
       <div className="h-px w-full bg-functional-border-divider" />
       <NavList items={enterpriseNav} />
       <div className="h-px w-full bg-functional-border-divider" />
+      <div className="flex flex-col py-4">
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          className="secondary-body2 flex items-center px-[22px] py-[7px] font-medium text-functional-text transition hover:text-primary"
+        >
+          Settings
+        </button>
+      </div>
 
       <div className="flex w-full flex-1 flex-col justify-end">
         <div className="flex h-[21px] items-center px-[22px] pb-4 pt-2 text-[9px] text-functional-text-light">
           Copyright©Bigstack
         </div>
       </div>
+
+      {settingsOpen && (
+        <SettingsModal onClose={() => setSettingsOpen(false)} />
+      )}
     </nav>
   )
 }

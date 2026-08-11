@@ -31,6 +31,7 @@ func main() {
 	simulate := flag.Bool("simulate", envOr("SIMULATE", "") != "", "simulate deploys with a fake executor (no real IPMI) — for demos/dev")
 	advertise := flag.String("advertise", envOr("ADVERTISE", ""), "node-reachable driver endpoint ip:port stamped into node BMC SEL (e.g. 10.32.0.202:80); empty = don't stamp")
 	pxeRoot := flag.String("pxe-root", envOr("PXE_ROOT", ""), "PXE server grub.cfg dir (local or NFS mount) enabling the image picker + default flip; empty = disabled")
+	enterpriseDir := flag.String("enterprise-dir", envOr("ENTERPRISE_DIR", ""), "folder holding App-Framework + CubeCMP install images (may be a mounted USB/virtual media); empty = <data-dir>/enterprise; UI-overridable")
 	agentBin := flag.String("agent-binary", envOr("AGENT_BINARY", ""), "packed phone-home-agent served for installer hot-update; empty = <driver-dir>/phone-home-agent if present")
 	flag.Parse()
 
@@ -51,6 +52,7 @@ func main() {
 		SecretKeyFile: *secretKeyFile,
 		Advertise:     *advertise,
 		PXERoot:       *pxeRoot,
+		EnterpriseDir: *enterpriseDir,
 		AgentBinPath:  *agentBin,
 	}
 	if *simulate {

@@ -60,7 +60,7 @@ func newTestMgr(t *testing.T, script func(string) ([]string, error)) (*Manager, 
 	os.WriteFile(filepath.Join(cmp, "cube-portal-2.1.0.pigz"), []byte("x"), 0o644)
 	st, _ := NewStore(filepath.Join(dir, "installs"))
 	mc := &clusterssh.MockClient{Script: script}
-	return NewManager(st, dir, func(h, u, p string) (clusterssh.Client, error) { return mc, nil }), mc
+	return NewManager(st, NewDir(dir, filepath.Join(dir, "enterprise")), func(h, u, p string) (clusterssh.Client, error) { return mc, nil }), mc
 }
 
 func TestManager_AppFW_AutoRunsAllStepsInOrder(t *testing.T) {
@@ -195,7 +195,7 @@ func TestPreflight_MD5Mismatch_Fails(t *testing.T) {
 		[]byte("deadbeefdeadbeefdeadbeefdeadbeef\n"), 0o644)
 	st, _ := NewStore(filepath.Join(dir, "installs"))
 	mc := &clusterssh.MockClient{Script: frameworkActiveAfterCreate("cmp", nil)}
-	m := NewManager(st, dir, func(h, u, p string) (clusterssh.Client, error) { return mc, nil })
+	m := NewManager(st, NewDir(dir, filepath.Join(dir, "enterprise")), func(h, u, p string) (clusterssh.Client, error) { return mc, nil })
 	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false)
 	waitState(t, m, "cl1", "appfw", "error")
 	in, _ := m.Status("cl1", "appfw")
@@ -215,7 +215,7 @@ func TestPreflight_MD5Match_Passes(t *testing.T) {
 	}
 	st, _ := NewStore(filepath.Join(dir, "installs"))
 	mc := &clusterssh.MockClient{Script: frameworkActiveAfterCreate("cmp", nil)}
-	m := NewManager(st, dir, func(h, u, p string) (clusterssh.Client, error) { return mc, nil })
+	m := NewManager(st, NewDir(dir, filepath.Join(dir, "enterprise")), func(h, u, p string) (clusterssh.Client, error) { return mc, nil })
 	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false)
 	waitState(t, m, "cl1", "appfw", "done")
 }
@@ -305,7 +305,7 @@ func TestManager_Start_ConcurrentSameKey_RejectsSecond(t *testing.T) {
 	entered := make(chan struct{}, 2)
 	release := make(chan struct{})
 	var dials int32
-	m := NewManager(st, dir, func(h, u, p string) (clusterssh.Client, error) {
+	m := NewManager(st, NewDir(dir, filepath.Join(dir, "enterprise")), func(h, u, p string) (clusterssh.Client, error) {
 		atomic.AddInt32(&dials, 1)
 		entered <- struct{}{}
 		<-release
@@ -405,7 +405,7 @@ func TestManager_Cancel_ManualRacesNext(t *testing.T) {
 	}
 	st, _ := NewStore(filepath.Join(dir, "installs"))
 	bc := &blockingClient{started: make(chan struct{}, 1), release: make(chan struct{})}
-	m := NewManager(st, dir, func(h, u, p string) (clusterssh.Client, error) { return bc, nil })
+	m := NewManager(st, NewDir(dir, filepath.Join(dir, "enterprise")), func(h, u, p string) (clusterssh.Client, error) { return bc, nil })
 
 	if _, err := m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), true /*manual*/, false); err != nil {
 		t.Fatal(err)

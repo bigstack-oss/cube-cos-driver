@@ -49,9 +49,10 @@ func (m *Manifest) importDefaults() (tenant, visibility, storage, osName string)
 	return
 }
 
-// LoadManifests reads every manifest JSON under <dataDir>/enterprise/manifests/.
-func LoadManifests(dataDir string) []Manifest {
-	dir := filepath.Join(dataDir, "enterprise", "manifests")
+// LoadManifests reads every manifest JSON under <root>/manifests/. root is the
+// configurable enterprise images folder.
+func LoadManifests(root string) []Manifest {
+	dir := filepath.Join(root, "manifests")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil

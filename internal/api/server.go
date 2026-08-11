@@ -24,6 +24,10 @@ type Config struct {
 	Version   string
 	DataDir   string
 	ExportDir string
+	// EnterpriseDir is the folder holding the App-Framework + CubeCMP install
+	// images (large; may live on separately-mounted USB/virtual media). Empty
+	// defaults to <DataDir>/enterprise. Runtime-overridable from the UI.
+	EnterpriseDir string
 	// SecretKey / SecretKeyFile locate the AES key for BMC passwords.
 	// If both are empty, a key file is auto-generated under DataDir.
 	SecretKey     string
@@ -122,6 +126,9 @@ func newHandler(cfg Config) (http.Handler, *orchestrator.Manager, error) {
 	mux.HandleFunc("GET /api/v1/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"version": version})
 	})
+	mux.HandleFunc("GET /api/v1/fs/dirs", fsDirs)
+	mux.HandleFunc("GET /api/v1/fs/devices", fsDevices)
+	mux.HandleFunc("POST /api/v1/fs/mount", fsMount)
 	h := &handlers{store: clusterStore, machines: machineStore, mgr: mgr}
 	h.register(mux)
 	mh := &machineHandlers{store: machineStore, discoverer: discoverer, mgr: mgr}
@@ -150,8 +157,16 @@ func newHandler(cfg Config) (http.Handler, *orchestrator.Manager, error) {
 			return clusterssh.NewSSHClient(host, user, password)
 		}
 	}
-	entMgr := enterprise.NewManager(entStore, cfg.DataDir, entDial)
-	eh := &enterpriseHandlers{clusters: clusterStore, mgr: entMgr, dataDir: cfg.DataDir, box: box}
+	// The enterprise images folder (appfw + cmp install artifacts) is a runtime
+	// setting persisted in DataDir; --enterprise-dir seeds it, defaulting to the
+	// in-tree <DataDir>/enterprise so behavior is unchanged when unset.
+	entSeed := cfg.EnterpriseDir
+	if entSeed == "" {
+		entSeed = filepath.Join(cfg.DataDir, "enterprise")
+	}
+	entDir := enterprise.NewDir(cfg.DataDir, entSeed)
+	entMgr := enterprise.NewManager(entStore, entDir, entDial)
+	eh := &enterpriseHandlers{clusters: clusterStore, mgr: entMgr, dataDir: cfg.DataDir, dir: entDir, box: box}
 	eh.register(mux)
 
 	mux.Handle("/", webui.Handler())

@@ -16,6 +16,13 @@ import {
   StartInstallBody,
 } from '../../api/enterprise'
 import { allIFs, ClusterDetail, ClusterDigest } from '../../model/types'
+import {
+  ClusterTargetPicker,
+  emptyTarget,
+  Target,
+  targetId,
+  targetVip,
+} from './ClusterTarget'
 import { InstallProgress } from './InstallProgress'
 
 export type InstallModalProps = {
@@ -138,7 +145,11 @@ export function InstallModal({
   initialClusterId,
 }: InstallModalProps) {
   const [clusters, setClusters] = useState<ClusterDigest[]>([])
-  const [clusterId, setClusterId] = useState(initialClusterId ?? '')
+  const [target, setTarget] = useState<Target>(emptyTarget(initialClusterId ?? ''))
+  // clusterId is the run id (configured cluster id, or the VIP for an ad-hoc
+  // target); tvip is the explicit VIP sent to the backend ('' = configured).
+  const clusterId = targetId(target)
+  const tvip = targetVip(target)
   const [host, setHost] = useState('')
   const [artifacts, setArtifacts] = useState<Artifacts>({ AppFW: [], CMP: [] })
   const [networkOpts, setNetworkOpts] = useState<string[]>([])
@@ -194,10 +205,16 @@ export function InstallModal({
       setHost('')
       return
     }
+    // For an ad-hoc VIP target the host IS the VIP; otherwise derive it from the
+    // configured cluster.
+    if (tvip) {
+      setHost(tvip)
+      return
+    }
     getCluster(clusterId)
       .then((c) => setHost(c ? connectHost(c) : ''))
       .catch(() => setHost(''))
-  }, [clusterId])
+  }, [clusterId, tvip])
 
   // Re-attach to an existing run for this cluster+module. The run lives
   // server-side, so reopening the modal jumps back to it. Opened from the
@@ -231,7 +248,7 @@ export function InstallModal({
     }
     setInfoErr('')
     setInfoLoading(true)
-    clusterInfo(clusterId, password)
+    clusterInfo(clusterId, password, tvip || undefined, framework)
       .then((info) => {
         setNetworkOpts(info.networks)
         const pub = info.networks.includes('public') ? 'public' : ''
@@ -252,12 +269,14 @@ export function InstallModal({
         setInfoErr(`Could not read the cluster's networks: ${e}`)
       })
       .finally(() => setInfoLoading(false))
-    // password intentionally excluded: fetch on cluster change, using the
-    // password entered at that point (blank → server default).
+    // password intentionally excluded: fetch on cluster/framework change, using
+    // the password entered at that point (blank → server default).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clusterId])
+  }, [clusterId, framework])
 
   const osImages = artifacts.AppFW.filter((n) => n.endsWith('.raw'))
+  // only .pigz packages — the CMP dir also holds .pigz.md5 and the portal scripts.
+  const pigzImages = artifacts.CMP.filter((n) => n.endsWith('.pigz'))
   const fsImage = artifacts.AppFW.find((n) => /manila-.*\.qcow2$/.test(n)) ?? ''
   const lbImage =
     artifacts.AppFW.find((n) => /amphora-.*\.qcow2$/.test(n)) ?? ''
@@ -285,6 +304,7 @@ export function InstallModal({
         simulateAirgap: airgap,
         password,
         manifest,
+        vip: tvip || undefined,
       }
       const install = await startInstall(clusterId, body)
       setStarted(install)
@@ -330,23 +350,11 @@ export function InstallModal({
         />
       ) : (
         <div className="flex flex-col gap-y-4">
-          <label className="flex flex-col gap-y-1">
-            <span className="secondary-body5 font-medium text-functional-text-secondary">
-              Cluster
-            </span>
-            <select
-              className="primary-body4 rounded-md border border-functional-border-divider px-3 py-2 outline-none focus:border-primary"
-              value={clusterId}
-              onChange={(e) => setClusterId(e.target.value)}
-            >
-              <option value="">Select a cluster…</option>
-              {clusters.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <ClusterTargetPicker
+            clusters={clusters}
+            value={target}
+            onChange={setTarget}
+          />
 
           <Field
             label="Password"
@@ -443,7 +451,7 @@ export function InstallModal({
               <Select
                 label=".pigz package"
                 value={pigz}
-                options={artifacts.CMP}
+                options={pigzImages}
                 placeholder="Select the CubeCMP package…"
                 onChange={setPigz}
               />
