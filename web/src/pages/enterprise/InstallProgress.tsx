@@ -41,18 +41,18 @@ const RUNBOOK_URL = 'https://docs.bigstack.co/docs/cubecos/enterprise-modules'
 // Fallback per-step durations (seconds) — used only for a step with no run
 // history yet; otherwise the server-computed median (getStepStats) wins. A rough
 // "what's normal" hint so an operator can tell a slow step from a wedged one.
+// Calibrated from a fresh-cluster air-gapped run where the imports actually ran
+// (not skipped): import (~40 GiB rancher image) dominates at ~18m.
 const TYPICAL_SECONDS: Record<string, number> = {
-  // preflight also md5-verifies the staged artifacts (~40 GiB rancher image
-  // dominates), so it runs a couple of minutes, not seconds.
   preflight: 180,
-  'airgap-apply': 15,
-  update_appctl: 12,
-  import_fs: 40,
-  import_lb: 40,
-  import: 90,
-  framework_create: 420,
-  app_register: 40,
-  install_portal: 180,
+  'airgap-apply': 10,
+  update_appctl: 15,
+  import_fs: 130,
+  import_lb: 80,
+  import: 1080,
+  framework_create: 840,
+  app_register: 190,
+  install_portal: 435,
   uninstall_portal: 120,
   framework_delete: 150,
   complete: 2,
@@ -97,6 +97,7 @@ export function InstallProgress({ clusterId, module, install, onClose }: Install
   const [inst, setInst] = useState<Install>(install)
   const [now, setNow] = useState(Date.now())
   const [stats, setStats] = useState<StepStats>({})
+  const [cancelRequested, setCancelRequested] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const preflightFired = useRef(false)
 
@@ -186,12 +187,26 @@ export function InstallProgress({ clusterId, module, install, onClose }: Install
           <CosButton
             type="warning"
             size="sm"
-            onClick={() => cancelInstall(clusterId, module).then(refresh).catch(() => {})}
+            onClick={() => {
+              setCancelRequested(true)
+              cancelInstall(clusterId, module).then(refresh).catch(() => {})
+            }}
           >
             Cancel
           </CosButton>
         )}
       </div>
+
+      {running && cancelRequested && (
+        <div className="rounded-md border border-functional-border-divider bg-functional-hover-grey p-3">
+          <span className="secondary-body5 text-functional-text-light">
+            Cancel requested — the install will stop after the current step
+            {currentStep?.Title ? ` (“${currentStep.Title}”)` : ''} finishes. A step
+            already in progress (like a large image import) can’t be interrupted
+            mid-run.
+          </span>
+        </div>
+      )}
 
       {/* Horizontal step progression (like the snapshot wizard); the number
           badge turns green once a step passes. */}
