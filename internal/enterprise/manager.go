@@ -394,6 +394,12 @@ func (m *Manager) execStep(ctx context.Context, k string, client clusterssh.Clie
 		step.State = StepError
 		step.Err = runErr.Error()
 		in.State = "error"
+		// A Cancel mid-step arrives as a context cancellation; record the run as
+		// cancelled (matching a between-steps Cancel), not a step failure.
+		if ctx.Err() != nil {
+			step.Err = "cancelled"
+			in.State = "cancelled"
+		}
 		m.store.Save(in)
 		return runErr
 	}
@@ -830,9 +836,29 @@ func runFramework(ctx context.Context, client clusterssh.Client, ps plannedStep,
 	default:
 		justCreated = true
 		onLine(fmt.Sprintf("Creating app-framework %q (this provisions an RKE2 cluster and can take many minutes)…", name))
+		// hex_cli framework_create blocks silently until the framework is active, so
+		// stream node progress in the background until it returns (else the step
+		// looks stalled for many minutes).
+		progressCtx, stopProgress := context.WithCancel(ctx)
+		go func() {
+			t := time.NewTicker(frameworkPollInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-progressCtx.Done():
+					return
+				case <-t.C:
+					if p := frameworkProgress(progressCtx, client, name); p != "" {
+						onLine("Provisioning app-framework — " + p + "…")
+					}
+				}
+			}
+		}()
 		var out []string
 		tee := func(l string) { out = append(out, l); onLine(l) }
-		if runErr := client.Run(ctx, ps.Cmd, tee); runErr != nil {
+		runErr := client.Run(ctx, ps.Cmd, tee)
+		stopProgress()
+		if runErr != nil {
 			return false, runErr
 		}
 		if marker := cliFailureMarker(strings.Join(out, "\n")); marker != "" {
