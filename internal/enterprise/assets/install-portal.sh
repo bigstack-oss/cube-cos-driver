@@ -55,6 +55,15 @@ else
   # Older cubecmp charts ship rancherToken + worker.keycloak.admin empty, which
   # breaks login and the resyncer; set them so the portal works from scratch.
   [ -n "$RT" ] || fail "rancher token unavailable; portal would deploy without RANCHER_TOKEN"
+  # The chart's cnpg Cluster/Pooler CRs go through the cnpg admission webhook,
+  # which app_register brings up just before this step; wait for it or the
+  # install fails with "no endpoints available for service cnpg-webhook-service".
+  echo "waiting for cnpg webhook…"
+  $K -n cnpg-system rollout status deploy/cnpg-controller-manager --timeout=5m 2>/dev/null || true
+  for _ in $(seq 1 60); do
+    [ -n "$($K -n cnpg-system get endpoints cnpg-webhook-service -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)" ] && break
+    sleep 5
+  done
   # post-install hook can fail on a DB-not-ready race; don't let that abort us.
   # Pin the portal URL to the LB IP; unset, the chart reads it from the ingress-lb
   # service at render time and can freeze <pending>. See cube-cos-app-framework#39.
