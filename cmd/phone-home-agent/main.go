@@ -886,6 +886,12 @@ func runPreflight(srv string, poll time.Duration) {
 // unreachable — e.g. the topology reconfig severed the route.
 const preflightReportFile = "/run/preflight-report.json"
 
+// preflightReportDurable is the copy hex_autoinstall stages into the OS rootfs
+// at restore. /run is tmpfs (installer session only), so --report falls back to
+// this durable path in the booted OS — where `hex_cli -c agent -c
+// preflight_report` reads it as the admin.
+const preflightReportDurable = "/var/support/preflight-report.json"
+
 func savePreflightReport(r agent.PreflightReportRequest) {
 	type saved struct {
 		agent.PreflightReportRequest
@@ -906,7 +912,10 @@ func savePreflightReport(r agent.PreflightReportRequest) {
 func printPreflightReport() {
 	data, err := os.ReadFile(preflightReportFile)
 	if err != nil {
-		fmt.Printf("no preflight report at %s — preflight has not run (or this node was never appointed).\n", preflightReportFile)
+		data, err = os.ReadFile(preflightReportDurable)
+	}
+	if err != nil {
+		fmt.Printf("no preflight report at %s or %s — preflight has not run (or this node was never appointed).\n", preflightReportFile, preflightReportDurable)
 		fmt.Println("see /run/autoinstall.log for the installer progress log.")
 		return
 	}
