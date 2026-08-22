@@ -19,8 +19,8 @@ import (
 type enterpriseHandlers struct {
 	clusters *storage.Store
 	mgr      *enterprise.Manager
-	dataDir  string           // runtime state (installs, pw sidecars)
-	dir      *enterprise.Dir  // enterprise images folder (appfw+cmp artifacts)
+	dataDir  string          // runtime state (installs, pw sidecars)
+	dir      *enterprise.Dir // enterprise images folder (appfw+cmp+advisor artifacts)
 	box      *secret.Box
 }
 

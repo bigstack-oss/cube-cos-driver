@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Historical record.** This plan predates the `advisor` module added 2026-08-23 (see `docs/superpowers/plans/2026-08-23-advisor-enterprise-module.md`). The two-module (`appfw`/`cmp`) scope below is left as originally written; it is no longer the full module set.
+
 **Goal:** Add an "Enterprise Modules" installer to cube-cos-driver that installs App-Framework 2 and Cube-CMP 2.1.0 onto an already-running cluster over SSH-to-VIP, driven by pre-staged offline artifacts, with auto/manual gating and an air-gap enforcement toggle.
 
 **Architecture:** A new `internal/enterprise` package (Manager + Install/Step model + JSON store) drives an ordered step sequence against one control node via a new mockable `internal/clusterssh` client (SSH `Run` + scp `Push`). New `enterpriseHandlers` expose it over REST; a new React page/modal/progress mirror the existing deploy UI. The driver's first live-cluster client.

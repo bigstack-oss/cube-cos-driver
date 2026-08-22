@@ -80,9 +80,9 @@ const jsonOrThrow = async (resp: Response): Promise<unknown> => {
 export const getArtifacts = async (): Promise<Artifacts> =>
   (await jsonOrThrow(await fetch('/api/v1/enterprise/artifacts'))) as Artifacts
 
-// The enterprise images folder (App-Framework + CubeCMP install artifacts).
-// Large; can live on separately-mounted media (USB / virtual media), pointed at
-// from the UI — kept apart from the cluster snapshot store.
+// The enterprise images folder (App-Framework + CubeCMP + Advisor install
+// artifacts). Large; can live on separately-mounted media (USB / virtual
+// media), pointed at from the UI — kept apart from the cluster snapshot store.
 export type EnterpriseDir = {
   imageDir: string
   mounted: boolean

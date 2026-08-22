@@ -9,11 +9,12 @@ import (
 )
 
 // Dir holds the runtime-configurable enterprise artifacts folder — the place
-// that holds the App-Framework + CubeCMP install images (the large rancher
-// .raw, the qcow2 service images, the cube-portal .pigz). These are big and
-// can live on separately-mounted media (USB / virtual media) that is NOT
-// shipped with the pxeserver deployment, kept apart from the cluster snapshot
-// store (DataDir). The chosen path is persisted in <dataDir>/settings.json;
+// that holds the App-Framework + CubeCMP + Advisor install images (the large
+// rancher .raw, the qcow2 service images, the cube-portal/cube-advisor
+// .pigz). These are big and can live on separately-mounted media (USB /
+// virtual media) that is NOT shipped with the pxeserver deployment, kept
+// apart from the cluster snapshot store (DataDir). The chosen path is
+// persisted in <dataDir>/settings.json;
 // --enterprise-dir (default <dataDir>/enterprise) only seeds the initial value.
 //
 // The folder holds appfw/, cubecmp/, advisor/, and manifests/ subdirs; the

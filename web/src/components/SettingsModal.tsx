@@ -1,9 +1,10 @@
 // Driver settings: point the driver at the enterprise images folder — the place
-// that holds the App-Framework + CubeCMP install artifacts (the large rancher
-// .raw, the qcow2 service images, the cube-portal .pigz). These are big and can
-// live on separately-mounted media (USB / virtual media) that isn't shipped
-// with the pxeserver deployment, so the folder is set here at runtime and kept
-// apart from the cluster snapshot store.
+// that holds the App-Framework + CubeCMP + Advisor install artifacts (the
+// large rancher .raw, the qcow2 service images, the cube-portal/cube-advisor
+// .pigz). These are big and can live on separately-mounted media (USB /
+// virtual media) that isn't shipped with the pxeserver deployment, so the
+// folder is set here at runtime and kept apart from the cluster snapshot
+// store.
 import { CosInlineNotification, CosModal } from '@cube-frontend/ui-library'
 import { useEffect, useState } from 'react'
 import {
@@ -125,10 +126,11 @@ export function SettingsModal({ onClose, onChanged }: SettingsModalProps) {
             Enterprise images folder
           </span>
           <span className="secondary-body5 text-functional-text-light">
-            Directory holding the App-Framework + CubeCMP install images (rancher
-            .raw, service qcow2s, cube-portal .pigz). May be a mounted USB or
-            virtual media — it does not have to ship with the pxeserver, and is
-            kept separate from the cluster snapshot store.
+            Directory holding the App-Framework + CubeCMP + Advisor install
+            images (rancher .raw, service qcow2s, cube-portal/cube-advisor
+            .pigz). May be a mounted USB or virtual media — it does not have
+            to ship with the pxeserver, and is kept separate from the cluster
+            snapshot store.
           </span>
           <div className="flex gap-x-2">
             <input

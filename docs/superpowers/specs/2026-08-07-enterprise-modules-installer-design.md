@@ -5,6 +5,8 @@
 **Repo:** cube-cos-driver
 **Source of truth for install procedure:** Notion "CMP 2.1.0 and 2.0.0 Installation" (App-FW 2.0 + CMP path)
 
+> **Historical record.** This design predates the `advisor` module added 2026-08-23 (see `docs/superpowers/plans/2026-08-23-advisor-enterprise-module.md`). The two-module (`appfw`/`cmp`) scope below is left as originally written; it is no longer the full module set.
+
 ## Goal
 
 Extend cube-cos-driver to own the CubeCOS **Day-1** enterprise-module installs — **App-Framework 2** and **Cube-CMP 2.1.0** — against an already-configured, running cluster reached via its VIP. Today the driver is a provisioning/imaging tool that never talks to a live cluster; this feature introduces the driver's first live-cluster client.
