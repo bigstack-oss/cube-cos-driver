@@ -13,9 +13,11 @@ describe('EnterprisePage', () => {
       </MemoryRouter>,
     )
     expect(screen.getByText('App-Framework')).toBeTruthy()
-    // The CubeCMP card shows the logo image (alt text) in place of a heading.
+    // The CubeCMP and Advisor cards show a logo image (alt text) in place of
+    // a heading.
     expect(screen.getByAltText('CubeCMP')).toBeTruthy()
-    expect(screen.getAllByRole('button', { name: 'Install' })).toHaveLength(2)
+    expect(screen.getByAltText('Cube AI Advisor')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Install' })).toHaveLength(3)
   })
 
   it('opens the real install modal for the clicked module, then closes it', async () => {

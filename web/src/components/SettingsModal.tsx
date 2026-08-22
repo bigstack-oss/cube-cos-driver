@@ -27,6 +27,7 @@ export function SettingsModal({ onClose, onChanged }: SettingsModalProps) {
   const [mounted, setMounted] = useState(false)
   const [appfwCount, setAppfwCount] = useState(0)
   const [cmpCount, setCmpCount] = useState(0)
+  const [advisorCount, setAdvisorCount] = useState(0)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(false)
@@ -83,6 +84,7 @@ export function SettingsModal({ onClose, onChanged }: SettingsModalProps) {
         setMounted(r.mounted)
         setAppfwCount(r.appfwCount)
         setCmpCount(r.cmpCount)
+        setAdvisorCount(r.advisorCount)
       })
       .catch(() => {})
   }, [])
@@ -97,6 +99,7 @@ export function SettingsModal({ onClose, onChanged }: SettingsModalProps) {
       setMounted(r.mounted)
       setAppfwCount(r.appfwCount)
       setCmpCount(r.cmpCount)
+      setAdvisorCount(r.advisorCount)
       setSaved(true)
       onChanged?.()
     } catch (e) {
@@ -268,7 +271,8 @@ export function SettingsModal({ onClose, onChanged }: SettingsModalProps) {
             'not set'
           ) : mounted ? (
             <span className="text-status-positive">
-              mounted · App-Framework: {appfwCount} · CubeCMP: {cmpCount}
+              mounted · App-Framework: {appfwCount} · CubeCMP: {cmpCount} · Advisor:{' '}
+              {advisorCount}
             </span>
           ) : (
             <span className="text-status-negative">not mounted / not found</span>

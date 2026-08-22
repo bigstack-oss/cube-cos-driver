@@ -7,6 +7,10 @@ import cubecmpLogo from '../../assets/cubecmp-logo.svg'
 import { InstallModal } from './InstallModal'
 import { UninstallModal } from './UninstallModal'
 
+// The driver's own mark (also used as the favicon/sidebar icon) — a neutral
+// stand-in logo for Advisor, which has no product logo of its own.
+const cubedriverMark = '/cubedriver-mark.svg'
+
 // logo (when set) is shown in place of the title text on the module card.
 type ModuleCard = {
   module: Module
@@ -28,11 +32,19 @@ const MODULES: ModuleCard[] = [
     description:
       "Install CubeCMP (installs App-Framework first if the cluster doesn't have it).",
   },
+  {
+    module: 'advisor',
+    title: 'Cube AI Advisor',
+    logo: cubedriverMark,
+    description:
+      "Install Cube AI Advisor (installs App-Framework first if the cluster doesn't have it).",
+  },
 ]
 
 const MODULE_LABEL: Record<string, string> = {
   appfw: 'App-Framework',
   cmp: 'CubeCMP',
+  advisor: 'Cube AI Advisor',
 }
 
 // Label a run with its framework/project — "CubeCMP@appfw", "App-Framework@appfw"

@@ -17,6 +17,8 @@ export type InstallParams = {
   AppFile: string
   FsImage: string
   LBImage: string
+  AdvisorFile: string
+  AdvisorLBIP: string
   StorageBackend: string
 }
 
@@ -46,9 +48,9 @@ export type Install = {
   Portal: string
 }
 
-export type Artifacts = { AppFW: string[]; CMP: string[] }
+export type Artifacts = { AppFW: string[]; CMP: string[]; Advisor: string[] }
 
-export type Module = 'appfw' | 'cmp'
+export type Module = 'appfw' | 'cmp' | 'advisor'
 
 export type StartInstallBody = {
   module: Module
@@ -86,6 +88,7 @@ export type EnterpriseDir = {
   mounted: boolean
   appfwCount: number
   cmpCount: number
+  advisorCount: number
 }
 
 export const getEnterpriseDir = async (): Promise<EnterpriseDir> =>

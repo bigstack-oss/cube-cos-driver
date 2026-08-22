@@ -19,6 +19,7 @@ const artifacts = {
     'amphora-x64-haproxy-yoga.qcow2',
   ],
   CMP: ['cube-portal-2.1.0.pigz'],
+  Advisor: ['cube-advisor-1.0.0.pigz'],
 }
 
 // Shared fetch stub for clusters/cluster-detail/artifacts/install-POST.
@@ -196,5 +197,77 @@ describe('InstallModal', () => {
     expect(
       screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled'),
     ).toBe(false)
+  })
+
+  it('shows advisor-only fields and disables submit until package + LB IP are set', async () => {
+    const user = userEvent.setup()
+    stubFetch()
+
+    render(
+      <MemoryRouter>
+        <InstallModal module="advisor" onClose={vi.fn()} />
+      </MemoryRouter>,
+    )
+
+    // Advisor-only fields present (no CMP-only .pigz-package ambiguity since
+    // only one module's fields render at a time).
+    expect(screen.getByLabelText('.pigz package')).toBeTruthy()
+    expect(screen.getByLabelText('Advisor LB IP')).toBeTruthy()
+
+    await waitFor(() => expect(screen.getByText('sky-lab')).toBeTruthy())
+    await user.selectOptions(screen.getByLabelText('Cluster'), 'aabbccddee01')
+    await user.clear(screen.getByLabelText('Framework'))
+    await user.type(screen.getByLabelText('Framework'), 'demo-project')
+    await user.type(screen.getByLabelText('LB IP'), '10.32.36.120')
+    await waitFor(() =>
+      expect(
+        screen.getByText('rancher-cluster-image-rke2-v1.32.4.raw'),
+      ).toBeTruthy(),
+    )
+    await user.selectOptions(
+      screen.getByLabelText('OS image'),
+      'rancher-cluster-image-rke2-v1.32.4.raw',
+    )
+
+    // Cluster + Project + LB IP + OS image filled, but no advisor package or
+    // Advisor LB IP set yet.
+    expect(
+      screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled'),
+    ).toBe(true)
+
+    await user.selectOptions(
+      screen.getByLabelText('.pigz package'),
+      'cube-advisor-1.0.0.pigz',
+    )
+
+    // Package selected but no Advisor LB IP yet — still disabled.
+    expect(
+      screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled'),
+    ).toBe(true)
+
+    await user.type(screen.getByLabelText('Advisor LB IP'), '10.32.36.121')
+
+    expect(
+      screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled'),
+    ).toBe(false)
+
+    await user.click(screen.getByRole('button', { name: 'Install' }))
+
+    await waitFor(() => {
+      const posted = fetchMock.mock.calls.find(
+        (c) =>
+          typeof c[0] === 'string' &&
+          (c[0] as string).endsWith('/enterprise/install') &&
+          (c[1] as RequestInit | undefined)?.method === 'POST',
+      )
+      expect(posted).toBeTruthy()
+      const body = JSON.parse((posted![1] as RequestInit).body as string)
+      expect(body.module).toBe('advisor')
+      expect(body.params.AdvisorFile).toBe('cube-advisor-1.0.0.pigz')
+      expect(body.params.AdvisorLBIP).toBe('10.32.36.121')
+      expect(body.params.Framework).toBe('demo-project')
+      // CMP-only field stays empty for an advisor install.
+      expect(body.params.AppFile).toBe('')
+    })
   })
 })

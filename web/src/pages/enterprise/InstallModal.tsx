@@ -36,6 +36,7 @@ export type InstallModalProps = {
 const TITLES: Record<Module, string> = {
   appfw: 'Install App-Framework',
   cmp: 'Install CubeCMP',
+  advisor: 'Install Cube AI Advisor',
 }
 
 const Field = (props: {
@@ -151,7 +152,11 @@ export function InstallModal({
   const clusterId = targetId(target)
   const tvip = targetVip(target)
   const [host, setHost] = useState('')
-  const [artifacts, setArtifacts] = useState<Artifacts>({ AppFW: [], CMP: [] })
+  const [artifacts, setArtifacts] = useState<Artifacts>({
+    AppFW: [],
+    CMP: [],
+    Advisor: [],
+  })
   const [networkOpts, setNetworkOpts] = useState<string[]>([])
   const [infoErr, setInfoErr] = useState('')
   const [infoLoading, setInfoLoading] = useState(false)
@@ -172,6 +177,8 @@ export function InstallModal({
   const [lbIp, setLbIp] = useState('')
   const [osImage, setOsImage] = useState('')
   const [pigz, setPigz] = useState('')
+  const [advisorPigz, setAdvisorPigz] = useState('')
+  const [advisorLbIp, setAdvisorLbIp] = useState('')
   const [manual, setManual] = useState(false)
   const [airgap, setAirgap] = useState(false)
 
@@ -185,7 +192,7 @@ export function InstallModal({
       .catch(() => setClusters([]))
     getArtifacts()
       .then(setArtifacts)
-      .catch(() => setArtifacts({ AppFW: [], CMP: [] }))
+      .catch(() => setArtifacts({ AppFW: [], CMP: [], Advisor: [] }))
   }, [])
 
   // Stop Escape from dismissing the modal (CosModal closes on Escape) — an
@@ -277,6 +284,8 @@ export function InstallModal({
   const osImages = artifacts.AppFW.filter((n) => n.endsWith('.raw'))
   // only .pigz packages — the CMP dir also holds .pigz.md5 and the portal scripts.
   const pigzImages = artifacts.CMP.filter((n) => n.endsWith('.pigz'))
+  // same filter, but for the advisor dir's .pigz package + install/uninstall scripts.
+  const advisorPigzImages = artifacts.Advisor.filter((n) => n.endsWith('.pigz'))
   const fsImage = artifacts.AppFW.find((n) => /manila-.*\.qcow2$/.test(n)) ?? ''
   const lbImage =
     artifacts.AppFW.find((n) => /amphora-.*\.qcow2$/.test(n)) ?? ''
@@ -291,10 +300,12 @@ export function InstallModal({
         MgmtNet: mgmtNet,
         LBIP: lbIp,
         OSImage: osImage,
-        Framework: module === 'cmp' ? framework : '',
+        Framework: module === 'cmp' || module === 'advisor' ? framework : '',
         AppFile: module === 'cmp' ? pigz : '',
         FsImage: fsImage,
         LBImage: lbImage,
+        AdvisorFile: module === 'advisor' ? advisorPigz : '',
+        AdvisorLBIP: module === 'advisor' ? advisorLbIp : '',
         StorageBackend: suggestedStorage,
       }
       const body: StartInstallBody = {
@@ -331,6 +342,7 @@ export function InstallModal({
           !lbIp ||
           !osImage ||
           (module === 'cmp' && !pigz) ||
+          (module === 'advisor' && (!advisorPigz || !advisorLbIp)) ||
           starting,
         loading: starting || infoLoading,
       }}
@@ -454,6 +466,24 @@ export function InstallModal({
                 options={pigzImages}
                 placeholder="Select the CubeCMP package…"
                 onChange={setPigz}
+              />
+            </>
+          )}
+
+          {module === 'advisor' && (
+            <>
+              <Select
+                label=".pigz package"
+                value={advisorPigz}
+                options={advisorPigzImages}
+                placeholder="Select the Advisor package…"
+                onChange={setAdvisorPigz}
+              />
+              <Field
+                label="Advisor LB IP"
+                value={advisorLbIp}
+                placeholder="e.g. 10.32.1.121"
+                onChange={setAdvisorLbIp}
               />
             </>
           )}

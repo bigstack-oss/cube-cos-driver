@@ -32,6 +32,8 @@ const install: Install = {
     AppFile: 'app.tgz',
     FsImage: 'fs.img',
     LBImage: 'lb.img',
+    AdvisorFile: '',
+    AdvisorLBIP: '',
     StorageBackend: 'CubeStorage',
   },
   Steps: [{ Name: 'step1', Title: 'Step 1', State: 'pending', Output: '', Err: '' }],
@@ -101,7 +103,7 @@ describe('enterprise API client', () => {
   })
 
   it('getArtifacts hits the artifacts endpoint and returns parsed body', async () => {
-    const artifacts: Artifacts = { AppFW: ['a1'], CMP: ['c1'] }
+    const artifacts: Artifacts = { AppFW: ['a1'], CMP: ['c1'], Advisor: ['ad1'] }
     fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => artifacts })
 
     const result = await getArtifacts()

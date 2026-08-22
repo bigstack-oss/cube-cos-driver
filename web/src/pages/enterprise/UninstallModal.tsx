@@ -19,14 +19,28 @@ import { InstallProgress } from './InstallProgress'
 const TITLES: Record<Module, string> = {
   appfw: 'Uninstall App-Framework',
   cmp: 'Uninstall CubeCMP',
+  advisor: 'Uninstall Cube AI Advisor',
 }
 
-// Module-specific warning. App-Framework hosts multiple apps (CMP is one), so its
-// warning is intentionally generic about "every app on it".
+// Module-specific warning. App-Framework hosts multiple apps (CMP and Advisor
+// are both apps on it), so its warning is intentionally generic about "every
+// app on it".
 const WARNINGS: Record<Module, string> = {
   appfw:
-    'This deletes the App-Framework and removes every app running on it (including CubeCMP, if installed). Imported service and Rancher images are kept.',
+    'This deletes the App-Framework and removes every app running on it (including CubeCMP and Advisor, if installed). Imported service and Rancher images are kept.',
   cmp: 'This removes the CubeCMP portal. The App-Framework, its registry, and imported images are kept.',
+  advisor:
+    'Removes the Advisor deployment and its database from the framework; the App-Framework itself is kept.',
+}
+
+// Per-module final-confirmation copy (shown after the first "Uninstall" click).
+const CONFIRM_TEXT: Record<Module, (target: string) => string> = {
+  appfw: (target) =>
+    `This permanently deletes the App-Framework on ${target} and every app running on it. This cannot be undone. Click "Yes, uninstall" to proceed.`,
+  cmp: (target) =>
+    `This permanently removes CubeCMP from ${target}. This cannot be undone. Click "Yes, uninstall" to proceed.`,
+  advisor: (target) =>
+    `This permanently removes Cube AI Advisor from ${target}. This cannot be undone. Click "Yes, uninstall" to proceed.`,
 }
 
 export type UninstallModalProps = {
@@ -131,9 +145,7 @@ export function UninstallModal({
               title="Confirm uninstall"
               isClosable={false}
             >
-              {module === 'appfw'
-                ? `This permanently deletes the App-Framework on ${targetId(target)} and every app running on it. This cannot be undone. Click "Yes, uninstall" to proceed.`
-                : `This permanently removes CubeCMP from ${targetId(target)}. This cannot be undone. Click "Yes, uninstall" to proceed.`}
+              {CONFIRM_TEXT[module](targetId(target))}
             </CosInlineNotification>
           )}
 

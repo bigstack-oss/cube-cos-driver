@@ -28,6 +28,8 @@ const baseInstall = (overrides: Partial<Install>): Install => ({
     AppFile: 'cube-portal.pigz',
     FsImage: 'manila.qcow2',
     LBImage: 'amphora.qcow2',
+    AdvisorFile: '',
+    AdvisorLBIP: '',
     StorageBackend: 'CubeStorage',
   },
   Steps: [
@@ -54,6 +56,22 @@ describe('InstallProgress', () => {
     expect(screen.getByText(/✅ CubeCMP installed/)).toBeTruthy()
     const link = screen.getByRole('link', { name: 'http://10.32.36.120' })
     expect(link.getAttribute('href')).toBe('http://10.32.36.120')
+    expect(link.getAttribute('target')).toBe('_blank')
+  })
+
+  it('renders the completion card with a clickable advisor link', () => {
+    const install = baseInstall({
+      State: 'done',
+      Module: 'advisor',
+      Portal: 'http://10.32.36.121/',
+    })
+    render(
+      <InstallProgress clusterId="c1" module="advisor" install={install} onClose={vi.fn()} />,
+    )
+
+    expect(screen.getByText(/✅ Cube AI Advisor installed/)).toBeTruthy()
+    const link = screen.getByRole('link', { name: 'http://10.32.36.121/' })
+    expect(link.getAttribute('href')).toBe('http://10.32.36.121/')
     expect(link.getAttribute('target')).toBe('_blank')
   })
 

@@ -26,6 +26,7 @@ export type InstallProgressProps = {
 const MODULE_LABEL: Record<Module, string> = {
   appfw: 'App-Framework',
   cmp: 'CubeCMP',
+  advisor: 'Cube AI Advisor',
 }
 
 const stepStateColor: Record<StepState, 'default' | 'primary-blue' | 'cyan' | 'dark'> = {
@@ -54,6 +55,9 @@ const TYPICAL_SECONDS: Record<string, number> = {
   app_register: 190,
   install_portal: 435,
   uninstall_portal: 120,
+  advisor_register: 180,
+  install_advisor: 600,
+  uninstall_advisor: 300,
   framework_delete: 150,
   complete: 2,
 }
@@ -317,6 +321,20 @@ export function InstallProgress({ clusterId, module, install, onClose }: Install
                 for details.
               </p>
             </>
+          )}
+
+          {module === 'advisor' && !isUninstall && (
+            <p className="secondary-body5">
+              Advisor:{' '}
+              <a
+                href={inst.Portal}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary underline"
+              >
+                {inst.Portal}
+              </a>
+            </p>
           )}
         </div>
       )}
