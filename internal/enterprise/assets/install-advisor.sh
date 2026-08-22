@@ -45,7 +45,13 @@ else
   RPASS="$($K -n harbor get secret registry-details -o jsonpath='{.data.registryServicePassword}' 2>/dev/null | base64 -d)"
   [ -n "$RURL" ] || fail "registry-details.registryUrl is empty — appctl's registry setup did not complete"
   echo "installing cube-advisor $CHART_VER from oci://$RURL/$RPROJ …"
-  grep -q "$RURL" /etc/hosts || echo "$ADVISOR_LB_IP $RURL" | sudo tee -a /etc/hosts >/dev/null
+  # The registry hostname lives on the framework's ingress LB and only the
+  # node-local resolver knows it — dig it there (as import.sh does) and pin it
+  # in /etc/hosts for the duration of the helm pulls.
+  LOCAL_IP="$(hostname -I | awk '{print $1}')"
+  REG_IP="$(dig @"${LOCAL_IP}" "$RURL" A +short | tail -1)"
+  [ -n "$REG_IP" ] || fail "could not resolve registry $RURL via local resolver ${LOCAL_IP}"
+  grep -q "$RURL" /etc/hosts || echo "$REG_IP $RURL" | sudo tee -a /etc/hosts >/dev/null
   helm registry login "$RURL" -u "$RUSER" -p "$RPASS" --insecure >/dev/null 2>&1
   # advisor_register can exit 0 having pushed nothing if the framework registry
   # wasn't set up — fail clearly here, not on a cryptic helm pull.
@@ -83,11 +89,11 @@ $K -n "$NS" rollout status deploy/cube-advisor --timeout=15m 2>/dev/null || fail
 echo "verifying cube-advisor is serving…"
 ok=""
 for _ in $(seq 1 30); do
+  # healthz answers "ok <version>" (bare "ok" when unversioned).
   BODY="$(curl -skf --max-time 10 "http://${ADVISOR_LB_IP}/healthz" 2>/dev/null)"
-  if [ "$BODY" = "ok " ] || [ "$BODY" = "ok" ]; then
-    ok=1
-    break
-  fi
+  case "$BODY" in
+    ok|ok\ *) ok=1; break ;;
+  esac
   sleep 10
 done
 [ -n "$ok" ] || fail "cube-advisor healthz not ok at http://${ADVISOR_LB_IP}/healthz"
