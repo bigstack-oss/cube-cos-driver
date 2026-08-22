@@ -51,7 +51,12 @@ else
   LOCAL_IP="$(hostname -I | awk '{print $1}')"
   REG_IP="$(dig @"${LOCAL_IP}" "$RURL" A +short | tail -1)"
   [ -n "$REG_IP" ] || fail "could not resolve registry $RURL via local resolver ${LOCAL_IP}"
-  grep -q "$RURL" /etc/hosts || echo "$REG_IP $RURL" | sudo tee -a /etc/hosts >/dev/null
+  # Pin it only for the duration of this run and undo even on failure — a
+  # leftover entry would mask a wrong/stale IP on the next run.
+  if ! grep -q "$RURL" /etc/hosts; then
+    echo "$REG_IP $RURL" | sudo tee -a /etc/hosts >/dev/null
+    trap 'sudo sed -i "/${RURL}/d" /etc/hosts' EXIT
+  fi
   helm registry login "$RURL" -u "$RUSER" -p "$RPASS" --insecure >/dev/null 2>&1
   # advisor_register can exit 0 having pushed nothing if the framework registry
   # wasn't set up — fail clearly here, not on a cryptic helm pull.
@@ -75,7 +80,6 @@ else
     --set appDbPassword="$APPPW" \
     --set hs256Secret="$HSSEC" \
     --kube-insecure-skip-tls-verify --insecure-skip-tls-verify --timeout 20m --wait=false
-  sed -i "/$RURL/d" /etc/hosts
 fi
 
 # --- wait for the advisor workloads ---

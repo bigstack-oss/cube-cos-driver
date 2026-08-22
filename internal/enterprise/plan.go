@@ -170,10 +170,14 @@ func BuildPlan(module string, p InstallParams, airgap bool, dataDir string, m *M
 		chartVer := strings.TrimSuffix(strings.TrimPrefix(p.AdvisorFile, "cube-advisor-"), ".pigz")
 		steps = append(steps,
 			plannedStep{
-				Name:       "advisor_register",
-				Title:      "Register Cube AI Advisor application",
-				Kind:       "scp+run",
-				Cmd:        fmt.Sprintf("hex_cli -c app -c app_register %s/%s %s skip_flavor", cephfsUpdate, p.AdvisorFile, p.Framework),
+				Name:  "advisor_register",
+				Title: "Register Cube AI Advisor application",
+				Kind:  "scp+run",
+				// hex_sdk app_import directly, NOT hex_cli app_register: the CLI
+				// wrapper exits 0 and prints only "app failed to install" on
+				// failure, so a failed import.sh (chart never pushed) would pass
+				// this step and only surface as a cryptic install_advisor error.
+				Cmd:        fmt.Sprintf("hex_sdk app_import %s/%s %s skip_flavor", cephfsUpdate, p.AdvisorFile, p.Framework),
 				LocalPath:  localPath(dataDir, "advisor", p.AdvisorFile),
 				RemotePath: cephfsUpdate,
 			},
