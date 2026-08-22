@@ -29,6 +29,26 @@ done
 [ "$found" = 0 ] && echo "no orphaned kube_service_${fw}_* load balancers to reap"
 `
 
+// advisorLBSweep reaps ONLY the advisor Service's Octavia LB (+ its floating
+// IPs) after uninstall_advisor — the cloud-provider cannot delete an LB stuck
+// in provisioning ERROR, which otherwise pins the Service finalizer and the
+// cube-advisor namespace in Terminating. Scoped to the exact service name so
+// the framework ingress LB is never touched. %s = framework name.
+const advisorLBSweep = `source /etc/admin-openrc.sh 2>/dev/null
+fw=%s
+found=0
+for lb in $(openstack loadbalancer list -f value -c id -c name 2>/dev/null | awk -v n="kube_service_${fw}_cube-advisor_cube-advisor" '$2 == n {print $1}'); do
+  found=1
+  vip=$(openstack loadbalancer show "$lb" -f value -c vip_address 2>/dev/null)
+  for fip in $(openstack floating ip list --fixed-ip-address "$vip" -f value -c ID 2>/dev/null); do
+    openstack floating ip delete "$fip" 2>/dev/null && echo "freed floating IP mapped to $vip"
+  done
+  openstack loadbalancer delete "$lb" --cascade 2>/dev/null && echo "deleted advisor LB $lb"
+done
+[ "$found" = 0 ] && echo "no advisor load balancer to reap"
+exit 0
+`
+
 // localPath builds the path to a bundled artifact under the enterprise images
 // folder (root/<sub>/<file>). root is the configurable enterprise dir.
 func localPath(root, sub, file string) string {
@@ -229,14 +249,28 @@ func BuildUninstallPlan(module string, p InstallParams, dataDir string) []planne
 		if fw == "" {
 			fw = p.Project
 		}
-		steps = append(steps, plannedStep{
-			Name:       "uninstall_advisor",
-			Title:      "Uninstall Cube AI Advisor",
-			Kind:       "scp+run",
-			Cmd:        fmt.Sprintf("bash /tmp/%s %s", advisorUninstallScriptName, fw),
-			LocalPath:  localPath(dataDir, "advisor", advisorUninstallScriptName),
-			RemotePath: "/tmp",
-		})
+		steps = append(steps,
+			plannedStep{
+				Name:       "uninstall_advisor",
+				Title:      "Uninstall Cube AI Advisor",
+				Kind:       "scp+run",
+				Cmd:        fmt.Sprintf("bash /tmp/%s %s", advisorUninstallScriptName, fw),
+				LocalPath:  localPath(dataDir, "advisor", advisorUninstallScriptName),
+				RemotePath: "/tmp",
+			},
+			// The in-cluster cloud-provider refuses to delete a non-ACTIVE LB
+			// ("is not ACTIVE, current provisioning status: ERROR"), so an
+			// advisor Service whose Octavia LB errored blocks its own finalizer
+			// and leaves the namespace Terminating forever. Reap only THIS
+			// service's LB (never the framework ingress); occm's next retry
+			// sees 404, treats it as deleted, and releases the finalizer.
+			plannedStep{
+				Name:  "advisor_lb_sweep",
+				Title: "Reap the advisor's leaked load balancer",
+				Kind:  "run",
+				Cmd:   fmt.Sprintf(advisorLBSweep, fw),
+			},
+		)
 	case ModuleAppFW:
 		fw := p.Project
 		if fw == "" {

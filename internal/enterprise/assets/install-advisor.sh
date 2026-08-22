@@ -35,6 +35,27 @@ kubectl config set-cluster "$(kubectl config view --kubeconfig="$KC" -o jsonpath
   --server="$(echo "$SRV" | sed "s#https://[^/]*#https://${CTRL}:10443#")" --kubeconfig="$KC" >/dev/null
 K="kubectl --insecure-skip-tls-verify --kubeconfig=$KC"
 
+# --- clear leftovers from a failed prior run ---
+# A namespace still Terminating (its Service finalizer waiting on LB teardown)
+# makes helm --create-namespace fail; and an Octavia LB stuck in provisioning
+# ERROR can never be deleted or reused by the cloud-provider. Reap the errored
+# LB first (scoped to this service's exact LB name), then wait the namespace out.
+source /etc/admin-openrc.sh 2>/dev/null || true
+LBNAME="kube_service_${FRAMEWORK}_${NS}_cube-advisor"
+LBID_STATUS="$(openstack loadbalancer list -f value -c id -c name -c provisioning_status 2>/dev/null | awk -v n="$LBNAME" '$2 == n {print $1" "$3}')"
+if [ -n "$LBID_STATUS" ] && [ "${LBID_STATUS##* }" = "ERROR" ]; then
+  echo "reaping errored advisor LB ${LBID_STATUS%% *}…"
+  openstack loadbalancer delete "${LBID_STATUS%% *}" --cascade 2>/dev/null || true
+fi
+if $K get namespace "$NS" -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Terminating; then
+  echo "waiting for namespace $NS to finish terminating…"
+  for _ in $(seq 1 36); do
+    $K get namespace "$NS" >/dev/null 2>&1 || break
+    sleep 10
+  done
+  $K get namespace "$NS" >/dev/null 2>&1 && fail "namespace $NS still terminating — clear it before reinstalling"
+fi
+
 # --- install the chart (skip if already present) ---
 if $K -n "$NS" get deploy cube-advisor >/dev/null 2>&1; then
   echo "cube-advisor already installed — skipping helm install."
