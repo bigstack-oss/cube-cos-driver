@@ -209,7 +209,9 @@ func (h *enterpriseHandlers) start(w http.ResponseWriter, r *http.Request) {
 	}
 	// BuildPlan silently degrades an unknown module to a preflight-only plan,
 	// so validate here — it's the only checkpoint before mgr.Start.
-	if body.Module != enterprise.ModuleAppFW && body.Module != enterprise.ModuleCMP {
+	switch body.Module {
+	case enterprise.ModuleAppFW, enterprise.ModuleCMP, enterprise.ModuleAdvisor:
+	default:
 		writeError(w, http.StatusBadRequest, "unknown module %q", body.Module)
 		return
 	}
@@ -260,7 +262,9 @@ func (h *enterpriseHandlers) uninstall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
 		return
 	}
-	if body.Module != enterprise.ModuleAppFW && body.Module != enterprise.ModuleCMP {
+	switch body.Module {
+	case enterprise.ModuleAppFW, enterprise.ModuleCMP, enterprise.ModuleAdvisor:
+	default:
 		writeError(w, http.StatusBadRequest, "unknown module %q", body.Module)
 		return
 	}

@@ -117,6 +117,24 @@ func TestEnterpriseInstallStartSingleNodeNoVIP(t *testing.T) {
 	resp.Body.Close()
 }
 
+// The advisor module must be accepted by the install allowlist, same as appfw/cmp.
+func TestEnterpriseInstallStartAdvisorAccepted(t *testing.T) {
+	srv, id, _ := enterpriseFixture(t)
+
+	body := []byte(`{"module":"advisor","manual":true,"params":{"Project":"appfw","Framework":"appfw","OSImage":"r.raw","FsImage":"m.qcow2","LBImage":"a.qcow2","AdvisorFile":"cube-advisor-1.2.3.pigz","AdvisorLBIP":"10.0.0.9"}}`)
+	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+id+"/enterprise/install", body)
+	if resp.StatusCode != 202 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("start = %d: %s", resp.StatusCode, b)
+	}
+	var in enterpriseInstall
+	json.NewDecoder(resp.Body).Decode(&in)
+	resp.Body.Close()
+	if in.Module != "advisor" || len(in.Steps) == 0 {
+		t.Fatalf("start body = %+v", in)
+	}
+}
+
 // An unknown module must be rejected before mgr.Start — otherwise BuildPlan
 // silently degrades it to a preflight-only plan and the run gets persisted.
 func TestEnterpriseInstallStartUnknownModuleRejected(t *testing.T) {
