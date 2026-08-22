@@ -222,6 +222,23 @@ func (h *enterpriseHandlers) start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "params.OSImage is required (the rancher cluster image .raw)")
 		return
 	}
+	// cmp's plan imports the portal chart keyed on AppFile; an empty value
+	// can't be resolved to a file and would scp the artifacts directory.
+	if body.Module == enterprise.ModuleCMP && body.Params.AppFile == "" {
+		writeError(w, http.StatusBadRequest, "params.AppFile is required (the cube-portal .pigz basename)")
+		return
+	}
+	// advisor's plan imports its chart keyed on AdvisorFile (same scp-the-
+	// directory failure mode as AppFile) and installs the service keyed on
+	// AdvisorLBIP, which would otherwise die mid-plan after minutes of imports.
+	if body.Module == enterprise.ModuleAdvisor && body.Params.AdvisorFile == "" {
+		writeError(w, http.StatusBadRequest, "params.AdvisorFile is required (the cube-advisor .pigz basename)")
+		return
+	}
+	if body.Module == enterprise.ModuleAdvisor && body.Params.AdvisorLBIP == "" {
+		writeError(w, http.StatusBadRequest, "params.AdvisorLBIP is required (the advisor service LB IP)")
+		return
+	}
 	host, code, msg := h.resolveHost(id, body.Vip)
 	if code != 0 {
 		writeError(w, code, "%s", msg)

@@ -176,6 +176,49 @@ func TestEnterpriseInstallStartRequiresOSImage(t *testing.T) {
 	resp.Body.Close()
 }
 
+// cmp's plan imports the portal chart keyed on AppFile; a missing value must
+// be rejected before mgr.Start for the same reason OSImage is.
+func TestEnterpriseInstallStartRequiresAppFile(t *testing.T) {
+	srv, id, _ := enterpriseFixture(t)
+
+	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+id+"/enterprise/install",
+		[]byte(`{"module":"cmp","manual":true,"params":{"OSImage":"r.raw","FsImage":"m.qcow2","LBImage":"a.qcow2"}}`))
+	if resp.StatusCode != 400 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("start without AppFile = %d, want 400: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+}
+
+// advisor's plan imports its chart keyed on AdvisorFile; a missing value must
+// be rejected before mgr.Start for the same reason OSImage is.
+func TestEnterpriseInstallStartRequiresAdvisorFile(t *testing.T) {
+	srv, id, _ := enterpriseFixture(t)
+
+	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+id+"/enterprise/install",
+		[]byte(`{"module":"advisor","manual":true,"params":{"OSImage":"r.raw","FsImage":"m.qcow2","LBImage":"a.qcow2","AdvisorLBIP":"10.0.0.9"}}`))
+	if resp.StatusCode != 400 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("start without AdvisorFile = %d, want 400: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+}
+
+// advisor's install step is keyed on AdvisorLBIP; a missing value must be
+// rejected before mgr.Start — otherwise the run dies mid-plan after minutes
+// of imports instead of failing fast.
+func TestEnterpriseInstallStartRequiresAdvisorLBIP(t *testing.T) {
+	srv, id, _ := enterpriseFixture(t)
+
+	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+id+"/enterprise/install",
+		[]byte(`{"module":"advisor","manual":true,"params":{"OSImage":"r.raw","FsImage":"m.qcow2","LBImage":"a.qcow2","AdvisorFile":"cube-advisor-1.2.3.pigz"}}`))
+	if resp.StatusCode != 400 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("start without AdvisorLBIP = %d, want 400: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+}
+
 func TestEnterpriseArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	appfw := filepath.Join(dir, "enterprise", "appfw")
