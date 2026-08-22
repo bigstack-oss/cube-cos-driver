@@ -21,6 +21,12 @@ func TestDiscoverArtifacts_BasicDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Create enterprise/advisor/ with files
+	advisorDir := filepath.Join(tmp, "enterprise", "advisor")
+	if err := os.MkdirAll(advisorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
 	// Create test files in appfw
 	if err := os.WriteFile(filepath.Join(appfwDir, "rancher-cluster-image-rke2-v1.32.4.raw"), []byte(""), 0644); err != nil {
 		t.Fatal(err)
@@ -31,6 +37,11 @@ func TestDiscoverArtifacts_BasicDiscovery(t *testing.T) {
 
 	// Create test files in cubecmp
 	if err := os.WriteFile(filepath.Join(cmpDir, "cube-portal-2.1.0.pigz"), []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create test file in advisor
+	if err := os.WriteFile(filepath.Join(advisorDir, "cube-advisor-1.2.3.pigz"), []byte(""), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -50,6 +61,14 @@ func TestDiscoverArtifacts_BasicDiscovery(t *testing.T) {
 	}
 	if got.CMP[0] != "cube-portal-2.1.0.pigz" {
 		t.Fatalf("CMP = %v, want [cube-portal-2.1.0.pigz]", got.CMP)
+	}
+
+	// Verify Advisor names
+	if len(got.Advisor) != 1 {
+		t.Fatalf("got %d Advisor files, want 1", len(got.Advisor))
+	}
+	if got.Advisor[0] != "cube-advisor-1.2.3.pigz" {
+		t.Fatalf("Advisor = %v, want [cube-advisor-1.2.3.pigz]", got.Advisor)
 	}
 }
 

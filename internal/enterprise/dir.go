@@ -16,8 +16,9 @@ import (
 // store (DataDir). The chosen path is persisted in <dataDir>/settings.json;
 // --enterprise-dir (default <dataDir>/enterprise) only seeds the initial value.
 //
-// The folder holds appfw/, cubecmp/, and manifests/ subdirs; the driver also
-// materializes the portal install/uninstall scripts under cubecmp/.
+// The folder holds appfw/, cubecmp/, advisor/, and manifests/ subdirs; the
+// driver also materializes the portal install/uninstall scripts under
+// cubecmp/ and the advisor install/uninstall scripts under advisor/.
 type Dir struct {
 	mu       sync.RWMutex
 	dir      string
@@ -59,18 +60,19 @@ func (d *Dir) Set(dir string) error {
 	d.dir = dir
 	d.mu.Unlock()
 	materializePortalScript(dir)
+	materializeAdvisorScript(dir)
 	return nil
 }
 
 // Status reports the folder, whether it's mounted (exists), and how many
-// App-Framework and CubeCMP artifacts it holds.
-func (d *Dir) Status() (dir string, mounted bool, appfw, cmp int) {
+// App-Framework, CubeCMP, and Advisor artifacts it holds.
+func (d *Dir) Status() (dir string, mounted bool, appfw, cmp, advisor int) {
 	dir = d.Get()
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		return dir, false, 0, 0
+		return dir, false, 0, 0, 0
 	}
 	a := DiscoverArtifacts(dir)
-	return dir, true, len(a.AppFW), len(a.CMP)
+	return dir, true, len(a.AppFW), len(a.CMP), len(a.Advisor)
 }
 
 func loadEnterpriseDir(path string) string {

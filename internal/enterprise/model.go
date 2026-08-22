@@ -3,8 +3,9 @@ package enterprise
 
 // Module identifiers for the enterprise install flow.
 const (
-	ModuleAppFW = "appfw"
-	ModuleCMP   = "cmp"
+	ModuleAppFW   = "appfw"
+	ModuleCMP     = "cmp"
+	ModuleAdvisor = "advisor"
 )
 
 // StepState is the lifecycle state of a persisted Step.
@@ -30,6 +31,9 @@ type InstallParams struct {
 	AppFile   string // CMP: cube-portal-*.pigz basename
 	FsImage   string // manila-*.qcow2 basename
 	LBImage   string // amphora-*.qcow2 basename
+
+	AdvisorFile string // advisor: cube-advisor-*.pigz basename
+	AdvisorLBIP string // advisor: dedicated LoadBalancer IP for the advisor service
 
 	StorageBackend string // cinder volume type for image import; from cluster query
 }

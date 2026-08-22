@@ -55,10 +55,10 @@ func (h *enterpriseHandlers) artifacts(w http.ResponseWriter, r *http.Request) {
 }
 
 // getDir returns the enterprise images folder + whether it's mounted and how
-// many appfw/cmp artifacts it holds. The UI settings modal reads this.
+// many appfw/cmp/advisor artifacts it holds. The UI settings modal reads this.
 func (h *enterpriseHandlers) getDir(w http.ResponseWriter, r *http.Request) {
-	dir, mounted, appfw, cmp := h.dir.Status()
-	writeJSON(w, http.StatusOK, map[string]any{"imageDir": dir, "mounted": mounted, "appfwCount": appfw, "cmpCount": cmp})
+	dir, mounted, appfw, cmp, advisor := h.dir.Status()
+	writeJSON(w, http.StatusOK, map[string]any{"imageDir": dir, "mounted": mounted, "appfwCount": appfw, "cmpCount": cmp, "advisorCount": advisor})
 }
 
 // setDir points the driver at a new enterprise images folder (e.g. a mounted
@@ -76,8 +76,8 @@ func (h *enterpriseHandlers) setDir(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "%v", err)
 		return
 	}
-	dir, mounted, appfw, cmp := h.dir.Status()
-	writeJSON(w, http.StatusOK, map[string]any{"imageDir": dir, "mounted": mounted, "appfwCount": appfw, "cmpCount": cmp})
+	dir, mounted, appfw, cmp, advisor := h.dir.Status()
+	writeJSON(w, http.StatusOK, map[string]any{"imageDir": dir, "mounted": mounted, "appfwCount": appfw, "cmpCount": cmp, "advisorCount": advisor})
 }
 
 // clusterInfo live-queries the selected cluster's OpenStack for its projects

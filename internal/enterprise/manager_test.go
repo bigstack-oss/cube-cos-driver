@@ -58,6 +58,9 @@ func newTestMgr(t *testing.T, script func(string) ([]string, error)) (*Manager, 
 	cmp := filepath.Join(dir, "enterprise", "cubecmp")
 	os.MkdirAll(cmp, 0o755)
 	os.WriteFile(filepath.Join(cmp, "cube-portal-2.1.0.pigz"), []byte("x"), 0o644)
+	advisor := filepath.Join(dir, "enterprise", "advisor")
+	os.MkdirAll(advisor, 0o755)
+	os.WriteFile(filepath.Join(advisor, "cube-advisor-1.2.3.pigz"), []byte("x"), 0o644)
 	st, _ := NewStore(filepath.Join(dir, "installs"))
 	mc := &clusterssh.MockClient{Script: script}
 	return NewManager(st, NewDir(dir, filepath.Join(dir, "enterprise")), func(h, u, p string) (clusterssh.Client, error) { return mc, nil }), mc
@@ -112,6 +115,60 @@ func TestManager_CMP_ExistingActiveFramework_SkipsCreate(t *testing.T) {
 	}
 	if !containsCmd(mc.Runs, "app_register") {
 		t.Fatalf("app_register should still run: %v", mc.Runs)
+	}
+}
+
+// An already-active framework is skipped (not recreated), but advisor_register
+// and install_advisor still run, and the completion Portal URL points at the
+// dedicated Advisor LB IP.
+func TestManager_Advisor_ExistingActiveFramework_SkipsCreate(t *testing.T) {
+	m, mc := newTestMgr(t, func(cmd string) ([]string, error) {
+		if strings.Contains(cmd, "framework_list") {
+			return []string{"c-m-1  appfw  rancher  3  active  2026-01-01"}, nil
+		}
+		if strings.Contains(cmd, "image show amphora-x64-haproxy") {
+			return []string{"['amphora']"}, nil
+		}
+		if strings.Contains(cmd, "systeminfo") {
+			return []string{"200"}, nil
+		}
+		return nil, nil
+	})
+	m.Start("cl1", "advisor", "10.32.10.140", "pw", InstallParams{Project: "appfw", Framework: "appfw",
+		AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9", LBIP: "10.32.36.120"}, false, false)
+	waitState(t, m, "cl1", "advisor", "done")
+	if containsCmd(mc.Runs, "framework_create appfw") {
+		t.Fatalf("should not recreate an active framework: %v", mc.Runs)
+	}
+	in, _ := m.Status("cl1", "advisor")
+	if stepState(in, "framework_create") != "skipped" {
+		t.Fatalf("framework_create should be skipped, got %s", stepState(in, "framework_create"))
+	}
+	if stepState(in, "advisor_register") != "done" {
+		t.Fatalf("advisor_register should be done, got %s", stepState(in, "advisor_register"))
+	}
+	if stepState(in, "install_advisor") != "done" {
+		t.Fatalf("install_advisor should be done, got %s", stepState(in, "install_advisor"))
+	}
+	if in.Portal != "http://10.0.0.9/" {
+		t.Fatalf("Portal = %q, want http://10.0.0.9/", in.Portal)
+	}
+}
+
+// Uninstalling appfw (framework_delete removes every app on it) must also drop
+// any advisor install record for the same cluster/host — advisor runs on the
+// framework and would otherwise leave a stale "done" record behind.
+func TestManager_AppFWUninstall_CascadesAdvisor(t *testing.T) {
+	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", nil))
+	m.Start("cl1", "advisor", "10.32.10.140", "pw", InstallParams{Project: "appfw", Framework: "appfw",
+		AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9", LBIP: "10.32.36.120"}, false, false)
+	waitState(t, m, "cl1", "advisor", "done")
+
+	m.StartUninstall("cl1", "appfw", "10.32.10.140", "pw", InstallParams{Project: "appfw"}, false)
+	waitState(t, m, "cl1", "appfw", "done")
+
+	if _, ok := m.Status("cl1", "advisor"); ok {
+		t.Fatal("advisor install record should be dropped after appfw uninstall")
 	}
 }
 

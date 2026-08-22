@@ -65,3 +65,29 @@ func TestBuildPlan_FrameworkCreateCmd_UsesImageNameNoExt(t *testing.T) {
 		t.Fatalf("framework_create cmd = %q", fc.Cmd)
 	}
 }
+
+func TestBuildPlan_Advisor_AlwaysRunsAppFWFirst(t *testing.T) {
+	p := InstallParams{Project: "appfw", PublicNet: "public", MgmtNet: "public",
+		LBIP: "10.0.0.2", OSImage: "r.raw", FsImage: "m.qcow2", LBImage: "a.qcow2",
+		Framework: "appfw", AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9"}
+	steps := BuildPlan(ModuleAdvisor, p, false, "/data", nil)
+	var names []string
+	for _, s := range steps {
+		names = append(names, s.Name)
+	}
+	want := []string{"preflight", "import_fs", "import_lb", "import", "framework_create",
+		"advisor_register", "install_advisor", "complete"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+}
+
+func TestBuildPlan_Advisor_ChartVersionFromPigzName(t *testing.T) {
+	p := InstallParams{Project: "appfw", OSImage: "r.raw", Framework: "appfw",
+		AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9"}
+	steps := BuildPlan(ModuleAdvisor, p, false, "/data", nil)
+	last := steps[len(steps)-2] // install_advisor
+	if !strings.Contains(last.Cmd, " 1.2.3") {
+		t.Fatalf("install cmd missing chart version: %q", last.Cmd)
+	}
+}

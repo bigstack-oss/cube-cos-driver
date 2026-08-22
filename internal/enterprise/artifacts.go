@@ -8,16 +8,19 @@ import (
 
 // Artifacts holds discovered pre-staged artifact basenames.
 type Artifacts struct {
-	AppFW []string // rancher .raw images and supporting files
-	CMP   []string // cube-portal and related files
+	AppFW   []string // rancher .raw images and supporting files
+	CMP     []string // cube-portal and related files
+	Advisor []string // cube-advisor and related files
 }
 
-// DiscoverArtifacts scans the enterprise root for appfw/ and cubecmp/ and
-// returns basenames. root is the configurable enterprise images folder.
+// DiscoverArtifacts scans the enterprise root for appfw/, cubecmp/, and
+// advisor/ and returns basenames. root is the configurable enterprise images
+// folder.
 func DiscoverArtifacts(root string) Artifacts {
 	return Artifacts{
-		AppFW: readDir(root, "appfw"),
-		CMP:   readDir(root, "cubecmp"),
+		AppFW:   readDir(root, "appfw"),
+		CMP:     readDir(root, "cubecmp"),
+		Advisor: readDir(root, "advisor"),
 	}
 }
 

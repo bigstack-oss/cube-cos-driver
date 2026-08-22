@@ -165,14 +165,43 @@ func BuildPlan(module string, p InstallParams, airgap bool, dataDir string, m *M
 		)
 	}
 
+	if module == ModuleAdvisor {
+		// chart version derived from the .pigz name: cube-advisor-<ver>.pigz.
+		chartVer := strings.TrimSuffix(strings.TrimPrefix(p.AdvisorFile, "cube-advisor-"), ".pigz")
+		steps = append(steps,
+			plannedStep{
+				Name:       "advisor_register",
+				Title:      "Register Cube AI Advisor application",
+				Kind:       "scp+run",
+				Cmd:        fmt.Sprintf("hex_cli -c app -c app_register %s/%s %s skip_flavor", cephfsUpdate, p.AdvisorFile, p.Framework),
+				LocalPath:  localPath(dataDir, "advisor", p.AdvisorFile),
+				RemotePath: cephfsUpdate,
+			},
+			// advisor_register only pushes the chart + prereqs; this deploys the
+			// advisor end-to-end (helm install, rollout waits) and self-verifies
+			// that it serves.
+			plannedStep{
+				Name:       "install_advisor",
+				Title:      "Deploy + verify Cube AI Advisor",
+				Kind:       "scp+run",
+				Cmd:        fmt.Sprintf("bash /tmp/%s %s %s %s", advisorInstallScriptName, p.Project, p.AdvisorLBIP, chartVer),
+				LocalPath:  localPath(dataDir, "advisor", advisorInstallScriptName),
+				RemotePath: "/tmp",
+			},
+			plannedStep{Name: "complete", Title: "Installation complete", Kind: "complete"},
+		)
+	}
+
 	return steps
 }
 
 // BuildUninstallPlan returns the ordered steps to tear a module down.
-//   - cmp:   helm-uninstall the portal + delete its namespace (App-Framework,
+//   - cmp:     helm-uninstall the portal + delete its namespace (App-Framework,
 //     pushed chart, and imported images are left in place).
-//   - appfw: framework_delete, which removes the framework and every app on it
-//     (CubeCMP is one such app).
+//   - advisor: helm-uninstall the advisor + delete its namespace (same shape
+//     as cmp).
+//   - appfw:   framework_delete, which removes the framework and every app on
+//     it (CubeCMP and Advisor are apps on it).
 func BuildUninstallPlan(module string, p InstallParams, dataDir string) []plannedStep {
 	steps := []plannedStep{
 		{Name: "preflight", Title: "Preflight checks", Kind: "detect"},
@@ -189,6 +218,19 @@ func BuildUninstallPlan(module string, p InstallParams, dataDir string) []planne
 			Kind:       "scp+run",
 			Cmd:        fmt.Sprintf("bash /tmp/%s %s", portalUninstallScriptName, fw),
 			LocalPath:  localPath(dataDir, "cubecmp", portalUninstallScriptName),
+			RemotePath: "/tmp",
+		})
+	case ModuleAdvisor:
+		fw := p.Framework
+		if fw == "" {
+			fw = p.Project
+		}
+		steps = append(steps, plannedStep{
+			Name:       "uninstall_advisor",
+			Title:      "Uninstall Cube AI Advisor",
+			Kind:       "scp+run",
+			Cmd:        fmt.Sprintf("bash /tmp/%s %s", advisorUninstallScriptName, fw),
+			LocalPath:  localPath(dataDir, "advisor", advisorUninstallScriptName),
 			RemotePath: "/tmp",
 		})
 	case ModuleAppFW:

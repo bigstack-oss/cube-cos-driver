@@ -50,6 +50,7 @@ func NewManager(store *Store, dir *Dir, dial func(host, user, pw string) (cluste
 	}
 	m.rehydrate()
 	materializePortalScript(dir.Get())
+	materializeAdvisorScript(dir.Get())
 	return m
 }
 
@@ -416,7 +417,12 @@ func (m *Manager) execStep(ctx context.Context, k string, client clusterssh.Clie
 	}
 	if ps.Kind == "complete" {
 		if in.Op != "uninstall" {
-			in.Portal = "https://" + in.Params.LBIP + "/portal"
+			switch in.Module {
+			case ModuleAdvisor:
+				in.Portal = "http://" + in.Params.AdvisorLBIP + "/"
+			default:
+				in.Portal = "https://" + in.Params.LBIP + "/portal"
+			}
 		}
 		in.State = "done"
 	}
@@ -425,20 +431,22 @@ func (m *Manager) execStep(ctx context.Context, k string, client clusterssh.Clie
 	return nil
 }
 
-// cascadeAfterUninstall drops the CubeCMP record when its App-Framework is
-// removed (CMP runs on it). Matches on dialed Host so it catches both the
+// cascadeAfterUninstall drops any module's install record that runs on top of
+// the App-Framework (CMP, Advisor, …) when the App-Framework itself is
+// removed — framework_delete tears down every app on it, so those records
+// would otherwise go stale. Matches on dialed Host so it catches both the
 // configured-cluster and ad-hoc-VIP record keys. Caller holds m.mu.
 func (m *Manager) cascadeAfterUninstall(in *Install) {
 	if in.Op != "uninstall" || in.State != "done" || in.Module != ModuleAppFW {
 		return
 	}
-	for ck, cmp := range m.installs {
-		if cmp.Module != ModuleCMP {
+	for ck, dep := range m.installs {
+		if dep.Module == ModuleAppFW {
 			continue
 		}
-		if cmp.ClusterID == in.ClusterID || (in.Host != "" && cmp.Host == in.Host) {
+		if dep.ClusterID == in.ClusterID || (in.Host != "" && dep.Host == in.Host) {
 			delete(m.installs, ck)
-			_ = m.store.Delete(cmp.ClusterID, cmp.Module)
+			_ = m.store.Delete(dep.ClusterID, dep.Module)
 		}
 	}
 }
