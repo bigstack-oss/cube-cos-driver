@@ -3,13 +3,10 @@ import { useEffect, useState } from 'react'
 import { listClusters } from '../../api/client'
 import { Install, InstallState, listInstalls, Module } from '../../api/enterprise'
 import { ClusterDigest } from '../../model/types'
+import cubeAiAdvisorLogo from '../../assets/cube-ai-advisor-logo.svg'
 import cubecmpLogo from '../../assets/cubecmp-logo.svg'
 import { InstallModal } from './InstallModal'
 import { UninstallModal } from './UninstallModal'
-
-// The driver's own mark (also used as the favicon/sidebar icon) — a neutral
-// stand-in logo for Advisor, which has no product logo of its own.
-const cubedriverMark = '/cubedriver-mark.svg'
 
 // logo (when set) is shown in place of the title text on the module card.
 type ModuleCard = {
@@ -35,7 +32,7 @@ const MODULES: ModuleCard[] = [
   {
     module: 'advisor',
     title: 'Cube AI Advisor',
-    logo: cubedriverMark,
+    logo: cubeAiAdvisorLogo,
     description:
       "Install Cube AI Advisor (installs App-Framework first if the cluster doesn't have it).",
   },
