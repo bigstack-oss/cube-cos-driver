@@ -18,8 +18,10 @@ type Manifest struct {
 		Commit  string `json:"commit"`  // /etc/version commit; best-effort match
 		Build   string `json:"build"`   // /etc/version build stamp, e.g. "20260313-1639"
 	} `json:"match"`
-	Appctl          string `json:"appctl"` // file under appfw/ to push to /usr/local/bin; "" = skip
-	AirgapSupported bool   `json:"airgapSupported"`
+	Appctl string `json:"appctl"` // file under appfw/ to push to /usr/local/bin; "" = skip
+	// unset lets the cluster probe answer (ClusterInfo greps airgap_sim_apply);
+	// false pins off a release that lacks the function, true forces it on (#77).
+	AirgapSupported *bool `json:"airgapSupported"`
 	Import          struct {
 		Tenant         string `json:"tenant"`
 		Visibility     string `json:"visibility"`

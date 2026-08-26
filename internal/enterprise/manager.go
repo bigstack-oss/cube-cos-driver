@@ -1203,7 +1203,10 @@ func (m *Manager) Introspect(host, password, framework string) (ClusterQuery, er
 		q.Version = version
 		if mf := MatchManifest(manifests, version, build, commit); mf != nil {
 			q.Manifest = mf.Name
-			q.AirgapSupported = mf.AirgapSupported
+			// only an explicit value overrides the live probe above
+			if mf.AirgapSupported != nil {
+				q.AirgapSupported = *mf.AirgapSupported
+			}
 		}
 	}
 	return q, nil
