@@ -102,6 +102,12 @@ func (m *Manager) StepDurations() map[string]float64 {
 	byName := map[string][]float64{}
 	for _, in := range m.installs {
 		for _, s := range in.Steps {
+			// Only steps that did the work. A skipped step carries both timestamps
+			// and skips fast, which made framework_create's "typical" read ~9s
+			// instead of the 40+ min it takes to provision (#75).
+			if s.State != StepDone {
+				continue
+			}
 			if s.StartedAt == "" || s.FinishedAt == "" {
 				continue
 			}
@@ -721,7 +727,7 @@ const frameworkKubectl = "KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl"
 // provisioning (CAPI machine phases + a representative blocking message), so the
 // poll narration reports *what* it's waiting on instead of a bare "waiting". It's
 // best-effort: any query failure yields "" and the caller just omits it.
-func frameworkProgress(ctx context.Context, client clusterssh.Client, name string) string {
+func frameworkProgress(ctx context.Context, client clusterssh.Client, name, lbip string) string {
 	var phases []string
 	client.Run(ctx, fmt.Sprintf("%s get machines.cluster.x-k8s.io -A -l cluster.x-k8s.io/cluster-name=%s --no-headers -o custom-columns=P:.status.phase 2>/dev/null", frameworkKubectl, name),
 		func(l string) {
@@ -766,7 +772,70 @@ func frameworkProgress(ctx context.Context, client clusterssh.Client, name strin
 	if len(msg) > 0 {
 		out += " — " + msg[len(msg)-1] // most recent/most specific
 	}
+	// Once every node is Running, CAPI phases stop changing while appctl still has
+	// minutes of work left (charts, ingress LB, Harbor). Reporting only node
+	// phases then leaves the dialog on an unchanging "nodes 4/4 ready" that reads
+	// as stalled, so add what is actually pending.
+	if running == len(phases) {
+		if post := frameworkPostNodeProgress(ctx, client, name, lbip); post != "" {
+			out += "; " + post
+		}
+	}
 	return out
+}
+
+// frameworkPostNodeProgress describes the phase after the nodes are up: ingress
+// LB, Harbor, and any pod still pending. Best effort, but an unavailable answer
+// is reported rather than omitted -- silence is what this replaces.
+func frameworkPostNodeProgress(ctx context.Context, client clusterssh.Client, name, lbip string) string {
+	var parts []string
+	var lb []string
+	client.Run(ctx, fmt.Sprintf("source /etc/admin-openrc.sh && openstack loadbalancer list --name %s -f value -c provisioning_status 2>/dev/null", ingressLBName(name)),
+		func(l string) {
+			if s := strings.TrimSpace(l); s != "" {
+				lb = append(lb, s)
+			}
+		})
+	switch {
+	case len(lb) > 0:
+		parts = append(parts, "ingress LB "+lb[0])
+	default:
+		parts = append(parts, "ingress LB not created yet")
+	}
+	if lbip != "" {
+		parts = append(parts, "registry HTTP "+registryProbe(ctx, client, name, lbip))
+	}
+	// Named pods: where a missing offline image shows up (ImagePullBackOff),
+	// otherwise invisible until the step times out an hour later.
+	var pending []string
+	client.Run(ctx, "KUBECONFIG=/opt/appfw/kubeconfig kubectl get pods -A --no-headers 2>/dev/null | grep -viE 'running|completed' | awk '{print $2\"=\"$4}' | head -3",
+		func(l string) {
+			if s := strings.TrimSpace(l); s != "" {
+				pending = append(pending, s)
+			}
+		})
+	if len(pending) > 0 {
+		parts = append(parts, "pods pending: "+strings.Join(pending, ", "))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// ingressLBName is the Octavia LB name appctl gives the framework's ingress
+// service (kube_service_<framework>_kube-system_ingress-lb).
+func ingressLBName(name string) string {
+	return "kube_service_" + name + "_kube-system_ingress-lb"
+}
+
+// registryProbe returns the HTTP status the framework's Harbor answers through
+// its ingress LB, as a string ("200", "000" when nothing answers). Shared by the
+// poll narration and verifyFrameworkRegistry so the two cannot drift.
+func registryProbe(ctx context.Context, client clusterssh.Client, name, lbip string) string {
+	host := name + ".registry.cubecos.com"
+	cmd := fmt.Sprintf("curl -sk -o /dev/null -w '%%{http_code}' --resolve %s:443:%s --max-time 15 https://%s/api/v2.0/systeminfo 2>/dev/null",
+		host, lbip, host)
+	var out []string
+	client.Run(ctx, cmd, func(l string) { out = append(out, strings.TrimSpace(l)) })
+	return strings.Join(out, "")
 }
 
 // ensureAmphoraTag guarantees the octavia amphora image carries the "amphora"
@@ -856,7 +925,7 @@ func runFramework(ctx context.Context, client clusterssh.Client, ps plannedStep,
 				case <-progressCtx.Done():
 					return
 				case <-t.C:
-					if p := frameworkProgress(progressCtx, client, name); p != "" {
+					if p := frameworkProgress(progressCtx, client, name, ps.LBIP); p != "" {
 						onLine("Provisioning app-framework — " + p + "…")
 					}
 				}
@@ -897,7 +966,7 @@ func runFramework(ctx context.Context, client clusterssh.Client, ps plannedStep,
 			return false, fmt.Errorf("app-framework %q was not created: framework_create returned but the framework never registered within %s — it failed silently. Last appctl error: %s",
 				name, frameworkRegisterGrace, appctlLastError(ctx, client))
 		}
-		progress := frameworkProgress(ctx, client, name)
+		progress := frameworkProgress(ctx, client, name, ps.LBIP)
 		if elapsed >= frameworkReadyTimeout {
 			detail := ""
 			if progress != "" {

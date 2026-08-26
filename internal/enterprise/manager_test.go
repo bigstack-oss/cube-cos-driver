@@ -553,3 +553,38 @@ func stepErr(in *Install, name string) string {
 func validAppFWParams() InstallParams {
 	return InstallParams{Project: "cmp", PublicNet: "public", MgmtNet: "public", LBIP: "10.32.36.120", OSImage: "r.raw", FsImage: "m.qcow2", LBImage: "a.qcow2"}
 }
+
+// A skipped step carries both timestamps but did none of the work, and the skip
+// path is fast: framework_create skips in seconds when the framework is already
+// active. Counting skips made the "typical ~" the UI shows for the longest step
+// in the plan read as ~9s. Only StepDone counts.
+func TestStepDurations_IgnoresSkippedErroredAndCancelledSteps(t *testing.T) {
+	m, _ := newTestMgr(t, nil)
+	step := func(name string, state StepState, start, end string) *Step {
+		return &Step{Name: name, State: state, StartedAt: start, FinishedAt: end}
+	}
+	m.installs["c1/cmp"] = &Install{ClusterID: "c1", Module: "cmp", Steps: []*Step{
+		// the real provisioning run: 40 minutes
+		step("framework_create", StepDone, "2026-08-26T01:00:00Z", "2026-08-26T01:40:00Z"),
+		step("preflight", StepDone, "2026-08-26T01:00:00Z", "2026-08-26T01:01:00Z"),
+	}}
+	m.installs["c2/cmp"] = &Install{ClusterID: "c2", Module: "cmp", Steps: []*Step{
+		// three later runs that reused the framework: 9 seconds each
+		step("framework_create", StepSkipped, "2026-08-26T02:00:00Z", "2026-08-26T02:00:09Z"),
+		step("framework_create", StepError, "2026-08-26T03:00:00Z", "2026-08-26T03:00:03Z"),
+		step("framework_create", StepSkipped, "2026-08-26T04:00:00Z", "2026-08-26T04:00:09Z"),
+		// an in-flight step has no FinishedAt and must not count either
+		{Name: "install_portal", State: StepActive, StartedAt: "2026-08-26T05:00:00Z"},
+	}}
+
+	got := m.StepDurations()
+	if d := got["framework_create"]; d != 2400 {
+		t.Fatalf("framework_create typical = %v, want 2400 (the one real run, not the skips)", d)
+	}
+	if d := got["preflight"]; d != 60 {
+		t.Fatalf("preflight typical = %v, want 60", d)
+	}
+	if _, ok := got["install_portal"]; ok {
+		t.Fatalf("install_portal should be absent while still running, got %v", got["install_portal"])
+	}
+}
