@@ -5,6 +5,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -161,7 +163,43 @@ func nicsInv() []nicInv {
 			SpeedMbps: speed, Up: up, Carrier: carrier,
 		})
 	}
+	// CubeCOS assigns eth0..ethN in PCI bus order (hex rc.nicdetect.sh); the
+	// inspect boot's own names follow driver probe order, which interleaves
+	// cards. Report in PCI order so the mapper's IF.N matches the installed OS.
+	sort.SliceStable(out, func(i, j int) bool {
+		return pciLess(out[i].PCIAddr, out[j].PCIAddr)
+	})
 	return out
+}
+
+// pciLess orders PCI bus ids numerically by domain:bus:device.function;
+// an unparseable/absent address sorts last.
+func pciLess(a, b string) bool {
+	ra, rb := pciRank(a), pciRank(b)
+	for k := range ra {
+		if ra[k] != rb[k] {
+			return ra[k] < rb[k]
+		}
+	}
+	return false
+}
+
+var pciRe = regexp.MustCompile(`^(?:([0-9a-fA-F]+):)?([0-9a-fA-F]+):([0-9a-fA-F]+)\.([0-9a-fA-F]+)$`)
+
+func pciRank(addr string) [4]int64 {
+	m := pciRe.FindStringSubmatch(strings.TrimSpace(addr))
+	if m == nil {
+		return [4]int64{1 << 40, 1 << 40, 1 << 40, 1 << 40}
+	}
+	var r [4]int64
+	for i := 0; i < 4; i++ {
+		f := m[i+1]
+		if f == "" {
+			f = "0"
+		}
+		r[i], _ = strconv.ParseInt(f, 16, 64)
+	}
+	return r
 }
 
 func disksInv() []diskInv {

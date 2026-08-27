@@ -32,6 +32,42 @@ export const pciVendorName = (id?: string): string =>
 export const pciLabel = (n: NIC): string =>
   [pciVendorName(n.pciVendor), n.pciAddr].filter(Boolean).join(' ') || '—'
 
+// CubeCOS names Ethernet ports eth0..ethN in PCI bus order (hex
+// rc.nicdetect.sh walks /sys/class/pci_bus/*/device/*/class sorted). The
+// inspect boot reports the kernel's own probe-order names, which interleave
+// cards, so re-derive the order and labels here — the mapper binds ports by
+// list position (IF.N), so a wrong order maps the wrong physical port.
+const pciRank = (addr?: string): number[] => {
+  const m = /^(?:([0-9a-f]+):)?([0-9a-f]+):([0-9a-f]+)\.([0-9a-f]+)$/i.exec(
+    (addr ?? '').trim(),
+  )
+  if (!m) return [Infinity, Infinity, Infinity, Infinity]
+  return [
+    parseInt(m[1] ?? '0', 16),
+    parseInt(m[2], 16),
+    parseInt(m[3], 16),
+    parseInt(m[4], 16),
+  ]
+}
+
+// cosNics returns the NICs in CubeCOS ethX order, relabeled eth0..ethN.
+// Inventory without PCI addresses (e.g. Redfish-sourced) is left untouched.
+export const cosNics = (nics?: NIC[]): NIC[] => {
+  const list = nics ?? []
+  if (list.length === 0 || !list.every((n) => n.pciAddr)) return list
+  return list
+    .map((n, i) => ({ n, i }))
+    .sort((a, b) => {
+      const ra = pciRank(a.n.pciAddr)
+      const rb = pciRank(b.n.pciAddr)
+      for (let k = 0; k < ra.length; k++) {
+        if (ra[k] !== rb[k]) return ra[k] - rb[k]
+      }
+      return a.i - b.i
+    })
+    .map(({ n }, i) => ({ ...n, name: `eth${i}` }))
+}
+
 export const formatSpeed = (mbps?: number): string =>
   !mbps || mbps <= 0
     ? '—'
