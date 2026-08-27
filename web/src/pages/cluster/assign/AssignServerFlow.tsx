@@ -5,6 +5,7 @@
 import { CosButton } from '@cube-frontend/ui-library'
 import { useEffect, useMemo, useState } from 'react'
 import {
+  cosNics,
   formatBytes,
   Machine,
   NIC,
@@ -64,7 +65,7 @@ export const AssignServerFlow = (props: AssignServerFlowProps) => {
       setPorts([])
       return
     }
-    setPorts(machine.inventory.nics ?? [])
+    setPorts(cosNics(machine.inventory.nics))
     // Default to the assigned disk, else the first OS-eligible (local physical)
     // disk — never a SAN LUN or virtual media.
     setOsDisk(

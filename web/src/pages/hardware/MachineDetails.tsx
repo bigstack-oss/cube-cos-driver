@@ -1,6 +1,7 @@
 import { CosModal, CosTag } from '@cube-frontend/ui-library'
 import { Fragment } from 'react'
 import {
+  cosNics,
   diskMediaType,
   formatBytes,
   formatSpeed,
@@ -75,7 +76,7 @@ export const MachineDetails = (props: MachineDetailsProps) => {
                     </span>
                   ),
                 )}
-                {inv.nics.map((n, i) => (
+                {cosNics(inv.nics).map((n, i) => (
                   <Fragment key={i}>
                     <span className="font-medium">{n.name || 'nic'}</span>
                     <span>{pciLabel(n)}</span>
