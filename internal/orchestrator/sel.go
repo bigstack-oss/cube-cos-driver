@@ -2,10 +2,13 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	goipmi "github.com/bougou/go-ipmi"
@@ -41,33 +44,87 @@ var selResultName = map[byte]string{
 	0x01: "ok", 0x02: "degraded", 0x03: "unreachable", 0x04: "topology-error", 0xff: "error",
 }
 
-// GateWriter drops a staged "go" record on a node's BMC over LAN, so an agent
-// (which may have no in-band network) sees it via local KCS. The stage byte
-// distinguishes restore / reboot / apply authorizations. ClearSEL wipes a
-// node's SEL at deploy start so a prior run's records can't replay.
+// GateWriter drops staged "go" records on a node's BMC over LAN, so an agent
+// (which may have no in-band network) sees them via local KCS. The stage byte
+// distinguishes restore / reboot / apply authorizations. WriteGate takes the
+// node's whole authorized set, not one stage: the caller re-asserts every gate
+// it has granted so far, so a SEL that lost records can be healed. ClearSEL
+// wipes a node's SEL at deploy start so a prior run's records can't replay.
 type GateWriter interface {
-	WriteGate(ctx context.Context, n Node, stage byte) error
+	WriteGate(ctx context.Context, n Node, stages ...byte) error
 	ClearSEL(ctx context.Context, n Node) error
 }
 
-// IPMIGateWriter adds the cube "gate/go" OEM SEL record over IPMI LAN.
+// bmcLocks serializes SEL work per BMC address. A BMC handles concurrent RMCP+
+// sessions poorly, and two writers on one SEL can wipe each other's records.
+var bmcLocks sync.Map // BMC address -> *sync.Mutex
+
+// lockBMC takes the node's BMC lock and returns its release func.
+func lockBMC(addr string) func() {
+	v, _ := bmcLocks.LoadOrStore(addr, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// selFull reports whether an IPMI error is the BMC's "out of space" (0xC4)
+// completion code — the only failure a SEL wipe can fix. Every other error
+// (a lost UDP ack, a busy BMC) leaves the SEL intact, so wiping on those just
+// destroys gate records that are already authorized.
+func selFull(err error) bool {
+	if err == nil {
+		return false
+	}
+	var cc interface{ CompletionCode() goipmi.CompletionCode }
+	if errors.As(err, &cc) {
+		return cc.CompletionCode() == goipmi.CompletionCodeOutOfSpace
+	}
+	return false
+}
+
+// gatesPresent reads the node's SEL and returns the gate stages it holds.
+func gatesPresent(ctx context.Context, client *goipmi.Client) (map[byte]bool, error) {
+	entries, err := client.GetSELEntries(ctx, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := map[byte]bool{}
+	for _, e := range entries {
+		if e == nil || e.OEMTimestamped == nil ||
+			e.OEMTimestamped.ManufacturerID != cubeManufacturerID {
+			continue
+		}
+		o := e.OEMTimestamped.OEMDefined
+		if o[0] == 0x30 && o[1] == 0x05 {
+			out[o[2]] = true
+		}
+	}
+	return out, nil
+}
+
+// IPMIGateWriter adds the cube "gate/go" OEM SEL records over IPMI LAN.
 type IPMIGateWriter struct{}
 
-func (IPMIGateWriter) WriteGate(ctx context.Context, n Node, stage byte) error {
+// WriteGate makes the SEL hold exactly the authorized stages — one session,
+// one BMC at a time. Read-after-write: the AddSELEntry ack can be lost to a UDP
+// timeout even when the record landed (and can fail without landing), so the
+// write's return can't be trusted — only the SEL contents can. Already-present
+// stages are left alone, so re-asserting is cheap and idempotent.
+func (IPMIGateWriter) WriteGate(ctx context.Context, n Node, stages ...byte) error {
+	if len(stages) == 0 {
+		return nil
+	}
+	defer lockBMC(n.BMCAddress)()
+
 	client, err := dial(ctx, n)
 	if err != nil {
 		return err
 	}
 	defer client.Close(ctx)
 
-	// Read-after-write: the AddSELEntry ack can be lost to a UDP timeout even
-	// when the record landed (and can fail without landing), so the write's
-	// return can't be trusted — only the SEL contents can. Write, then confirm
-	// the gate record is actually present; retry so a transient BMC blip can't
-	// silently strand the node waiting for a gate that never landed.
 	const attempts = 4
 	var lastErr error
-	for i := 0; i < attempts; i++ {
+	for i := 0; i <= attempts; i++ {
 		if i > 0 {
 			select {
 			case <-ctx.Done():
@@ -75,30 +132,43 @@ func (IPMIGateWriter) WriteGate(ctx context.Context, n Node, stage byte) error {
 			case <-time.After(time.Duration(i) * time.Second):
 			}
 		}
-		if _, werr := client.AddSELEntry(ctx, gateSEL(stage)); werr != nil {
-			lastErr = werr
-			// SEL full (cc 0xc4): clear our coordination records so the next
-			// attempt has room. Safe — the SEL only carries our records.
-			if res, rerr := client.ReserveSEL(ctx); rerr == nil {
-				_, _ = client.ClearSEL(ctx, res.ReservationID)
-			}
-		}
-		entries, gerr := client.GetSELEntries(ctx, 0)
+		present, gerr := gatesPresent(ctx, client)
 		if gerr != nil {
 			lastErr = gerr
 			continue
 		}
-		for _, e := range entries {
-			if e == nil || e.OEMTimestamped == nil ||
-				e.OEMTimestamped.ManufacturerID != cubeManufacturerID {
-				continue
-			}
-			o := e.OEMTimestamped.OEMDefined
-			if o[0] == 0x30 && o[1] == 0x05 && o[2] == stage {
-				return nil
+		var missing []byte
+		for _, s := range stages {
+			if !present[s] {
+				missing = append(missing, s)
 			}
 		}
-		lastErr = fmt.Errorf("gate stage=%d not present in SEL after write", stage)
+		if len(missing) == 0 {
+			return nil
+		}
+		lastErr = fmt.Errorf("gate stages %v not present in SEL after write", missing)
+		if i == attempts {
+			break // the last pass is verify-only
+		}
+		// A stage missing while others are present means the SEL lost a record
+		// the node still needs — the failure this recovery exists for. Say so:
+		// silent self-healing hides how often it is happening.
+		if len(missing) < len(stages) {
+			log.Printf("gate heal %s: stage(s) %v missing from SEL — re-adding", n.Hostname, missing)
+		}
+		for _, s := range missing {
+			if _, werr := client.AddSELEntry(ctx, gateSEL(s)); werr != nil {
+				lastErr = werr
+				// Only "out of space" is fixable by a wipe. The wipe also drops
+				// the stages already authorized, so the next pass re-adds every
+				// missing one — never just this stage.
+				if selFull(werr) {
+					if res, rerr := client.ReserveSEL(ctx); rerr == nil {
+						_, _ = client.ClearSEL(ctx, res.ReservationID)
+					}
+				}
+			}
+		}
 	}
 	return lastErr
 }
@@ -106,6 +176,7 @@ func (IPMIGateWriter) WriteGate(ctx context.Context, n Node, stage byte) error {
 // ClearSEL wipes the node's SEL (reserve + clear) so a previous deploy's gate/
 // status records don't satisfy this run's gates or replay old status.
 func (IPMIGateWriter) ClearSEL(ctx context.Context, n Node) error {
+	defer lockBMC(n.BMCAddress)()
 	client, err := dial(ctx, n)
 	if err != nil {
 		return err
@@ -295,6 +366,7 @@ func endpointSEL(ip [4]byte, port uint16) *goipmi.SEL {
 // driver) learns which driver actually booted it. Best-effort, same SEL-full
 // recovery as WriteGate.
 func (IPMIGateWriter) WriteEndpoint(ctx context.Context, n Node, ip [4]byte, port uint16) error {
+	defer lockBMC(n.BMCAddress)()
 	client, err := dial(ctx, n)
 	if err != nil {
 		return err
@@ -302,6 +374,11 @@ func (IPMIGateWriter) WriteEndpoint(ctx context.Context, n Node, ip [4]byte, por
 	defer client.Close(ctx)
 	rec := endpointSEL(ip, port)
 	if _, err := client.AddSELEntry(ctx, rec); err != nil {
+		// Only "out of space" is fixable by a wipe, and wiping costs the node
+		// every gate authorized so far — the gate reconciler puts those back.
+		if !selFull(err) {
+			return err
+		}
 		if res, rerr := client.ReserveSEL(ctx); rerr == nil {
 			if _, cerr := client.ClearSEL(ctx, res.ReservationID); cerr == nil {
 				time.Sleep(2 * time.Second)

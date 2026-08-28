@@ -87,7 +87,16 @@ type NodeDeploy struct {
 	// RekickSeq increments when the operator asks this node's parked installer
 	// agent to redo preflight from check-in (fresh bundle + snapshot) — no
 	// PXE reboot. The agent sees it in every report response.
-	RekickSeq int64  `json:"rekickSeq,omitempty"`
+	RekickSeq int64 `json:"rekickSeq,omitempty"`
+	// Gates is the ledger of gate stages authorized for this node so far
+	// (1=restore, 2=reboot, 3=apply, 4=set-ready). The driver re-asserts the
+	// whole set on the BMC, so a SEL that lost records — a wipe, a BMC reset —
+	// can't strand the node waiting on a gate it was already granted.
+	Gates []int `json:"gates,omitempty"`
+	// GateAck is the subset of Gates last confirmed to be readable in the node's
+	// SEL. A gate the node can't see is a gate it will wait on forever, so the
+	// UI reports "waiting for the gate" rather than the phase it authorized.
+	GateAck   []int  `json:"gateAck,omitempty"`
 	UpdatedAt string `json:"updatedAt"`
 	// Derived, read-only view for the UI (filled by snapshot()).
 	Light1   Light       `json:"light1"`
