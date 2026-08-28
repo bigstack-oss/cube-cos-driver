@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"sync"
 	"time"
 )
@@ -18,6 +19,9 @@ type Config struct {
 	// PowerStagger spaces out per-node power-ons in a batch (inspect/deploy) so
 	// many servers don't draw simultaneous inrush. 0 = no stagger (tests).
 	PowerStagger time.Duration
+	// GateRecheck is how often the driver re-verifies that a node's authorized
+	// gate records are still on its BMC, and re-writes any that vanished.
+	GateRecheck time.Duration
 }
 
 func (c Config) withDefaults() Config {
@@ -29,6 +33,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.SkewLimitSec <= 0 {
 		c.SkewLimitSec = 5
+	}
+	if c.GateRecheck <= 0 {
+		c.GateRecheck = 30 * time.Second
 	}
 	return c
 }
@@ -335,9 +342,8 @@ func (m *Manager) maybeAutoSetReady(clusterID string) {
 		m.mu.Unlock()
 		return
 	}
-	targets := m.gateTargetsLocked(clusterID, "master")
+	m.writeGosAsync(clusterID, m.gateTargetsLocked(clusterID, "master"), gateStageSetReady)
 	m.mu.Unlock()
-	m.writeGosAsync(targets, gateStageSetReady)
 }
 
 // allNodesAppliedLocked reports whether every node in the active deploy has
@@ -507,6 +513,13 @@ func (m *Manager) ReleaseNode(clusterID, hostname string) error {
 		}
 	}
 	gate := m.gate
+	if found && gate != nil {
+		m.authorizeGatesLocked(clusterID, []Node{target}, gateStageApply)
+	}
+	stages := m.gateSetLocked(clusterID, hostname)
+	if len(stages) == 0 {
+		stages = []byte{gateStageApply} // node not in the deploy record; release anyway
+	}
 	m.mu.Unlock()
 	if !found {
 		return fmt.Errorf("node %s not in deploy %s", hostname, clusterID)
@@ -514,33 +527,173 @@ func (m *Manager) ReleaseNode(clusterID, hostname string) error {
 	if gate == nil {
 		return errors.New("no gate writer configured")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	if err := gate.WriteGate(ctx, target, gateStageApply); err != nil {
+	if err := gate.WriteGate(ctx, target, stages...); err != nil {
 		return fmt.Errorf("release %s via SEL go: %w", hostname, err)
 	}
-	log.Printf("manual release %s: wrote apply 'go' SEL to %s", hostname, target.BMCAddress)
+	log.Printf("manual release %s: wrote gate stages=%v to %s", hostname, stages, target.BMCAddress)
 	return nil
 }
 
-// writeGosAsync writes the gate/go SEL for `stage` to each target's BMC in the
-// background (best-effort). Safe to call while holding m.mu — it captures the
-// targets + gate writer and does the IPMI work off-lock.
-func (m *Manager) writeGosAsync(targets []Node, stage byte) {
-	gate := m.gate
-	if gate == nil {
+// gateSetLocked returns a node's authorized gate stages. Caller must hold m.mu.
+func (m *Manager) gateSetLocked(clusterID, hostname string) []byte {
+	if d := m.deploys[clusterID]; d != nil {
+		if nd := d.Nodes[hostname]; nd != nil {
+			return gateBytes(nd.Gates)
+		}
+	}
+	return nil
+}
+
+// authorizeGatesLocked records `stage` in each target's gate ledger. Caller
+// must hold m.mu; pair it with flushGatesAsync to put the ledger on the BMCs.
+func (m *Manager) authorizeGatesLocked(clusterID string, targets []Node, stage byte) {
+	d := m.deploys[clusterID]
+	if d == nil {
 		return
 	}
 	for _, n := range targets {
-		go func(n Node) {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		nd := d.Nodes[n.Hostname]
+		if nd == nil {
+			continue
+		}
+		if !slices.Contains(nd.Gates, int(stage)) {
+			nd.Gates = append(nd.Gates, int(stage))
+		}
+	}
+	m.persistLocked(d)
+}
+
+// gateBytes converts a persisted gate ledger to the writer's stage bytes.
+func gateBytes(gates []int) []byte {
+	out := make([]byte, 0, len(gates))
+	for _, g := range gates {
+		out = append(out, byte(g))
+	}
+	return out
+}
+
+// flushGatesAsync writes each target's whole authorized set to its BMC in the
+// background (best-effort), one call per node. Passing the full set — not just
+// the newest stage — is what lets a SEL that lost records heal. Caller must
+// hold m.mu; the IPMI work happens off-lock.
+func (m *Manager) flushGatesAsync(clusterID string, targets []Node) {
+	gate := m.gate
+	d := m.deploys[clusterID]
+	if gate == nil || d == nil {
+		return
+	}
+	for _, n := range targets {
+		nd := d.Nodes[n.Hostname]
+		if nd == nil || len(nd.Gates) == 0 {
+			continue
+		}
+		stages := gateBytes(nd.Gates)
+		go func(n Node, stages []byte) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
-			if err := gate.WriteGate(ctx, n, stage); err != nil {
-				log.Printf("gate go stage=%d %s: %v", stage, n.Hostname, err)
+			err := gate.WriteGate(ctx, n, stages...)
+			m.ackGates(clusterID, n.Hostname, stages, err)
+			if err != nil {
+				log.Printf("gate go stages=%v %s: %v", stages, n.Hostname, err)
 			} else {
-				log.Printf("wrote gate go stage=%d to %s (%s)", stage, n.Hostname, n.BMCAddress)
+				log.Printf("wrote gate go stages=%v to %s (%s)", stages, n.Hostname, n.BMCAddress)
 			}
-		}(n)
+		}(n, stages)
+	}
+}
+
+// writeGosAsync authorizes `stage` for each target and puts their ledgers on
+// the BMCs. Caller must hold m.mu.
+func (m *Manager) writeGosAsync(clusterID string, targets []Node, stage byte) {
+	m.authorizeGatesLocked(clusterID, targets, stage)
+	m.flushGatesAsync(clusterID, targets)
+}
+
+// reconcileGates re-asserts every node's authorized gate ledger on its BMC, so
+// a record lost after it was written (a racing writer's SEL wipe, a BMC reset)
+// is put back instead of stranding the node waiting on a gate it already has.
+// Already-present stages are a no-op read, so this is cheap.
+func (m *Manager) reconcileGates(ctx context.Context, clusterID string) {
+	m.mu.Lock()
+	gate := m.gate
+	d := m.deploys[clusterID]
+	byHost := m.nodes[clusterID]
+	var targets []Node
+	sets := map[string][]byte{}
+	if gate != nil && d != nil {
+		setReadyDone := m.setReady[clusterID].Ready
+		for host, nd := range d.Nodes {
+			n, ok := byHost[host]
+			if !ok || !gatesAtRisk(nd, setReadyDone) {
+				continue
+			}
+			targets = append(targets, n)
+			sets[host] = gateBytes(nd.Gates)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, n := range targets {
+		wctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		err := gate.WriteGate(wctx, n, sets[n.Hostname]...)
+		m.ackGates(clusterID, n.Hostname, sets[n.Hostname], err)
+		if err != nil {
+			log.Printf("gate recheck stages=%v %s: %v", sets[n.Hostname], n.Hostname, err)
+		}
+		cancel()
+	}
+}
+
+// gatesAtRisk reports whether a node still has a gate worth re-verifying, so a
+// finished deploy stops touching BMCs. A gate is at risk while the node has yet
+// to pass the phase it opens, while a write hasn't been confirmed, or — for
+// set-ready, authorized only once every node is done — until the master reports
+// the cluster finalized.
+func gatesAtRisk(nd *NodeDeploy, setReadyDone bool) bool {
+	if len(nd.Gates) == 0 || nd.State == StateError {
+		return false
+	}
+	if nd.State != StateDone {
+		return true
+	}
+	for _, g := range nd.Gates {
+		if !slices.Contains(nd.GateAck, g) {
+			return true
+		}
+	}
+	return slices.Contains(nd.Gates, int(gateStageSetReady)) && !setReadyDone
+}
+
+// ackGates records whether the node's authorized gates are confirmed readable
+// in its SEL. WriteGate only returns nil once it has read every stage back.
+func (m *Manager) ackGates(clusterID, hostname string, stages []byte, err error) {
+	m.set(clusterID, hostname, func(nd *NodeDeploy) {
+		if err != nil {
+			nd.GateAck = nil
+			return
+		}
+		nd.GateAck = make([]int, 0, len(stages))
+		for _, s := range stages {
+			nd.GateAck = append(nd.GateAck, int(s))
+		}
+	})
+}
+
+// runGateReconciler re-checks the deploy's authorized gates until the deploy
+// ends. Gates are the only thing standing between a node and its next phase, so
+// a lost record must not be permanent.
+func (m *Manager) runGateReconciler(ctx context.Context, clusterID string) {
+	t := time.NewTicker(m.cfg.GateRecheck)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			m.reconcileGates(ctx, clusterID)
+		}
 	}
 }
 
@@ -652,23 +805,8 @@ func (m *Manager) Applied(clusterID, hostname string, isMaster bool) {
 			targets = append(targets, n)
 		}
 	}
-	gate := m.gate
+	m.writeGosAsync(clusterID, targets, gateStageApply)
 	m.mu.Unlock()
-
-	if gate == nil {
-		return
-	}
-	for _, n := range targets {
-		go func(n Node) {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			if err := gate.WriteGate(ctx, n, gateStageApply); err != nil {
-				log.Printf("release %s via SEL go: %v", n.Hostname, err)
-			} else {
-				log.Printf("released %s: wrote master-done apply 'go' SEL to %s", n.Hostname, n.BMCAddress)
-			}
-		}(n)
-	}
 }
 
 func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
@@ -739,9 +877,15 @@ func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTar
 					masterN = append(masterN, n)
 				}
 			}
-			m.writeGosAsync(all, gateStageRestore)
-			m.writeGosAsync(all, gateStageReboot)
-			m.writeGosAsync(masterN, gateStageApply)
+			// One write per BMC carrying every stage: three concurrent
+			// single-stage writers used to contend on one BMC and wipe each
+			// other's records, costing the node its restore go.
+			m.mu.Lock()
+			m.authorizeGatesLocked(clusterID, all, gateStageRestore)
+			m.authorizeGatesLocked(clusterID, all, gateStageReboot)
+			m.authorizeGatesLocked(clusterID, masterN, gateStageApply)
+			m.flushGatesAsync(clusterID, all)
+			m.mu.Unlock()
 		}
 	}
 
@@ -790,6 +934,13 @@ func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTar
 		go func() {
 			defer m.wg.Done()
 			m.pollSEL(ctx, clusterID, nodes)
+		}()
+	}
+	if m.gate != nil {
+		m.wg.Add(1)
+		go func() {
+			defer m.wg.Done()
+			m.runGateReconciler(ctx, clusterID)
 		}()
 	}
 	return m.snapshot(clusterID)
@@ -1280,7 +1431,18 @@ func (m *Manager) GreenLight1(clusterID, hostname string) (clear bool) {
 	clear = m.fabricReadyLocked(d)
 	if clear {
 		if nd := d.Nodes[hostname]; nd != nil && (nd.State == StatePreflightOK || nd.State == StatePreflighting) {
-			nd.State = StateRestoring
+			// The agent gates on the restore record in its own SEL, not on this
+			// HTTP answer. Claiming "restoring" before the record is confirmed
+			// readable hides a node that is really still parked in preflight.
+			// With no gate writer there is no SEL gate: the agent falls back to
+			// this greenlight, so the node advances as before.
+			if m.gate == nil || slices.Contains(nd.GateAck, int(gateStageRestore)) {
+				nd.State = StateRestoring
+				nd.Message = ""
+			} else {
+				nd.State = StatePreflightOK
+				nd.Message = "preflight passed — waiting for the restore gate on the BMC"
+			}
 			nd.UpdatedAt = nowUTC()
 			m.persistLocked(d)
 		}
@@ -1349,15 +1511,15 @@ func (m *Manager) AdvanceStep(clusterID string) (int, error) {
 	// the master done).
 	switch d.ManualStep {
 	case StepRestore:
-		m.writeGosAsync(m.gateTargetsLocked(clusterID, "all"), gateStageRestore)
+		m.writeGosAsync(clusterID, m.gateTargetsLocked(clusterID, "all"), gateStageRestore)
 	case StepReboot:
-		m.writeGosAsync(m.gateTargetsLocked(clusterID, "all"), gateStageReboot)
+		m.writeGosAsync(clusterID, m.gateTargetsLocked(clusterID, "all"), gateStageReboot)
 	case StepApplyMaster:
-		m.writeGosAsync(m.gateTargetsLocked(clusterID, "master"), gateStageApply)
+		m.writeGosAsync(clusterID, m.gateTargetsLocked(clusterID, "master"), gateStageApply)
 	case StepApplyRest:
-		m.writeGosAsync(m.gateTargetsLocked(clusterID, "peers"), gateStageApply)
+		m.writeGosAsync(clusterID, m.gateTargetsLocked(clusterID, "peers"), gateStageApply)
 	case StepSetReady:
-		m.writeGosAsync(m.gateTargetsLocked(clusterID, "master"), gateStageSetReady)
+		m.writeGosAsync(clusterID, m.gateTargetsLocked(clusterID, "master"), gateStageSetReady)
 	}
 	return d.ManualStep, nil
 }

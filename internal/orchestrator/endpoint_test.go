@@ -51,8 +51,8 @@ type fakeGate struct {
 	}
 }
 
-func (f *fakeGate) WriteGate(context.Context, Node, byte) error { return nil }
-func (f *fakeGate) ClearSEL(context.Context, Node) error        { return nil }
+func (f *fakeGate) WriteGate(context.Context, Node, ...byte) error { return nil }
+func (f *fakeGate) ClearSEL(context.Context, Node) error           { return nil }
 func (f *fakeGate) WriteEndpoint(_ context.Context, n Node, ip [4]byte, port uint16) error {
 	f.endpoints = append(f.endpoints, struct {
 		host string
