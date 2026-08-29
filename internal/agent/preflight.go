@@ -91,8 +91,9 @@ recheck:
 			return nil
 		}
 
-		// Time sync — report the skew so the server can enforce the ±5s fleet gate.
-		skew := d.syncClock(resp.ServerTimeUTC)
+		// Time sync — report the skew LEFT AFTER correcting, so the server's
+		// ±5s fleet gate reflects the clock the node actually has now.
+		skew, corrected := d.syncClock(resp.ServerTimeUTC)
 
 		// Pre-fetch the snapshot NOW, while the initial network is still up. The
 		// next step (ConfigureTopology) may sever the SPA link, and /store does not
@@ -204,7 +205,8 @@ recheck:
 			}
 			// Informational rows (do not gate passed; the server gates fleet skew).
 			matrix = append(matrix,
-				PreflightResult{Target: "clock-skew", OK: skew < 5 && skew > -5, Detail: fmt.Sprintf("%+.2fs vs driver", skew)},
+				PreflightResult{Target: "clock-skew", OK: skew < 5 && skew > -5,
+					Detail: fmt.Sprintf("%+.2fs vs driver (corrected %+.2fs at check-in)", skew, corrected)},
 				prefetch,
 			)
 			passed := carrierOK && allReach && topoErr == ""
@@ -260,16 +262,24 @@ recheck:
 	}
 }
 
-func (d PreflightDeps) syncClock(serverTimeUTC string) float64 {
+// syncClock sets the node clock from the driver and returns the skew that
+// REMAINS afterwards, plus the offset it corrected. Only the residual may gate
+// green light 1: the pre-correction offset is a useful diagnostic, but the
+// agent has already fixed it, so gating on it holds the fleet barrier shut on a
+// skew that no longer exists.
+func (d PreflightDeps) syncClock(serverTimeUTC string) (residual, corrected float64) {
 	t, err := time.Parse(time.RFC3339, serverTimeUTC)
 	if err != nil {
-		return 0
+		return 0, 0
 	}
-	skew := d.Now().Sub(t).Seconds()
-	if d.SetClock != nil {
-		_ = d.SetClock(t)
+	corrected = d.Now().Sub(t).Seconds()
+	if d.SetClock == nil {
+		return corrected, 0 // nothing corrected it; the offset still stands
 	}
-	return skew
+	if err := d.SetClock(t); err != nil {
+		return corrected, 0 // correction failed; the offset still stands
+	}
+	return d.Now().Sub(t).Seconds(), corrected
 }
 
 type pingTarget struct {

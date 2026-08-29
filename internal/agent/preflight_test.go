@@ -258,3 +258,49 @@ func TestRunPreflightRekicksInPlace(t *testing.T) {
 		t.Errorf("rekick should reconfigure topology, got %d", topoCalls)
 	}
 }
+
+// The agent sets the node clock from the driver, so the offset it just
+// corrected must not be what it reports: the driver gates green light 1 on the
+// reported skew, and a node whose RTC was seconds out would otherwise be held
+// forever on a skew that no longer exists.
+func TestSyncClockReportsResidualNotCorrectedOffset(t *testing.T) {
+	server := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	nodeClock := server.Add(13750 * time.Millisecond) // RTC 13.75s fast
+
+	d := PreflightDeps{
+		Now: func() time.Time { return nodeClock },
+		SetClock: func(to time.Time) error {
+			nodeClock = to // the agent corrects it
+			return nil
+		},
+	}
+
+	residual, corrected := d.syncClock(server.Format(time.RFC3339))
+
+	if corrected < 13.7 || corrected > 13.8 {
+		t.Errorf("corrected offset: want ~13.75s for diagnostics, got %.2fs", corrected)
+	}
+	if residual > 0.5 || residual < -0.5 {
+		t.Errorf("residual skew after correction: want ~0s (the gate input), got %.2fs", residual)
+	}
+}
+
+// A correction that fails leaves the node genuinely out of sync, so the offset
+// must still be reported and still gate.
+func TestSyncClockKeepsSkewWhenCorrectionFails(t *testing.T) {
+	server := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	for name, dep := range map[string]PreflightDeps{
+		"SetClock errors": {
+			Now:      func() time.Time { return server.Add(9 * time.Second) },
+			SetClock: func(time.Time) error { return context.DeadlineExceeded },
+		},
+		"no SetClock wired": {
+			Now: func() time.Time { return server.Add(9 * time.Second) },
+		},
+	} {
+		residual, _ := dep.syncClock(server.Format(time.RFC3339))
+		if residual < 8.5 || residual > 9.5 {
+			t.Errorf("%s: uncorrected skew must still be reported, got %.2fs", name, residual)
+		}
+	}
+}
