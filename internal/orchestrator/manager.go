@@ -856,16 +856,39 @@ func (m *Manager) Start(clusterID string, nodes []Node, master string, verifyTar
 
 	// Wipe each node's SEL so a prior deploy's gate/status records can't replay
 	// into this run — gates are authoritative over SEL, so a stale "go" would be
-	// dangerous. Synchronous + bounded so it completes before runNode re-stamps
-	// the driver-endpoint record. Best-effort per node.
-	if m.gate != nil {
+	// dangerous. Then capture the post-clear SEL anchor (last record handle) so
+	// the OOB observer floors freshness on the log itself, not the BMC clock.
+	// Synchronous + bounded so it completes before runNode re-stamps the
+	// driver-endpoint record. Best-effort per node.
+	if m.gate != nil || m.sel != nil {
 		for _, n := range nodes {
 			cctx, ccancel := context.WithTimeout(context.Background(), 10*time.Second)
-			if err := m.gate.ClearSEL(cctx, n); err != nil {
-				log.Printf("deploy start: clear SEL %s: %v", n.Hostname, err)
+			if m.gate != nil {
+				if err := m.gate.ClearSEL(cctx, n); err != nil {
+					log.Printf("deploy start: clear SEL %s: %v", n.Hostname, err)
+				}
+			}
+			// Anchor AFTER the clear: on a clean wipe the log is empty (anchor 0
+			// = consider all); if the clear failed, the anchor is the last stale
+			// record, so this run's records (written next) still sort after it.
+			if m.sel != nil {
+				id, err := m.sel.Anchor(cctx, n)
+				if err != nil {
+					log.Printf("deploy start: SEL anchor %s: %v", n.Hostname, err)
+				}
+				m.mu.Lock()
+				if d2 := m.deploys[clusterID]; d2 != nil {
+					if nd := d2.Nodes[n.Hostname]; nd != nil {
+						nd.SELAnchor = id
+					}
+					m.persistLocked(d2)
+				}
+				m.mu.Unlock()
 			}
 			ccancel()
 		}
+	}
+	if m.gate != nil {
 		// Auto mode never holds: authorize restore + reboot for all nodes and
 		// apply for the master up front (peers' apply go is written on master-done,
 		// see Applied). Manual mode writes each go on the operator's AdvanceStep.
@@ -1129,14 +1152,16 @@ func agentDriven(s State) bool {
 // if the in-band report is lost (e.g. mgmt moved off the flat L2 after apply).
 // Stops when the context is cancelled or every node is terminal.
 func (m *Manager) pollSEL(ctx context.Context, clusterID string, nodes []Node) {
-	// Ignore SEL records older than this deploy: a previous run's terminal
-	// record would otherwise replay into a fresh deploy and complete it
-	// instantly. 5min grace absorbs BMC clock skew (time-sync gate is ±5s).
-	var since time.Time
+	// Ignore SEL records older than this deploy: a previous run's terminal record
+	// would otherwise replay into a fresh deploy and complete it instantly. The
+	// floor is each node's per-BMC SEL anchor (a record handle captured at deploy
+	// start), NOT a timestamp — BMC RTCs are routinely hours off UTC, and a
+	// wall-clock floor silently discarded every genuine record on a skewed BMC.
+	anchor := map[string]uint16{}
 	m.mu.Lock()
 	if d := m.deploys[clusterID]; d != nil {
-		if t, err := time.Parse(time.RFC3339, d.StartedAt); err == nil {
-			since = t.Add(-5 * time.Minute)
+		for host, nd := range d.Nodes {
+			anchor[host] = nd.SELAnchor
 		}
 	}
 	m.mu.Unlock()
@@ -1154,12 +1179,9 @@ func (m *Manager) pollSEL(ctx context.Context, clusterID string, nodes []Node) {
 				continue
 			}
 			allTerminal = false
-			s, err := m.sel.Observe(ctx, n)
+			s, err := m.sel.Observe(ctx, n, anchor[n.Hostname])
 			if err != nil || s == nil {
 				continue
-			}
-			if !since.IsZero() && s.At.Before(since) {
-				continue // stale record from a previous deploy
 			}
 			m.MergeSEL(clusterID, n.Hostname, *s)
 		}
@@ -1290,8 +1312,16 @@ func (m *Manager) PreflightProgress(clusterID, hostname string) {
 // of a single opaque "restoring".
 func (m *Manager) RestoreDone(clusterID, hostname string) {
 	m.set(clusterID, hostname, func(nd *NodeDeploy) {
-		if nd.State == StateRestoring {
+		// Advance from anywhere in the preflight-passed → restoring window. The
+		// node gates on the restore go via its BMC SEL, so it can reach restore
+		// (and finish it) without a second greenlight HTTP round-trip — which
+		// leaves the driver's state at PreflightOK. Guarding only on StateRestoring
+		// then dropped this report and stranded the node "waiting for the restore
+		// gate" even though it had already restored. Never regress a node the
+		// agent already pushed past reboot.
+		if r := stateRank(nd.State); r >= stateRank(StatePreflightOK) && r < stateRank(StateRebooting) {
 			nd.State = StateRebooting
+			nd.Message = ""
 		}
 	})
 	// Point the freshly-imaged node at its disk so the post-restore reboot boots

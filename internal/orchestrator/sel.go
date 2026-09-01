@@ -24,6 +24,9 @@ type SELStatus struct {
 	Result string
 	Detail string
 	At     time.Time
+	// RecordID is the BMC's SEL record handle for this entry. Used to anchor
+	// freshness on the SEL's own log order rather than on the BMC clock.
+	RecordID uint16
 }
 
 // reverse maps of the agent's compact encoding.
@@ -208,15 +211,22 @@ func gateSEL(stage byte) *goipmi.SEL {
 
 // SELObserver reads a node's out-of-band status from its BMC over the LAN.
 type SELObserver interface {
-	// Observe returns the latest Cube OEM SEL record for a node, or nil if none.
-	Observe(ctx context.Context, n Node) (*SELStatus, error)
+	// Observe returns the latest actionable Cube OEM status record that appears
+	// AFTER the anchor entry (RecordID afterID) in the SEL's log order, or nil if
+	// none. afterID==0 considers the whole log. Records at/before the anchor are
+	// this-or-prior-deploy leftovers and are skipped — the freshness floor is the
+	// SEL's own record handles, never the BMC clock.
+	Observe(ctx context.Context, n Node, afterID uint16) (*SELStatus, error)
+	// Anchor returns the RecordID of the last entry currently in the node's SEL
+	// (0 if empty), captured at deploy start to floor Observe.
+	Anchor(ctx context.Context, n Node) (uint16, error)
 }
 
 // IPMISELObserver reads SEL entries from a node's BMC over IPMI LAN and returns
 // the most recent Cube OEM record.
 type IPMISELObserver struct{}
 
-func (IPMISELObserver) Observe(ctx context.Context, n Node) (*SELStatus, error) {
+func (IPMISELObserver) Observe(ctx context.Context, n Node, afterID uint16) (*SELStatus, error) {
 	client, err := dial(ctx, n)
 	if err != nil {
 		return nil, err
@@ -226,17 +236,48 @@ func (IPMISELObserver) Observe(ctx context.Context, n Node) (*SELStatus, error) 
 	if err != nil {
 		return nil, err
 	}
+	// GetSELEntries returns records in log (insertion) order. Walk it, and only
+	// start considering records once we're past the anchor entry — its RecordID
+	// is a handle, so we locate it by identity, not by numeric comparison (IPMI
+	// does not guarantee record IDs are ordered). A missing anchor (cleared/
+	// wrapped since capture) means the log is all newer than the deploy: consider
+	// everything. The chosen record is the LAST one that maps to a real state, so
+	// a trailing gate record (which carries no phase) can't mask a status.
+	past := afterID == 0
 	var latest *SELStatus
 	for _, e := range entries {
-		s := decodeCubeSEL(e)
-		if s == nil {
+		if !past {
+			if e != nil && e.RecordID == afterID {
+				past = true
+			}
 			continue
 		}
-		if latest == nil || s.At.After(latest.At) {
-			latest = s
+		s := decodeCubeSEL(e)
+		if s == nil || selState(*s) == "" {
+			continue
 		}
+		latest = s
 	}
 	return latest, nil
+}
+
+// Anchor returns the RecordID of the most recent SEL entry on the node's BMC, or
+// 0 if the log is empty. Called right after the deploy-start ClearSEL so the
+// observer can ignore everything up to this point without trusting the clock.
+func (IPMISELObserver) Anchor(ctx context.Context, n Node) (uint16, error) {
+	client, err := dial(ctx, n)
+	if err != nil {
+		return 0, err
+	}
+	defer client.Close(ctx)
+	entries, err := client.GetSELEntries(ctx, 0)
+	if err != nil {
+		return 0, err
+	}
+	if len(entries) == 0 || entries[len(entries)-1] == nil {
+		return 0, nil
+	}
+	return entries[len(entries)-1].RecordID, nil
 }
 
 // decodeCubeSEL returns the Cube status carried by a SEL entry, or nil if the
@@ -250,10 +291,11 @@ func decodeCubeSEL(e *goipmi.SEL) *SELStatus {
 	}
 	oem := e.OEMTimestamped.OEMDefined
 	return &SELStatus{
-		Phase:  selPhaseName[oem[0]],
-		Result: selResultName[oem[1]],
-		Detail: strings.TrimRight(string(oem[2:]), "\x00"),
-		At:     e.OEMTimestamped.Timestamp,
+		Phase:    selPhaseName[oem[0]],
+		Result:   selResultName[oem[1]],
+		Detail:   strings.TrimRight(string(oem[2:]), "\x00"),
+		At:       e.OEMTimestamped.Timestamp,
+		RecordID: e.RecordID,
 	}
 }
 

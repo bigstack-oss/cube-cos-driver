@@ -96,8 +96,16 @@ type NodeDeploy struct {
 	// GateAck is the subset of Gates last confirmed to be readable in the node's
 	// SEL. A gate the node can't see is a gate it will wait on forever, so the
 	// UI reports "waiting for the gate" rather than the phase it authorized.
-	GateAck   []int  `json:"gateAck,omitempty"`
-	UpdatedAt string `json:"updatedAt"`
+	GateAck []int `json:"gateAck,omitempty"`
+	// SELAnchor is the RecordID of the last SEL entry present on this node's BMC
+	// right after the deploy-start ClearSEL. The OOB observer ignores every
+	// record up to and including it (in log order), so a prior run's leftover
+	// status can't replay. It is a record handle, NOT a clock — freshness must
+	// not depend on the BMC RTC agreeing with the driver (BMC RTCs are routinely
+	// hours off, which silently killed the timestamp-based filter this replaced).
+	// 0 means the SEL was empty at capture (clean clear) → consider all records.
+	SELAnchor uint16 `json:"selAnchor,omitempty"`
+	UpdatedAt string  `json:"updatedAt"`
 	// Derived, read-only view for the UI (filled by snapshot()).
 	Light1   Light       `json:"light1"`
 	Light2   Light       `json:"light2"`
