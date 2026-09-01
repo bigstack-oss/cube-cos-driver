@@ -315,6 +315,19 @@ func (h *deployHandlers) start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no matching nodes to deploy")
 		return
 	}
+	// Reject a config that would render an invalid static address (an enabled
+	// interface with an IP but no/zero netmask → 0.0.0.0), which leaves the node
+	// with no usable network and fails FTS. Guards a config saved before this
+	// validation existed; new saves are already rejected by the generator.
+	if detail, derr := h.clusters.Detail(id); derr == nil {
+		for _, n := range detail.NodeData {
+			if verr := generator.ValidateNodeNetwork(n); verr != nil {
+				writeError(w, http.StatusBadRequest, "node %s: %v", n.Hostname, verr)
+				return
+			}
+		}
+	}
+
 	dep, err := h.mgr.Start(id, nodes, master, h.verifyTargets(id), body.Manual, body.Image, body.OptOutRepair, body.SimulateAirgap)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)

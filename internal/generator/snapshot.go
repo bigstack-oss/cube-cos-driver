@@ -18,6 +18,9 @@ var templateFS embed.FS
 // BuildNodeSnapshot returns the .snapshot zip for one node: the embedded
 // template tree with the three policy files replaced and a fresh Comment.
 func BuildNodeSnapshot(n model.NodeConfig, d model.ClusterDetail, ctl ControlInfo, now time.Time) ([]byte, error) {
+	if err := ValidateNodeNetwork(n); err != nil {
+		return nil, err
+	}
 	rendered := map[string]string{
 		"Comment": fmt.Sprintf("Generated for %s on %s\n",
 			d.ClusterInfo.Name, now.Format("2006-01-02 15:04:05")),
