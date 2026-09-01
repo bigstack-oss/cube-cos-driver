@@ -631,7 +631,7 @@ func runLocalApply(srv string, poll time.Duration) {
 		// Real failure — do NOT retry. Mark terminal, report to the driver so the
 		// node shows errored (not endlessly rebooting), then exit cleanly.
 		_ = os.WriteFile(applyTerminalFile, []byte("failed\n"), 0o644)
-		_ = writeSEL("apply", "error", err.Error())
+		_ = writeSEL("error", "error", err.Error()) // "apply" is not a phase code (→0x00, ignored by the driver)
 		reportApplyFailed(srv, cluster, host, err.Error())
 		log.Printf("local-apply: FAILED (no retry): %v", err)
 		return

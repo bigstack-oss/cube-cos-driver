@@ -208,3 +208,18 @@ func TestRestoreDoneNeverRegresses(t *testing.T) {
 		t.Fatalf("restore-done regressed an applying node to %s", got)
 	}
 }
+
+// TestMergeSELErrorResultRegardlessOfPhase covers an out-of-band failure whose
+// phase byte didn't map (e.g. the agent wrote "apply" → 0x00, Phase ""): the
+// error result alone must still terminalize the node, so a real apply failure
+// isn't silently ignored while the UI sits on "applying".
+func TestMergeSELErrorResultRegardlessOfPhase(t *testing.T) {
+	m := newTestManager(t, NewFakeExecutor())
+	m.Start("cl1", []Node{{Hostname: "cube-1", MachineID: "m1"}}, "cube-1", nil, false, "", false, false)
+	waitFor(t, m, "cl1", "cube-1", StateImaged)
+	m.MergeSEL("cl1", "cube-1", SELStatus{Phase: "", Result: "error", Detail: "snapshot_apply failed"})
+	d, _ := m.Status("cl1")
+	if n := d.Nodes["cube-1"]; n.State != StateError || n.ErrCode != ErrApplyFailed {
+		t.Fatalf("error-result SEL not terminalized: %+v", n)
+	}
+}

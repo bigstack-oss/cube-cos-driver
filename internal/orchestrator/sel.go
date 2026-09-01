@@ -301,6 +301,13 @@ func decodeCubeSEL(e *goipmi.SEL) *SELStatus {
 
 // selState maps an OOB SEL phase/result to the orchestrator state it confirms.
 func selState(s SELStatus) State {
+	// An error result is terminal whatever the phase byte — a mis-encoded phase
+	// (e.g. an agent writing "apply" → 0x00) must not make a real failure
+	// invisible OOB, which is exactly the path we fall back to when in-band is
+	// gone. Only the apply-failure record carries the error result.
+	if s.Result == "error" {
+		return StateError
+	}
 	switch s.Phase {
 	case "restore-done":
 		return StateRebooting // installer finished restore; node is rebooting
