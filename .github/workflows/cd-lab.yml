@@ -1,17 +1,16 @@
 name: CD - lab deploy
 
 on:
-  workflow_run:
-    workflows: ["CD - OCI image"]
-    types: [completed]
-    branches: [develop]
+  # Dispatched explicitly by cd-oci after it pushes a fresh image (a
+  # workflow_run trigger would miss GITHUB_TOKEN-initiated cd-oci runs, i.e.
+  # every done-label ff-merge). Manual dispatch still works.
   workflow_dispatch:
 
 concurrency: lab-deploy
 
 jobs:
   deploy:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    # cd-lab is dispatch-only now, so no upstream-conclusion gate is needed.
     # One image, one deploy recipe, per lab. Each target is a self-hosted runner
     # on the box that owns that lab's PXE tree, and advertises the address the
     # nodes booting in that lab can reach.

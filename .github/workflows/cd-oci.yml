@@ -9,6 +9,7 @@ on:
 permissions:
   contents: read
   packages: write
+  actions: write # dispatch cd-lab (workflow_dispatch is exempt from the GITHUB_TOKEN trigger guard)
 
 jobs:
   publish:
@@ -46,3 +47,14 @@ jobs:
             VERSION=${{ steps.ver.outputs.v }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # Chain the lab deploy explicitly. cd-lab used to fire on this workflow's
+      # workflow_run completion, but a run started by GITHUB_TOKEN (the done-label
+      # ff-merge dispatches cd-oci with GITHUB_TOKEN) emits no downstream
+      # workflow_run — so the lab never redeployed after an ff-merge. A
+      # workflow_dispatch is exempt from that guard, so dispatch cd-lab here.
+      - name: Dispatch lab deploy
+        if: github.ref == 'refs/heads/develop'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run cd-lab.yml --repo ${{ github.repository }} --ref develop
