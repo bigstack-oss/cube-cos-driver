@@ -613,8 +613,9 @@ func (h *deployHandlers) applied(w http.ResponseWriter, r *http.Request) {
 	if m, a, _ := h.matchNode(req.MACs, req.Serial); m != nil && a != nil {
 		cid, host = a.ClusterID, a.Hostname
 	}
-	log.Printf("applied: host=%s cluster=%s master=%v", host, cid, req.IsMaster)
-	h.mgr.Applied(cid, host, req.IsMaster)
+	log.Printf("applied: host=%s cluster=%s master=%v (agent said %v)", host, cid, host == h.mgr.Master(cid), req.IsMaster)
+	// Master comes from the deploy record, not the agent's claim.
+	h.mgr.Applied(cid, host)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 

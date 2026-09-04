@@ -31,7 +31,7 @@ type SELStatus struct {
 
 // reverse maps of the agent's compact encoding.
 var selPhaseName = map[byte]string{
-	0x10: "preflight", 0x16: "restore-done", 0x18: "rebooted",
+	0x10: "preflight", 0x15: "restoring", 0x16: "restore-done", 0x18: "rebooted",
 	0x20: "applying", 0x21: "applied", 0x2f: "done", 0xff: "error",
 }
 
@@ -309,6 +309,8 @@ func selState(s SELStatus) State {
 		return StateError
 	}
 	switch s.Phase {
+	case "restoring":
+		return StateRestoring // gate cleared; the node is imaging itself
 	case "restore-done":
 		return StateRebooting // installer finished restore; node is rebooting
 	case "rebooted":
@@ -349,6 +351,7 @@ func (m *Manager) MergeSEL(clusterID, hostname string, s SELStatus) {
 	if target == "" {
 		return
 	}
+	becameDone := false
 	m.set(clusterID, hostname, func(nd *NodeDeploy) {
 		if nd.State == StateDone {
 			return
@@ -363,11 +366,15 @@ func (m *Manager) MergeSEL(clusterID, hostname string, s SELStatus) {
 		}
 		if stateRank(target) > stateRank(nd.State) {
 			nd.State = target
+			becameDone = target == StateDone
 		}
 	})
-	if target == StateDone {
+	if target == StateDone && becameDone {
 		m.maybeVerifyCluster(clusterID)
 		m.maybeAutoSetReady(clusterID) // auto mode: trigger set_ready once all done
+		// The master's in-band report is routinely lost, leaving this merge the
+		// only place that learns it finished — so it carries the handoff too.
+		m.releasePeersOnMasterDone(clusterID, hostname)
 	}
 }
 

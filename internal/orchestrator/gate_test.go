@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -263,5 +264,86 @@ func TestManualDeployDoesNotPreAuthorizeLaterGates(t *testing.T) {
 		if f.has("cc1", s) {
 			t.Errorf("manual deploy pre-authorized gate stage=%d before the operator advanced", s)
 		}
+	}
+}
+
+// The master's in-band "applied" POST is routinely lost — the snapshot apply
+// moves it onto the mgmt network, off the flat L2 the driver lives on — and the
+// driver then learns it finished only from its BMC. If that path doesn't carry
+// the master-first handoff, every peer waits on an apply go nobody writes.
+func TestMasterDoneOutOfBandReleasesPeers(t *testing.T) {
+	m := newSettleManager(t)
+	f := newFakeBMC()
+	m.SetGateWriter(f)
+	nodes := []Node{{Hostname: "m", MachineID: "1"}, {Hostname: "p", MachineID: "2"}}
+	if _, err := m.Start("cm", nodes, "m", nil, false, "", false, false); err != nil {
+		t.Fatal(err)
+	}
+	waitGate(t, f, "p", gateStageReboot, "auto mode authorizes the peer's reboot up front")
+	if f.has("p", gateStageApply) {
+		t.Fatal("peer apply must stay unauthorized until the master is done")
+	}
+
+	// Master reaches done OUT OF BAND only — no Applied() call, as when its
+	// in-band report never arrives.
+	m.MergeSEL("cm", "m", SELStatus{Phase: "applied", Result: "ok"})
+
+	waitGate(t, f, "p", gateStageApply, "master done OOB must release the peers")
+}
+
+// A manual run hands the peers to the operator at apply-rest, so the OOB path
+// must not release them either.
+func TestMasterDoneOutOfBandHoldsPeersWhenManual(t *testing.T) {
+	m := newSettleManager(t)
+	f := newFakeBMC()
+	m.SetGateWriter(f)
+	nodes := []Node{{Hostname: "m", MachineID: "1"}, {Hostname: "p", MachineID: "2"}}
+	if _, err := m.Start("cm", nodes, "m", nil, true, "", false, false); err != nil {
+		t.Fatal(err)
+	}
+	m.MergeSEL("cm", "m", SELStatus{Phase: "applied", Result: "ok"})
+	time.Sleep(100 * time.Millisecond)
+	if f.has("p", gateStageApply) {
+		t.Error("manual mode must hold the peers for the operator's apply-rest step")
+	}
+}
+
+// Who the master is comes from the deploy record. A peer reporting applied —
+// including one whose lost IS_MASTER env made it claim the role — must never
+// release the fleet.
+func TestPeerAppliedNeverReleasesPeers(t *testing.T) {
+	m := newSettleManager(t)
+	f := newFakeBMC()
+	m.SetGateWriter(f)
+	nodes := []Node{{Hostname: "m", MachineID: "1"}, {Hostname: "p", MachineID: "2"}}
+	if _, err := m.Start("cm", nodes, "m", nil, false, "", false, false); err != nil {
+		t.Fatal(err)
+	}
+	m.Applied("cm", "p")
+	time.Sleep(100 * time.Millisecond)
+	if f.has("p", gateStageApply) {
+		t.Error("a peer reporting applied must not authorize the apply stage")
+	}
+}
+
+// A gate confirmed readable once does not stop existing because a later
+// re-write couldn't reach the BMC. Wiping the ack parks the node on "waiting
+// for the restore gate" while it is really restoring.
+func TestGateAckSurvivesFailedRewrite(t *testing.T) {
+	m := newSettleManager(t)
+	f := newFakeBMC()
+	m.SetGateWriter(f)
+	if _, err := m.Start("cm", []Node{{Hostname: "cc1", MachineID: "1"}}, "cc1", nil, false, "", false, false); err != nil {
+		t.Fatal(err)
+	}
+	waitGate(t, f, "cc1", gateStageRestore, "auto mode authorizes restore up front")
+
+	m.ackGates("cm", "cc1", []byte{gateStageRestore}, errors.New("IPMI LAN: no datagram matched before deadline"))
+	d, err := m.Status("cm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(d.Nodes["cc1"].GateAck, int(gateStageRestore)) {
+		t.Error("a failed re-write must not erase an already-confirmed gate ack")
 	}
 }

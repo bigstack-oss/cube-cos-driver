@@ -223,3 +223,35 @@ func TestMergeSELErrorResultRegardlessOfPhase(t *testing.T) {
 		t.Fatalf("error-result SEL not terminalized: %+v", n)
 	}
 }
+
+// Nothing in-band reliably reports that a node started restoring: the greenlight
+// POST that sets it is best-effort and ConfigureTopology can already have cut
+// the route to the driver. Without an OOB record the node sits on "waiting for
+// the restore gate" through the whole restore and only greens at restore-done,
+// so the operator can't tell it apart from one genuinely stuck at the gate.
+func TestRestoringAdvancesOutOfBand(t *testing.T) {
+	m := newTestManager(t, NewFakeExecutor())
+	defer m.StopAll()
+	m.Start("cl1", []Node{{Hostname: "cube-1", MachineID: "m1"}}, "cube-1", nil, true, "", false, false)
+	m.set("cl1", "cube-1", func(nd *NodeDeploy) {
+		nd.State = StatePreflightOK
+		nd.Message = "preflight passed — waiting for the restore gate on the BMC"
+	})
+
+	m.MergeSEL("cl1", "cube-1", SELStatus{Phase: "restoring", Result: "ok"})
+
+	if got := m.state("cl1", "cube-1"); got != StateRestoring {
+		t.Fatalf("restoring record did not advance the node: state = %s", got)
+	}
+}
+
+// The phase byte the agent writes must decode to the phase the driver acts on —
+// a mismatch is silent (unknown phases map to "" and are dropped).
+func TestRestoringPhaseByteRoundTrips(t *testing.T) {
+	if selPhaseName[0x15] != "restoring" {
+		t.Fatalf("0x15 must decode as restoring, got %q", selPhaseName[0x15])
+	}
+	if got := selState(SELStatus{Phase: "restoring", Result: "ok"}); got != StateRestoring {
+		t.Errorf("restoring must map to %s, got %q", StateRestoring, got)
+	}
+}

@@ -27,7 +27,7 @@ const cubeManufacturerID uint32 = 0x0BC0DE
 
 // phaseCode maps a phase/result to a compact byte pair for the SEL OEM field.
 var phaseCode = map[string]byte{
-	"preflight": 0x10, "restore-done": 0x16, "rebooted": 0x18,
+	"preflight": 0x10, "restoring": 0x15, "restore-done": 0x16, "rebooted": 0x18,
 	"applying": 0x20, "applied": 0x21, "done": 0x2f, "gate": 0x30, "error": 0xff,
 }
 var resultCode = map[string]byte{

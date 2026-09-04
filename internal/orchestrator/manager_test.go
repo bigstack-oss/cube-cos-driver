@@ -345,7 +345,7 @@ func TestManualStepGates(t *testing.T) {
 	if _, err := m.AdvanceStep("cm"); err == nil {
 		t.Fatal("advance to apply-rest should refuse until master is done")
 	}
-	m.Applied("cm", "m", true) // master → done
+	m.Applied("cm", "m") // master → done
 
 	// Next → apply-rest: peer proceeds.
 	if s, err := m.AdvanceStep("cm"); err != nil || s != StepApplyRest {
@@ -359,7 +359,7 @@ func TestManualStepGates(t *testing.T) {
 	if _, err := m.AdvanceStep("cm"); err == nil {
 		t.Fatal("advance to set-ready should refuse until all nodes done")
 	}
-	m.Applied("cm", "p", false) // peer → done
+	m.Applied("cm", "p") // peer → done
 
 	// Next → set-ready (final); step caps there.
 	if s, err := m.AdvanceStep("cm"); err != nil || s != StepSetReady {

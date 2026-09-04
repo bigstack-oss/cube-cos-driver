@@ -249,6 +249,9 @@ recheck:
 				// Authoritative GL1: the driver's restore-go SEL on our BMC (OOB).
 				if d.WaitGate != nil {
 					if d.WaitGate() {
+						// Mark restore-started OOB: the greenlight POST above is
+						// best-effort and may never reach the driver.
+						d.sel("restoring", "ok", "")
 						return nil // cleared to restore (SEL go)
 					}
 				} else if clear, gerr := d.greenlight(ctx, server, resp.ClusterID, resp.Hostname); gerr == nil && clear {

@@ -671,7 +671,8 @@ func gatesAtRisk(nd *NodeDeploy, setReadyDone bool) bool {
 func (m *Manager) ackGates(clusterID, hostname string, stages []byte, err error) {
 	m.set(clusterID, hostname, func(nd *NodeDeploy) {
 		if err != nil {
-			nd.GateAck = nil
+			// Keep confirmed stages: a failed re-write does not unwrite a
+			// landed record. A stage never confirmed is absent anyway.
 			return
 		}
 		nd.GateAck = make([]int, 0, len(stages))
@@ -768,45 +769,38 @@ func (m *Manager) SimulateAirgap(clusterID string) bool {
 	return d != nil && d.SimulateAirgap
 }
 
-// Applied records that a node finished applying its (local) snapshot. When the
-// master reports applied, the server releases every non-master by writing the
-// "go" SEL record to its BMC over LAN — the OOB master-first handoff.
-func (m *Manager) Applied(clusterID, hostname string, isMaster bool) {
+// Applied records that a node finished applying its (local) snapshot, and
+// releases the peers when it is the master — per the deploy record, never the
+// agent's claim (its IS_MASTER env can be lost).
+func (m *Manager) Applied(clusterID, hostname string) {
 	m.set(clusterID, hostname, func(nd *NodeDeploy) { nd.State = StateDone })
 	defer m.maybeAutoSetReady(clusterID) // auto mode: trigger set_ready once all done
-	if !isMaster {
+	m.releasePeersOnMasterDone(clusterID, hostname)
+}
+
+// releasePeersOnMasterDone writes the apply "go" to every non-master once the
+// master is done — the master-first handoff. Both the in-band applied report
+// and the OOB SEL merge call it; re-authorizing a granted stage is a no-op.
+func (m *Manager) releasePeersOnMasterDone(clusterID, hostname string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := m.deploys[clusterID]
+	if d == nil || d.Master != hostname {
 		return
 	}
-	// A manual deploy holds the peers for the operator's apply-rest step
-	// (AdvanceStep writes their go there) — the master finishing must NOT
-	// auto-release them. Key this on the deploy's own Manual flag, not the
-	// global manualGate, so a manual run always honors apply-rest. Auto mode
-	// releases the peers now (master-first handoff).
-	m.mu.Lock()
-	byHost := m.nodes[clusterID]
-	master := ""
-	manual := m.manualGate
-	if d := m.deploys[clusterID]; d != nil {
-		master = d.Master
-		if d.Manual {
-			manual = true
-		}
-	}
-	m.mu.Unlock()
-	if manual {
+	// A manual deploy holds the peers for the operator's apply-rest step, so
+	// honor the deploy's own Manual flag as well as the global gate.
+	if m.manualGate || d.Manual {
 		log.Printf("master %s applied; manual mode — peers held for operator (apply-rest)", hostname)
 		return
 	}
-	m.mu.Lock()
-	byHost = m.nodes[clusterID]
 	var targets []Node
-	for host, n := range byHost {
-		if host != master {
+	for host, n := range m.nodes[clusterID] {
+		if host != d.Master {
 			targets = append(targets, n)
 		}
 	}
 	m.writeGosAsync(clusterID, targets, gateStageApply)
-	m.mu.Unlock()
 }
 
 func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
