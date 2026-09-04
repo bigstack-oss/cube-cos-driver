@@ -1167,22 +1167,40 @@ func (m *Manager) pollSEL(ctx context.Context, clusterID string, nodes []Node) {
 			return
 		case <-ticker.C:
 		}
+		// set_ready runs after every node is terminal and reports its result on
+		// the master's BMC, so the poll must outlive "all nodes done".
+		waitReady := m.setReadyPending(clusterID)
+		master := m.Master(clusterID)
 		allTerminal := true
 		for _, n := range nodes {
-			if terminal(m.state(clusterID, n.Hostname)) {
-				continue
+			if !terminal(m.state(clusterID, n.Hostname)) {
+				allTerminal = false
+			} else if !waitReady || n.Hostname != master {
+				continue // nothing left to learn from this node
 			}
-			allTerminal = false
 			s, err := m.sel.Observe(ctx, n, anchor[n.Hostname])
 			if err != nil || s == nil {
 				continue
 			}
 			m.MergeSEL(clusterID, n.Hostname, *s)
 		}
-		if allTerminal {
+		if allTerminal && !waitReady {
 			return
 		}
 	}
+}
+
+// setReadyPending reports whether the master's set_ready has been authorized but
+// has not resolved yet.
+func (m *Manager) setReadyPending(clusterID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := m.deploys[clusterID]
+	if d == nil || d.SetReadyDone || m.gate == nil {
+		return false // no gate writer: set-ready never rode the BMC
+	}
+	nd := d.Nodes[d.Master]
+	return nd != nil && slices.Contains(nd.Gates, int(gateStageSetReady))
 }
 
 // runNode drives the orchestrator-side (IPMI + imaging) stages. Post-imaging

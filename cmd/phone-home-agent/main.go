@@ -698,12 +698,15 @@ func runSetReady(ctx context.Context, srv, cluster, host string, poll time.Durat
 		cmd.Stdin = strings.NewReader("no\n")
 	}
 	out, err := cmd.CombinedOutput()
+	// Report OOB first: mgmt has left the flat L2, so the POST may not land.
 	if err != nil {
 		log.Printf("set_ready: %v: %s", err, strings.TrimSpace(string(out)))
+		_ = writeSEL("ready", "error", strings.TrimSpace(string(out)))
 		postJSON(srv+"/api/v1/agents/ready", map[string]any{"clusterId": cluster, "hostname": host, "ok": false, "message": strings.TrimSpace(string(out))})
 		return
 	}
 	log.Printf("set_ready: cluster ready")
+	_ = writeSEL("ready", "ok", host)
 	postJSON(srv+"/api/v1/agents/ready", map[string]any{"clusterId": cluster, "hostname": host, "ok": true})
 }
 

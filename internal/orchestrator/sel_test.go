@@ -255,3 +255,74 @@ func TestRestoringPhaseByteRoundTrips(t *testing.T) {
 		t.Errorf("restoring must map to %s, got %q", StateRestoring, got)
 	}
 }
+
+// set_ready runs after every node is terminal, on a master whose mgmt network
+// has left the flat L2 — so its result reaches the driver on the BMC or not at
+// all. Without this the Set ready cell stays yellow on a finished, healthy
+// cluster and the run never displays as complete.
+func TestSetReadyResultArrivesOutOfBand(t *testing.T) {
+	m := newTestManager(t, NewFakeExecutor())
+	defer m.StopAll()
+	m.Start("cl1", []Node{{Hostname: "cube-1", MachineID: "m1"}}, "cube-1", nil, false, "", false, false)
+	m.set("cl1", "cube-1", func(nd *NodeDeploy) { nd.State = StateDone })
+
+	m.MergeSEL("cl1", "cube-1", SELStatus{Phase: "ready", Result: "ok"})
+
+	d, err := m.Status("cl1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.SetReadyDone {
+		t.Error("an OOB ready record must mark set_ready done")
+	}
+}
+
+// A failed set_ready is a cluster fact, not a node fault: the node's apply
+// succeeded and must not be retroactively reddened by the result record.
+func TestSetReadyFailureOutOfBandLeavesTheNodeDone(t *testing.T) {
+	m := newTestManager(t, NewFakeExecutor())
+	defer m.StopAll()
+	m.Start("cl1", []Node{{Hostname: "cube-1", MachineID: "m1"}}, "cube-1", nil, false, "", false, false)
+	m.set("cl1", "cube-1", func(nd *NodeDeploy) { nd.State = StateDone })
+
+	m.MergeSEL("cl1", "cube-1", SELStatus{Phase: "ready", Result: "error", Detail: "set_ready blew up"})
+
+	d, err := m.Status("cl1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.SetReadyDone {
+		t.Error("a failed set_ready must not green the cell")
+	}
+	if got := m.state("cl1", "cube-1"); got != StateDone {
+		t.Errorf("the node's own apply succeeded; state = %s", got)
+	}
+}
+
+// The SEL poll used to return the moment every node was terminal — exactly when
+// set_ready starts — so nothing was reading the master's BMC when its result
+// landed.
+func TestPollSELOutlivesAllNodesDoneWhileSetReadyPending(t *testing.T) {
+	m := newTestManager(t, NewFakeExecutor())
+	defer m.StopAll()
+	obs := &fakeSELObserver{}
+	m.SetSELObserver(obs)
+	f := newFakeBMC()
+	m.SetGateWriter(f)
+	m.Start("cl1", []Node{{Hostname: "cube-1", MachineID: "m1"}}, "cube-1", nil, false, "", false, false)
+
+	// Node finishes applying out-of-band; auto mode then authorizes set-ready.
+	obs.add(SELStatus{Phase: "applied", Result: "ok"})
+	waitGate(t, f, "cube-1", gateStageSetReady, "all nodes done authorizes the master's set-ready")
+
+	// The poll must still be running to see this.
+	obs.add(SELStatus{Phase: "ready", Result: "ok"})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if d, _ := m.Status("cl1"); d.SetReadyDone {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the SEL poll stopped before set_ready reported, so its result was never read")
+}

@@ -32,7 +32,7 @@ type SELStatus struct {
 // reverse maps of the agent's compact encoding.
 var selPhaseName = map[byte]string{
 	0x10: "preflight", 0x15: "restoring", 0x16: "restore-done", 0x18: "rebooted",
-	0x20: "applying", 0x21: "applied", 0x2f: "done", 0xff: "error",
+	0x20: "applying", 0x21: "applied", 0x2f: "done", 0x40: "ready", 0xff: "error",
 }
 
 // Gate stages (OEM byte 2 of a gate/go record) — must match the agent.
@@ -319,6 +319,10 @@ func selState(s SELStatus) State {
 		return StateApplying
 	case "applied", "done":
 		return StateDone
+	case "ready":
+		// Not a node state — MergeSEL intercepts it. Mapped only so Observe
+		// keeps the record (it drops ones that map to no state).
+		return StateDone
 	case "error":
 		return StateError
 	}
@@ -347,6 +351,14 @@ func stateRank(s State) int {
 // is lost (e.g. mgmt moved off the flat L2 after apply). An OOB error is
 // recorded only if the node isn't already terminal.
 func (m *Manager) MergeSEL(clusterID, hostname string, s SELStatus) {
+	// The master's set_ready result is a cluster fact, not a node state: a failed
+	// set_ready must not retroactively error a node whose apply succeeded.
+	if s.Phase == "ready" {
+		if hostname == m.Master(clusterID) {
+			m.MarkReady(clusterID, s.Result != "error", s.Detail)
+		}
+		return
+	}
 	target := selState(s)
 	if target == "" {
 		return
