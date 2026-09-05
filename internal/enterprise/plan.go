@@ -208,7 +208,7 @@ func BuildPlan(module string, p InstallParams, airgap bool, dataDir string, m *M
 				Name:       "install_advisor",
 				Title:      "Deploy + verify Cube AI Advisor",
 				Kind:       "scp+run",
-				Cmd:        fmt.Sprintf("bash /tmp/%s %s %s %s", advisorInstallScriptName, p.Project, p.AdvisorLBIP, chartVer),
+				Cmd:        fmt.Sprintf("bash /tmp/%s %s %s %s %s", advisorInstallScriptName, p.Project, p.AdvisorLBIP, chartVer, advisorBaseURL(p)),
 				LocalPath:  localPath(dataDir, "advisor", advisorInstallScriptName),
 				RemotePath: "/tmp",
 			},
@@ -296,4 +296,18 @@ func BuildUninstallPlan(module string, p InstallParams, dataDir string) []planne
 	}
 	steps = append(steps, plannedStep{Name: "complete", Title: "Uninstall complete", Kind: "complete"})
 	return steps
+}
+
+// advisorBaseURL is the origin the advisor tells its IdP to redirect back to.
+//
+// Defaulting to the LoadBalancer over plain HTTP keeps a caller that says
+// nothing working exactly as before, and is right whenever the browser really
+// does reach the service at that address. It is deliberately not clever about
+// guessing https: a wrong scheme here produces a redirect_uri the IdP rejects,
+// which is louder and easier to diagnose than a silently unreachable one.
+func advisorBaseURL(p InstallParams) string {
+	if s := strings.TrimSpace(p.AdvisorBaseURL); s != "" {
+		return strings.TrimRight(s, "/")
+	}
+	return "http://" + p.AdvisorLBIP
 }

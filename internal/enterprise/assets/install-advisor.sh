@@ -3,11 +3,23 @@
 # advisor_register only pushes the chart + prereqs to Harbor; this installs
 # the chart and confirms the advisor serves. Idempotent: safe to re-run.
 #
-# args: <framework> <advisor_lb_ip> <chart_version>
+# args: <framework> <advisor_lb_ip> <chart_version> [base_url]
 set -uo pipefail
 FRAMEWORK="${1:?framework name required}"
 ADVISOR_LB_IP="${2:?advisor lb ip required}"
 CHART_VER="${3:?chart version required}"
+# The origin a browser reaches the advisor on. The chart requires it: the
+# service builds its OAuth redirect_uri from it, and the IdP must be sent back
+# to somewhere that actually serves the app. Defaults to the LoadBalancer over
+# plain HTTP, which is right when the browser reaches it there directly.
+#
+# Worth knowing before debugging a login that "does nothing": the session
+# cookie is __Host- prefixed and Secure, and browsers store Secure cookies only
+# on a secure context. Over plain HTTP on a bare LB address the cookie is
+# silently discarded and sign-in loops with no error anywhere. HTTPS in front,
+# or reaching the service through a tunnel on localhost, both work; plain HTTP
+# on an IP does not, whatever this value says.
+BASE_URL="${4:-http://$ADVISOR_LB_IP}"
 NS=cube-advisor
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
@@ -89,9 +101,8 @@ else
   if $K -n "$NS" get secret cube-advisor-secrets >/dev/null 2>&1; then
     DBPW=$($K -n "$NS" get secret cube-advisor-secrets -o jsonpath='{.data.dbPassword}' | base64 -d)
     APPPW=$($K -n "$NS" get secret cube-advisor-secrets -o jsonpath='{.data.appDbPassword}' | base64 -d)
-    HSSEC=$($K -n "$NS" get secret cube-advisor-secrets -o jsonpath='{.data.hs256Secret}' | base64 -d)
   else
-    DBPW=$(openssl rand -hex 16); APPPW=$(openssl rand -hex 16); HSSEC=$(openssl rand -hex 24)
+    DBPW=$(openssl rand -hex 16); APPPW=$(openssl rand -hex 16)
   fi
 
   helm upgrade --install cube-advisor "oci://$RURL/$RPROJ/cube-advisor" --version "$CHART_VER" \
@@ -99,7 +110,7 @@ else
     --set lbIP="$ADVISOR_LB_IP" \
     --set dbPassword="$DBPW" \
     --set appDbPassword="$APPPW" \
-    --set hs256Secret="$HSSEC" \
+    --set baseURL="$BASE_URL" \
     --kube-insecure-skip-tls-verify --insecure-skip-tls-verify --timeout 20m --wait=false
 fi
 

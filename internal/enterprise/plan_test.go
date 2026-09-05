@@ -91,3 +91,41 @@ func TestBuildPlan_Advisor_ChartVersionFromPigzName(t *testing.T) {
 		t.Fatalf("install cmd missing chart version: %q", last.Cmd)
 	}
 }
+
+// The chart requires baseURL, and the origin a browser uses is not always the
+// LoadBalancer's own address: behind TLS it is a hostname, through a tunnel it
+// is localhost. A caller that says nothing still gets the old behaviour.
+func TestAdvisorBaseURLDefaultsToTheLoadBalancer(t *testing.T) {
+	if got := advisorBaseURL(InstallParams{AdvisorLBIP: "10.32.1.102"}); got != "http://10.32.1.102" {
+		t.Errorf("advisorBaseURL = %q", got)
+	}
+}
+
+func TestAdvisorBaseURLPrefersAnExplicitOrigin(t *testing.T) {
+	p := InstallParams{AdvisorLBIP: "10.32.1.102", AdvisorBaseURL: "https://advisor.lab.example/"}
+	if got := advisorBaseURL(p); got != "https://advisor.lab.example" {
+		t.Errorf("advisorBaseURL = %q, want the explicit origin with no trailing slash", got)
+	}
+}
+
+func TestAdvisorInstallPassesTheBaseURLToTheScript(t *testing.T) {
+	// The script takes it as a fourth argument; a plan that drops it leaves the
+	// chart's required value unset and helm aborts the install.
+	steps := BuildPlan(ModuleAdvisor, InstallParams{
+		Project: "appfw", Framework: "appfw", OSImage: "r.raw", FsImage: "m.qcow2",
+		LBImage: "a.qcow2", AdvisorFile: "cube-advisor-1.2.3.pigz",
+		AdvisorLBIP: "10.32.1.102", AdvisorBaseURL: "http://localhost:8082",
+	}, false, "/data", nil)
+	var found bool
+	for _, s := range steps {
+		if strings.Contains(s.Cmd, advisorInstallScriptName) {
+			found = true
+			if !strings.HasSuffix(s.Cmd, "http://localhost:8082") {
+				t.Errorf("install step does not pass the base URL: %q", s.Cmd)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no advisor install step in the plan")
+	}
+}
