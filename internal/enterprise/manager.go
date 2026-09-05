@@ -499,11 +499,11 @@ func (m *Manager) preflight(ctx context.Context, client clusterssh.Client, in *I
 		} else if in.Params.LBIP != "" {
 			onLine(fmt.Sprintf("Checking LB IP %s is free…", in.Params.LBIP))
 			var taken []string
-			probe := fmt.Sprintf(lbIPTakenProbe, in.Params.LBIP, in.Params.LBIP)
+			probe := fmt.Sprintf(lbIPTakenProbe, in.Params.LBIP)
 			if err := client.Run(ctx, probe, func(l string) { taken = append(taken, strings.TrimSpace(l)) }); err == nil {
 				for _, l := range taken {
 					if l == "taken" {
-						return fmt.Errorf("LB IP %s is already allocated on the cluster (a port or floating IP holds it) — pick a free address in the external range", in.Params.LBIP)
+						return fmt.Errorf("LB IP %s is already in use (a port or floating IP on this cluster holds it, or it answers ARP on the provider network — e.g. another cluster's load balancer) — pick a free address in the external range", in.Params.LBIP)
 					}
 				}
 			}
@@ -1119,26 +1119,49 @@ type ClusterQuery struct {
 // collides with it and the framework's ingress LB never gets its external FIP.
 // Skipping every IP already held by a port on the network (metadata, router
 // gateway, existing FIPs) gives a default that actually works.
+//
+// Neutron only knows this cluster's ports, so on a shared provider network an
+// address serving another cluster looks free. Candidates are ARP-probed too:
+// an amphora answers neither ICMP nor, unless listening, TCP.
 const lbIPProbe = `source /etc/admin-openrc.sh && sub=$(openstack subnet list --network public -f value -c ID | head -1) && [ -n "$sub" ] && python3 -c '
 import json,subprocess,ipaddress,re,sys
+from concurrent.futures import ThreadPoolExecutor
 sub=sys.argv[1]
 subj=json.loads(subprocess.check_output(["openstack","subnet","show",sub,"-f","json"]))
 pools=subj.get("allocation_pools") or []
 portj=json.loads(subprocess.check_output(["openstack","port","list","--network","public","-f","json"]))
 used=set(re.findall(r"\d+\.\d+\.\d+\.\d+", json.dumps(portj)))
+def live(ip):
+    try:
+        out=subprocess.check_output(["ip","-o","route","get",ip],text=True)
+    except Exception:
+        return False
+    m=re.search(r" dev (\S+)", out)
+    if not m:
+        return False
+    return subprocess.call(["arping","-c2","-w2","-I",m.group(1),ip],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)==0
+cands=[]
 for p in pools:
     a=int(ipaddress.ip_address(p["start"])); b=int(ipaddress.ip_address(p["end"]))
     for i in range(a,b+1):
         ip=str(ipaddress.ip_address(i))
         if ip not in used:
+            cands.append(ip)
+        if len(cands)>=64:
+            break
+    if len(cands)>=64:
+        break
+with ThreadPoolExecutor(max_workers=32) as ex:
+    for ip,busy in zip(cands,ex.map(live,cands)):
+        if not busy:
             print(ip); sys.exit()
 print("")
 ' "$sub"`
 
 // lbIPTakenProbe (preflight backstop) prints "taken" if the chosen LB IP is
-// already held by a port or floating IP on the cluster — catches a manually
-// entered colliding IP that the first-free suggestion would have avoided.
-const lbIPTakenProbe = `source /etc/admin-openrc.sh && { openstack port list --fixed-ip ip-address=%s -f value -c id 2>/dev/null; openstack floating ip list --floating-ip-address %s -f value -c id 2>/dev/null; } | grep -q . && echo taken || echo free`
+// held by a port or floating IP on this cluster, or answers ARP — the latter
+// catches an address held by another cluster on a shared provider network.
+const lbIPTakenProbe = `source /etc/admin-openrc.sh && addr=%s && { openstack port list --fixed-ip ip-address="$addr" -f value -c id 2>/dev/null; openstack floating ip list --floating-ip-address "$addr" -f value -c id 2>/dev/null; } | grep -q . && echo taken || { dev=$(ip -o route get "$addr" 2>/dev/null | sed -n "s/.* dev \([^ ]*\).*/\1/p"); [ -n "$dev" ] && arping -c2 -w2 -I "$dev" "$addr" >/dev/null 2>&1 && echo taken || echo free; }`
 
 // storageProbe reads the cluster's default cinder volume type (falling back to
 // the first type) — the storage_backend the image-import CLI validates against.
