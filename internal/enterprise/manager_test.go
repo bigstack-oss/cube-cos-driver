@@ -3,7 +3,9 @@ package enterprise
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -476,7 +478,7 @@ func TestManager_Cancel_ManualRacesNext(t *testing.T) {
 	<-bc.started // Next is provably mid-execStep, blocked in the step's command
 	go func() { defer wg.Done(); m.Cancel("cl1", "appfw") }()
 	time.Sleep(50 * time.Millisecond) // let Cancel observe the in-flight step
-	close(bc.release)                  // let the step's command return
+	close(bc.release)                 // let the step's command return
 	wg.Wait()
 
 	in, ok := m.Status("cl1", "appfw")
@@ -586,5 +588,62 @@ func TestStepDurations_IgnoresSkippedErroredAndCancelledSteps(t *testing.T) {
 	}
 	if _, ok := got["install_portal"]; ok {
 		t.Fatalf("install_portal should be absent while still running, got %v", got["install_portal"])
+	}
+}
+
+// The LB-IP probes must consider the wire, not just this cluster's neutron: on
+// a provider network shared with another cluster, neutron has no record of the
+// other cluster's ports (issue #100).
+func TestLBIPProbesDetectOnWireHolders(t *testing.T) {
+	if !strings.Contains(lbIPProbe, "arping") {
+		t.Error("lbIPProbe does not probe the wire; a free-by-neutron address may still be in use")
+	}
+	// ARP specifically: an Octavia amphora answers neither ICMP nor, unless it
+	// is listening, TCP.
+	for _, bad := range []string{"ping -c", "nc -z"} {
+		if strings.Contains(lbIPProbe, bad) {
+			t.Errorf("lbIPProbe uses %q, which misses an amphora", bad)
+		}
+	}
+	if !strings.Contains(lbIPTakenProbe, "arping") {
+		t.Error("lbIPTakenProbe (preflight backstop) does not probe the wire")
+	}
+}
+
+// lbIPTakenProbe binds the address once into a shell variable, so it takes
+// exactly one Sprintf argument; passing two silently appends %!(EXTRA ...).
+func TestLBIPTakenProbeTakesOneArg(t *testing.T) {
+	if got := strings.Count(lbIPTakenProbe, "%s"); got != 1 {
+		t.Fatalf("lbIPTakenProbe has %d %%s verbs, want 1", got)
+	}
+	out := fmt.Sprintf(lbIPTakenProbe, "10.32.1.101")
+	if strings.Contains(out, "%!") {
+		t.Errorf("Sprintf produced a formatting error: %s", out)
+	}
+	if !strings.Contains(out, "addr=10.32.1.101") {
+		t.Errorf("address not bound into the probe: %s", out)
+	}
+}
+
+// The embedded python must actually compile — a syntax error there degrades
+// the suggestion to empty with no visible cause.
+func TestLBIPProbeEmbeddedPythonCompiles(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	start := strings.Index(lbIPProbe, "python3 -c '")
+	if start < 0 {
+		t.Fatal("no embedded python found in lbIPProbe")
+	}
+	body := lbIPProbe[start+len("python3 -c '"):]
+	end := strings.Index(body, "'")
+	if end < 0 {
+		t.Fatal("unterminated embedded python in lbIPProbe")
+	}
+	cmd := exec.Command(py, "-c", "import sys;compile(sys.stdin.read(),\"probe\",\"exec\")")
+	cmd.Stdin = strings.NewReader(body[:end])
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("embedded python does not compile: %v\n%s", err, out)
 	}
 }
