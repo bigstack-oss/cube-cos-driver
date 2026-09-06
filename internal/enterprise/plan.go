@@ -208,7 +208,7 @@ func BuildPlan(module string, p InstallParams, airgap bool, dataDir string, m *M
 				Name:       "install_advisor",
 				Title:      "Deploy + verify Cube AI Advisor",
 				Kind:       "scp+run",
-				Cmd:        fmt.Sprintf("bash /tmp/%s %s %s %s", advisorInstallScriptName, p.Project, p.AdvisorLBIP, chartVer),
+				Cmd:        fmt.Sprintf("bash /tmp/%s %s %s %s %s", advisorInstallScriptName, p.Project, p.AdvisorLBIP, chartVer, advisorBaseURL(p)),
 				LocalPath:  localPath(dataDir, "advisor", advisorInstallScriptName),
 				RemotePath: "/tmp",
 			},
@@ -296,4 +296,16 @@ func BuildUninstallPlan(module string, p InstallParams, dataDir string) []planne
 	}
 	steps = append(steps, plannedStep{Name: "complete", Title: "Uninstall complete", Kind: "complete"})
 	return steps
+}
+
+// advisorBaseURL is the origin the advisor tells its IdP to redirect back to.
+//
+// The default is https on the LoadBalancer, matched by the self-signed
+// certificate the install script issues. http cannot work: the session cookie
+// is Secure, so advisor-api refuses a plain-http origin at startup.
+func advisorBaseURL(p InstallParams) string {
+	if s := strings.TrimSpace(p.AdvisorBaseURL); s != "" {
+		return strings.TrimRight(s, "/")
+	}
+	return "https://" + p.AdvisorLBIP
 }

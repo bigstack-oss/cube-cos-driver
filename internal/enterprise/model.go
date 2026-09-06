@@ -34,6 +34,18 @@ type InstallParams struct {
 
 	AdvisorFile string // advisor: cube-advisor-*.pigz basename
 	AdvisorLBIP string // advisor: dedicated LoadBalancer IP for the advisor service
+	// AdvisorBaseURL is the origin a browser reaches the advisor on, which the
+	// service uses to build its OAuth redirect_uri. Defaults to
+	// http://<AdvisorLBIP>/ when empty.
+	//
+	// It is a separate field from AdvisorLBIP because the two genuinely differ
+	// whenever the advisor is not reached at its LoadBalancer address directly:
+	// behind a TLS terminator it is https://<name>, and through an SSH tunnel it
+	// is http://localhost:<port>. The distinction matters more than it looks —
+	// the session cookie is __Host- prefixed and Secure, and browsers store
+	// Secure cookies only on a secure context, so plain HTTP on a bare lab IP
+	// cannot complete a sign-in at all while localhost and HTTPS both can.
+	AdvisorBaseURL string
 
 	StorageBackend string // cinder volume type for image import; from cluster query
 }

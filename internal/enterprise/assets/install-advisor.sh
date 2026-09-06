@@ -3,11 +3,20 @@
 # advisor_register only pushes the chart + prereqs to Harbor; this installs
 # the chart and confirms the advisor serves. Idempotent: safe to re-run.
 #
-# args: <framework> <advisor_lb_ip> <chart_version>
+# args: <framework> <advisor_lb_ip> <chart_version> [base_url]
 set -uo pipefail
 FRAMEWORK="${1:?framework name required}"
 ADVISOR_LB_IP="${2:?advisor lb ip required}"
 CHART_VER="${3:?chart version required}"
+# The origin a browser reaches the advisor on; the chart builds its OAuth
+# redirect_uri from it. Defaults to https on the LB: the session cookie is
+# __Host- prefixed and Secure, so advisor-api refuses a plain-http origin. This
+# script issues a self-signed certificate for that address below, so no external
+# TLS terminator is needed and nothing is fetched.
+#
+# An operator with their own terminator or certificate passes the origin as $4
+# and supplies the keypair through the chart directly.
+BASE_URL="${4:-https://$ADVISOR_LB_IP}"
 NS=cube-advisor
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
@@ -89,17 +98,27 @@ else
   if $K -n "$NS" get secret cube-advisor-secrets >/dev/null 2>&1; then
     DBPW=$($K -n "$NS" get secret cube-advisor-secrets -o jsonpath='{.data.dbPassword}' | base64 -d)
     APPPW=$($K -n "$NS" get secret cube-advisor-secrets -o jsonpath='{.data.appDbPassword}' | base64 -d)
-    HSSEC=$($K -n "$NS" get secret cube-advisor-secrets -o jsonpath='{.data.hs256Secret}' | base64 -d)
   else
-    DBPW=$(openssl rand -hex 16); APPPW=$(openssl rand -hex 16); HSSEC=$(openssl rand -hex 24)
+    DBPW=$(openssl rand -hex 16); APPPW=$(openssl rand -hex 16)
   fi
+
+  # A self-signed keypair for the LB address. SAN carries the IP: browsers
+  # reject a certificate that only has a CN.
+  TLSDIR="$(mktemp -d)"
+  trap 'rm -rf "$TLSDIR"' EXIT
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -subj "/CN=${ADVISOR_LB_IP}" -addext "subjectAltName=IP:${ADVISOR_LB_IP}" \
+    -keyout "$TLSDIR/tls.key" -out "$TLSDIR/tls.crt" 2>/dev/null \
+    || fail "could not issue the advisor's TLS certificate"
 
   helm upgrade --install cube-advisor "oci://$RURL/$RPROJ/cube-advisor" --version "$CHART_VER" \
     -n "$NS" --create-namespace --kubeconfig "$KC" \
     --set lbIP="$ADVISOR_LB_IP" \
     --set dbPassword="$DBPW" \
     --set appDbPassword="$APPPW" \
-    --set hs256Secret="$HSSEC" \
+    --set baseURL="$BASE_URL" \
+    --set-file web.tls.cert="$TLSDIR/tls.crt" \
+    --set-file web.tls.key="$TLSDIR/tls.key" \
     --kube-insecure-skip-tls-verify --insecure-skip-tls-verify --timeout 20m --wait=false
 fi
 
@@ -115,15 +134,15 @@ echo "verifying cube-advisor is serving…"
 ok=""
 for _ in $(seq 1 30); do
   # healthz answers "ok <version>" (bare "ok" when unversioned).
-  BODY="$(curl -skf --max-time 10 "http://${ADVISOR_LB_IP}/healthz" 2>/dev/null)"
+  BODY="$(curl -skf --max-time 10 "https://${ADVISOR_LB_IP}/healthz" 2>/dev/null)"
   case "$BODY" in
     ok|ok\ *) ok=1; break ;;
   esac
   sleep 10
 done
-[ -n "$ok" ] || fail "cube-advisor healthz not ok at http://${ADVISOR_LB_IP}/healthz"
+[ -n "$ok" ] || fail "cube-advisor healthz not ok at https://${ADVISOR_LB_IP}/healthz"
 
-curl -sk --max-time 20 "http://${ADVISOR_LB_IP}/" 2>/dev/null | grep -q '<div id="root">' \
+curl -sk --max-time 20 "https://${ADVISOR_LB_IP}/" 2>/dev/null | grep -q '<div id="root">' \
   || fail "cube-advisor UI not serving at http://${ADVISOR_LB_IP}/"
 
-echo "cube-advisor installed and verified: http://${ADVISOR_LB_IP}/"
+echo "cube-advisor installed and verified: https://${ADVISOR_LB_IP}/"
