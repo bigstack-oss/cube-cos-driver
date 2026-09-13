@@ -21,6 +21,17 @@ NS=cube-advisor
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
 
+# One cleanup for one EXIT trap. Each `trap … EXIT` replaces the last, so the
+# separate traps this script used to set meant only the final one ran and the
+# /etc/hosts pin leaked — exactly what its own comment says must not happen.
+HOSTS_PIN=""; TMPDIRS=()
+cleanup() {
+  [ -n "$HOSTS_PIN" ] && sudo sed -i "/${HOSTS_PIN}/d" /etc/hosts
+  [ ${#TMPDIRS[@]} -gt 0 ] && rm -rf "${TMPDIRS[@]}"
+  return 0
+}
+trap cleanup EXIT
+
 # --- framework kubeconfig (rancher-proxied, rewritten to the control VIP) ---
 CTRL="$(grep 'cubesys.control.vip' /etc/settings.txt | cut -d= -f2 | tr -d ' ')"
 if [ -z "$CTRL" ]; then
@@ -65,62 +76,97 @@ if $K get namespace "$NS" -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Te
   $K get namespace "$NS" >/dev/null 2>&1 && fail "namespace $NS still terminating — clear it before reinstalling"
 fi
 
-# --- install the chart (skip if already present) ---
-if $K -n "$NS" get deploy cube-advisor >/dev/null 2>&1; then
-  echo "cube-advisor already installed — skipping helm install."
+# --- install or upgrade the chart ---
+# No "already installed, skipping" guard: helm upgrade --install is exactly the
+# command for "may or may not exist", and skipping it made a re-run a no-op, so
+# a new chart version could never reach a deployed framework. install-portal.sh
+# keeps its guard because it runs plain `helm install`, which genuinely cannot
+# re-run; the difference is the helm verb, not the intent.
+#
+# Re-running must not disturb what a prior install created: the secrets below
+# are read back rather than regenerated, and so are the web keypair and the
+# enrollment material — the latter is not a chart value the driver sets, so
+# without reading it back an upgrade would render the release without that
+# Secret and helm would delete it, taking every enrolled agent's trust with it.
+RURL="$($K -n harbor get secret registry-details -o jsonpath='{.data.registryUrl}' 2>/dev/null | base64 -d)"
+RPROJ="$($K -n harbor get secret registry-details -o jsonpath='{.data.registryExtensionProject}' 2>/dev/null | base64 -d)"
+RUSER="$($K -n harbor get secret registry-details -o jsonpath='{.data.registryServiceAccount}' 2>/dev/null | base64 -d)"
+RPASS="$($K -n harbor get secret registry-details -o jsonpath='{.data.registryServicePassword}' 2>/dev/null | base64 -d)"
+[ -n "$RURL" ] || fail "registry-details.registryUrl is empty — appctl's registry setup did not complete"
+echo "installing cube-advisor $CHART_VER from oci://$RURL/$RPROJ …"
+# The registry hostname lives on the framework's ingress LB and only the
+# node-local resolver knows it — dig it there (as import.sh does) and pin it
+# in /etc/hosts for the duration of the helm pulls.
+LOCAL_IP="$(hostname -I | awk '{print $1}')"
+REG_IP="$(dig @"${LOCAL_IP}" "$RURL" A +short | tail -1)"
+[ -n "$REG_IP" ] || fail "could not resolve registry $RURL via local resolver ${LOCAL_IP}"
+# Pin it only for the duration of this run and undo even on failure — a
+# leftover entry would mask a wrong/stale IP on the next run.
+if ! grep -q "$RURL" /etc/hosts; then
+  echo "$REG_IP $RURL" | sudo tee -a /etc/hosts >/dev/null
+  HOSTS_PIN="$RURL"
+fi
+helm registry login "$RURL" -u "$RUSER" -p "$RPASS" --insecure >/dev/null 2>&1
+# advisor_register can exit 0 having pushed nothing if the framework registry
+# wasn't set up — fail clearly here, not on a cryptic helm pull.
+helm show chart "oci://$RURL/$RPROJ/cube-advisor" --version "$CHART_VER" --insecure-skip-tls-verify >/dev/null 2>&1 \
+  || fail "cube-advisor chart not in registry (oci://$RURL/$RPROJ/cube-advisor:$CHART_VER) — advisor_register pushed nothing; check the framework registry setup"
+
+# Secrets: generate once, reuse on re-run (a re-run must not rotate creds a
+# prior install already wrote into the running database).
+if $K -n "$NS" get secret cube-advisor-secrets >/dev/null 2>&1; then
+  DBPW=$($K -n "$NS" get secret cube-advisor-secrets -o jsonpath='{.data.dbPassword}' | base64 -d)
+  APPPW=$($K -n "$NS" get secret cube-advisor-secrets -o jsonpath='{.data.appDbPassword}' | base64 -d)
 else
-  RURL="$($K -n harbor get secret registry-details -o jsonpath='{.data.registryUrl}' 2>/dev/null | base64 -d)"
-  RPROJ="$($K -n harbor get secret registry-details -o jsonpath='{.data.registryExtensionProject}' 2>/dev/null | base64 -d)"
-  RUSER="$($K -n harbor get secret registry-details -o jsonpath='{.data.registryServiceAccount}' 2>/dev/null | base64 -d)"
-  RPASS="$($K -n harbor get secret registry-details -o jsonpath='{.data.registryServicePassword}' 2>/dev/null | base64 -d)"
-  [ -n "$RURL" ] || fail "registry-details.registryUrl is empty — appctl's registry setup did not complete"
-  echo "installing cube-advisor $CHART_VER from oci://$RURL/$RPROJ …"
-  # The registry hostname lives on the framework's ingress LB and only the
-  # node-local resolver knows it — dig it there (as import.sh does) and pin it
-  # in /etc/hosts for the duration of the helm pulls.
-  LOCAL_IP="$(hostname -I | awk '{print $1}')"
-  REG_IP="$(dig @"${LOCAL_IP}" "$RURL" A +short | tail -1)"
-  [ -n "$REG_IP" ] || fail "could not resolve registry $RURL via local resolver ${LOCAL_IP}"
-  # Pin it only for the duration of this run and undo even on failure — a
-  # leftover entry would mask a wrong/stale IP on the next run.
-  if ! grep -q "$RURL" /etc/hosts; then
-    echo "$REG_IP $RURL" | sudo tee -a /etc/hosts >/dev/null
-    trap 'sudo sed -i "/${RURL}/d" /etc/hosts' EXIT
-  fi
-  helm registry login "$RURL" -u "$RUSER" -p "$RPASS" --insecure >/dev/null 2>&1
-  # advisor_register can exit 0 having pushed nothing if the framework registry
-  # wasn't set up — fail clearly here, not on a cryptic helm pull.
-  helm show chart "oci://$RURL/$RPROJ/cube-advisor" --version "$CHART_VER" --insecure-skip-tls-verify >/dev/null 2>&1 \
-    || fail "cube-advisor chart not in registry (oci://$RURL/$RPROJ/cube-advisor:$CHART_VER) — advisor_register pushed nothing; check the framework registry setup"
+  DBPW=$(openssl rand -hex 16); APPPW=$(openssl rand -hex 16)
+fi
 
-  # Secrets: generate once, reuse on re-run (a re-run must not rotate creds a
-  # prior install already wrote into the running database).
-  if $K -n "$NS" get secret cube-advisor-secrets >/dev/null 2>&1; then
-    DBPW=$($K -n "$NS" get secret cube-advisor-secrets -o jsonpath='{.data.dbPassword}' | base64 -d)
-    APPPW=$($K -n "$NS" get secret cube-advisor-secrets -o jsonpath='{.data.appDbPassword}' | base64 -d)
-  else
-    DBPW=$(openssl rand -hex 16); APPPW=$(openssl rand -hex 16)
-  fi
-
-  # A self-signed keypair for the LB address. SAN carries the IP: browsers
-  # reject a certificate that only has a CN.
-  TLSDIR="$(mktemp -d)"
-  trap 'rm -rf "$TLSDIR"' EXIT
+# A self-signed keypair for the LB address. SAN carries the IP: browsers
+# reject a certificate that only has a CN. Reused on re-run for the same
+# reason the passwords are: rotating it would make every browser that has
+# accepted this advisor challenge it again after a routine upgrade.
+TLSDIR="$(mktemp -d)"; TMPDIRS+=("$TLSDIR")
+if $K -n "$NS" get secret cube-advisor-web-tls >/dev/null 2>&1; then
+  $K -n "$NS" get secret cube-advisor-web-tls -o jsonpath='{.data.tls\.crt}' | base64 -d > "$TLSDIR/tls.crt"
+  $K -n "$NS" get secret cube-advisor-web-tls -o jsonpath='{.data.tls\.key}' | base64 -d > "$TLSDIR/tls.key"
+fi
+if [ ! -s "$TLSDIR/tls.crt" ] || [ ! -s "$TLSDIR/tls.key" ]; then
   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
     -subj "/CN=${ADVISOR_LB_IP}" -addext "subjectAltName=IP:${ADVISOR_LB_IP}" \
     -keyout "$TLSDIR/tls.key" -out "$TLSDIR/tls.crt" 2>/dev/null \
     || fail "could not issue the advisor's TLS certificate"
-
-  helm upgrade --install cube-advisor "oci://$RURL/$RPROJ/cube-advisor" --version "$CHART_VER" \
-    -n "$NS" --create-namespace --kubeconfig "$KC" \
-    --set lbIP="$ADVISOR_LB_IP" \
-    --set dbPassword="$DBPW" \
-    --set appDbPassword="$APPPW" \
-    --set baseURL="$BASE_URL" \
-    --set-file web.tls.cert="$TLSDIR/tls.crt" \
-    --set-file web.tls.key="$TLSDIR/tls.key" \
-    --kube-insecure-skip-tls-verify --insecure-skip-tls-verify --timeout 20m --wait=false
 fi
+
+# The enrollment CA and tunnel keypair are not values this script generates —
+# an operator supplies them — but they live in the release, so an upgrade that
+# does not pass them back renders without that Secret and helm deletes it.
+# Every enrolled agent pins this CA and cannot be re-enrolled remotely.
+ENROLL_ARGS=()
+if $K -n "$NS" get secret cube-advisor-enrollment >/dev/null 2>&1; then
+  ENROLLDIR="$(mktemp -d)"; TMPDIRS+=("$ENROLLDIR")
+  for f in ca.crt ca.key tunnel.crt tunnel.key; do
+    $K -n "$NS" get secret cube-advisor-enrollment -o jsonpath="{.data.${f//./\\.}}" 2>/dev/null | base64 -d > "$ENROLLDIR/$f"
+  done
+  [ -s "$ENROLLDIR/ca.crt" ] && [ -s "$ENROLLDIR/ca.key" ] \
+    || fail "cube-advisor-enrollment exists but its CA is unreadable — refusing to upgrade and drop it"
+  ENROLL_ARGS+=(--set-file enrollment.caCert="$ENROLLDIR/ca.crt" --set-file enrollment.caKey="$ENROLLDIR/ca.key")
+  if [ -s "$ENROLLDIR/tunnel.crt" ] && [ -s "$ENROLLDIR/tunnel.key" ]; then
+    ENROLL_ARGS+=(--set-file enrollment.tunnelCert="$ENROLLDIR/tunnel.crt" --set-file enrollment.tunnelKey="$ENROLLDIR/tunnel.key")
+  fi
+  echo "carrying the existing enrollment CA through the upgrade."
+fi
+
+helm upgrade --install cube-advisor "oci://$RURL/$RPROJ/cube-advisor" --version "$CHART_VER" \
+  -n "$NS" --create-namespace --kubeconfig "$KC" \
+  --set lbIP="$ADVISOR_LB_IP" \
+  --set dbPassword="$DBPW" \
+  --set appDbPassword="$APPPW" \
+  --set baseURL="$BASE_URL" \
+  --set-file web.tls.cert="$TLSDIR/tls.crt" \
+  --set-file web.tls.key="$TLSDIR/tls.key" \
+  "${ENROLL_ARGS[@]}" \
+  --kube-insecure-skip-tls-verify --insecure-skip-tls-verify --timeout 20m --wait=false \
+  || fail "helm upgrade failed — the release is unchanged; do not uninstall to retry, that deletes the database"
 
 # --- wait for the advisor workloads ---
 echo "waiting for advisor database…"
