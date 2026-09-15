@@ -55,6 +55,12 @@ type enterpriseInstall struct {
 		Name  string `json:"Name"`
 		State string `json:"State"`
 	} `json:"Steps"`
+	// Only the two framework-name fields: the tests below assert that each is
+	// filled from the other, not the whole param set.
+	Params struct {
+		Project   string `json:"Project"`
+		Framework string `json:"Framework"`
+	} `json:"Params"`
 }
 
 func TestEnterpriseInstallStartAndStatus(t *testing.T) {
@@ -109,7 +115,7 @@ func TestEnterpriseInstallStartSingleNodeNoVIP(t *testing.T) {
 	})
 
 	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+detail.ShortID()+"/enterprise/install",
-		[]byte(`{"module":"appfw","manual":true,"params":{"OSImage":"rancher.raw"}}`))
+		[]byte(`{"module":"appfw","manual":true,"params":{"Project":"appfw","OSImage":"rancher.raw"}}`))
 	if resp.StatusCode != 202 {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("single-node (no VIP) start = %d, want 202: %s", resp.StatusCode, b)
@@ -182,7 +188,7 @@ func TestEnterpriseInstallStartRequiresAppFile(t *testing.T) {
 	srv, id, _ := enterpriseFixture(t)
 
 	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+id+"/enterprise/install",
-		[]byte(`{"module":"cmp","manual":true,"params":{"OSImage":"r.raw","FsImage":"m.qcow2","LBImage":"a.qcow2"}}`))
+		[]byte(`{"module":"cmp","manual":true,"params":{"Project":"appfw","OSImage":"r.raw","FsImage":"m.qcow2","LBImage":"a.qcow2"}}`))
 	if resp.StatusCode != 400 {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("start without AppFile = %d, want 400: %s", resp.StatusCode, b)
@@ -196,7 +202,7 @@ func TestEnterpriseInstallStartRequiresAdvisorFile(t *testing.T) {
 	srv, id, _ := enterpriseFixture(t)
 
 	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+id+"/enterprise/install",
-		[]byte(`{"module":"advisor","manual":true,"params":{"OSImage":"r.raw","FsImage":"m.qcow2","LBImage":"a.qcow2","AdvisorLBIP":"10.0.0.9"}}`))
+		[]byte(`{"module":"advisor","manual":true,"params":{"Project":"appfw","OSImage":"r.raw","FsImage":"m.qcow2","LBImage":"a.qcow2","AdvisorLBIP":"10.0.0.9"}}`))
 	if resp.StatusCode != 400 {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("start without AdvisorFile = %d, want 400: %s", resp.StatusCode, b)
@@ -211,12 +217,68 @@ func TestEnterpriseInstallStartRequiresAdvisorLBIP(t *testing.T) {
 	srv, id, _ := enterpriseFixture(t)
 
 	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+id+"/enterprise/install",
-		[]byte(`{"module":"advisor","manual":true,"params":{"OSImage":"r.raw","FsImage":"m.qcow2","LBImage":"a.qcow2","AdvisorFile":"cube-advisor-1.2.3.pigz"}}`))
+		[]byte(`{"module":"advisor","manual":true,"params":{"Project":"appfw","OSImage":"r.raw","FsImage":"m.qcow2","LBImage":"a.qcow2","AdvisorFile":"cube-advisor-1.2.3.pigz"}}`))
 	if resp.StatusCode != 400 {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("start without AdvisorLBIP = %d, want 400: %s", resp.StatusCode, b)
 	}
 	resp.Body.Close()
+}
+
+// A framework name is required, and reaches the plan through two fields --
+// framework_create reads Project, advisor_register reads Framework. A request
+// carrying neither must be refused here: downstream nothing catches it, and
+// the run dies at the cluster as "invalid arguments" with an empty step output
+// that never mentions the blank name.
+func TestEnterpriseInstallStartRequiresFrameworkName(t *testing.T) {
+	srv, id, _ := enterpriseFixture(t)
+
+	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+id+"/enterprise/install",
+		[]byte(`{"module":"advisor","manual":true,"params":{"OSImage":"r.raw","AdvisorFile":"cube-advisor-1.2.3.pigz","AdvisorLBIP":"10.0.0.9"}}`))
+	if resp.StatusCode != 400 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("start without a framework name = %d, want 400: %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+}
+
+// Framework alone is enough: it is the field the CMP and advisor register
+// steps read, and a caller that sets only it means the same framework
+// framework_create would be given.
+func TestEnterpriseInstallStartFrameworkFillsProject(t *testing.T) {
+	srv, id, _ := enterpriseFixture(t)
+
+	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+id+"/enterprise/install",
+		[]byte(`{"module":"advisor","manual":true,"params":{"Framework":"appfw","OSImage":"r.raw","AdvisorFile":"cube-advisor-1.2.3.pigz","AdvisorLBIP":"10.0.0.9"}}`))
+	if resp.StatusCode != 202 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("start with only Framework = %d, want 202: %s", resp.StatusCode, b)
+	}
+	var in enterpriseInstall
+	json.NewDecoder(resp.Body).Decode(&in)
+	resp.Body.Close()
+	if in.Params.Project != "appfw" {
+		t.Fatalf("Project = %q, want it filled from Framework", in.Params.Project)
+	}
+}
+
+// And the other way round: Project alone fills Framework, which is what the
+// UI sends and what every advisor install before this fix relied on.
+func TestEnterpriseInstallStartProjectFillsFramework(t *testing.T) {
+	srv, id, _ := enterpriseFixture(t)
+
+	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+id+"/enterprise/install",
+		[]byte(`{"module":"advisor","manual":true,"params":{"Project":"appfw","OSImage":"r.raw","AdvisorFile":"cube-advisor-1.2.3.pigz","AdvisorLBIP":"10.0.0.9"}}`))
+	if resp.StatusCode != 202 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("start with only Project = %d, want 202: %s", resp.StatusCode, b)
+	}
+	var in enterpriseInstall
+	json.NewDecoder(resp.Body).Decode(&in)
+	resp.Body.Close()
+	if in.Params.Framework != "appfw" {
+		t.Fatalf("Framework = %q, want it filled from Project", in.Params.Framework)
+	}
 }
 
 func TestEnterpriseArtifacts(t *testing.T) {
