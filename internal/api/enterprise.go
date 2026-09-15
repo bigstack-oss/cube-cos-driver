@@ -222,6 +222,23 @@ func (h *enterpriseHandlers) start(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "params.OSImage is required (the rancher cluster image .raw)")
 		return
 	}
+	// One framework name reaches the plan through two fields: framework_create
+	// reads Project, while app_register and advisor_register read Framework.
+	// Fill each from the other so a caller that sets either one is understood,
+	// and refuse when neither is set. An empty name is not caught downstream --
+	// it renders `framework_create  <public> <mgmt> ...` with a blank argument,
+	// skips preflight's "already present" check (which keys on the same empty
+	// name), and dies at the cluster as "invalid arguments" with no output.
+	if body.Params.Project == "" {
+		body.Params.Project = body.Params.Framework
+	}
+	if body.Params.Framework == "" {
+		body.Params.Framework = body.Params.Project
+	}
+	if body.Params.Project == "" {
+		writeError(w, http.StatusBadRequest, "params.Project is required (the app-framework name)")
+		return
+	}
 	// cmp's plan imports the portal chart keyed on AppFile; an empty value
 	// can't be resolved to a file and would scp the artifacts directory.
 	if body.Module == enterprise.ModuleCMP && body.Params.AppFile == "" {
