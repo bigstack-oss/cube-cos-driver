@@ -647,3 +647,64 @@ func TestLBIPProbeEmbeddedPythonCompiles(t *testing.T) {
 		t.Errorf("embedded python does not compile: %v\n%s", err, out)
 	}
 }
+
+// A step whose SSH transport died must not read as a command that failed.
+//
+// On the lab cluster both advisor install steps reported failure with an empty
+// output while the identical command, run on the node, succeeded -- so an
+// operator was told the install had failed while it was in fact still running.
+// The step still stops (nothing can read a result once the channel is gone),
+// but what it says has to send the operator to the cluster rather than back to
+// the driver's retry button.
+func TestManager_TransportLoss_SaysTheCommandMayStillBeRunning(t *testing.T) {
+	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", func(cmd string) ([]string, error) {
+		if strings.Contains(cmd, "app_import") {
+			return nil, fmt.Errorf("%s: %w", cmd, clusterssh.ErrConnectionLost)
+		}
+		return nil, nil
+	}))
+	m.Start("cl1", "advisor", "10.32.10.140", "pw",
+		InstallParams{Project: "appfw", Framework: "appfw", LBIP: "10.32.36.120", OSImage: "r.raw",
+			AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9"}, false, false)
+	waitState(t, m, "cl1", "advisor", "error")
+
+	in, _ := m.Status("cl1", "advisor")
+	var step *Step
+	for i := range in.Steps {
+		if in.Steps[i].Name == "advisor_register" {
+			step = in.Steps[i]
+		}
+	}
+	if step == nil {
+		t.Fatalf("advisor_register step missing: %+v", in.Steps)
+	}
+	if step.State != StepError {
+		t.Fatalf("advisor_register state = %q, want %q", step.State, StepError)
+	}
+	if !strings.Contains(step.Err, "still be running on the cluster") {
+		t.Fatalf("advisor_register Err = %q, want it to point at the cluster", step.Err)
+	}
+}
+
+// The other half: a command that really did fail must keep reading as a command
+// failure. Misclassifying it would send an operator to the cluster to look for
+// work that genuinely failed in the driver.
+func TestManager_CommandFailure_StillReadsAsOne(t *testing.T) {
+	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", func(cmd string) ([]string, error) {
+		if strings.Contains(cmd, "app_import") {
+			return nil, fmt.Errorf("%s: exited 1 (import.sh: chart push failed)", cmd)
+		}
+		return nil, nil
+	}))
+	m.Start("cl1", "advisor", "10.32.10.140", "pw",
+		InstallParams{Project: "appfw", Framework: "appfw", LBIP: "10.32.36.120", OSImage: "r.raw",
+			AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9"}, false, false)
+	waitState(t, m, "cl1", "advisor", "error")
+
+	in, _ := m.Status("cl1", "advisor")
+	for _, s := range in.Steps {
+		if s.Name == "advisor_register" && strings.Contains(s.Err, "still be running") {
+			t.Fatalf("a real command failure was reported as a lost connection: %q", s.Err)
+		}
+	}
+}
