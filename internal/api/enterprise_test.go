@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/bigstack-oss/cube-cos-driver/internal/clusterssh"
@@ -304,4 +305,36 @@ func TestEnterpriseArtifacts(t *testing.T) {
 	if len(arts.AppFW) != 1 || arts.AppFW[0] != "r.raw" {
 		t.Fatalf("artifacts = %+v", arts)
 	}
+}
+
+// The advisor's console pool is probed by Introspect and has to survive the
+// response struct. It did not: cluster-info serialises an inline struct, and a
+// field added to ClusterQuery alone is computed and then dropped, so the
+// install form could never offer a pool and no caller could learn one without
+// running the probe itself.
+func TestClusterInfoReturnsTheAdvisorPool(t *testing.T) {
+	srv, id, _ := enterpriseFixture(t)
+
+	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+id+"/enterprise/cluster-info", []byte(`{}`))
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("cluster-info = %d, want 200: %s", resp.StatusCode, b)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["suggestedAdvisorPool"]; !ok {
+		t.Fatalf("cluster-info has no suggestedAdvisorPool key; keys=%v", keysOf(body))
+	}
+}
+
+func keysOf(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

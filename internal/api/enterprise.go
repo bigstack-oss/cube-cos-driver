@@ -116,7 +116,11 @@ func (h *enterpriseHandlers) clusterInfo(w http.ResponseWriter, r *http.Request)
 		Version          string   `json:"version"`
 		Manifest         string   `json:"manifest"`
 		Manifests        []string `json:"manifests"`
-	}{q.Projects, q.Networks, q.AirgapSupported, q.SuggestedLBIP, q.SuggestedStorage, q.Version, q.Manifest, q.Manifests})
+		// The advisor's web-console addresses. Probed by Introspect and, until
+		// this line existed, dropped here -- so the form could never offer a
+		// pool and no caller could learn one without running the probe itself.
+		SuggestedAdvisorPool []string `json:"suggestedAdvisorPool"`
+	}{q.Projects, q.Networks, q.AirgapSupported, q.SuggestedLBIP, q.SuggestedStorage, q.Version, q.Manifest, q.Manifests, q.SuggestedAdvisorPool})
 }
 
 // defaultPassword derives the cluster root password from the connect host's
