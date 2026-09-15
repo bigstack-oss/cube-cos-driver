@@ -7,14 +7,34 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
+
+// ErrConnectionLost means the transport went away while a command was running:
+// the channel closed carrying no exit status, so the command's fate is unknown.
+// It is deliberately not "the command failed" -- the command may have finished,
+// and may still be running on the node. Callers that report a step as failed
+// must say which of the two happened, or an operator is told work failed that
+// is in fact still going.
+var ErrConnectionLost = errors.New("connection lost while the command was running")
+
+// keepaliveInterval is how often an open connection is probed. The cluster's
+// sshd runs with ClientAliveInterval 0, so nothing on that side probes either:
+// a command that prints nothing for minutes (a helm install, an image import)
+// leaves the connection idle, and anything between the driver and the cluster
+// that drops idle flows takes it without either end noticing until the channel
+// closes with no exit status.
+const keepaliveInterval = 30 * time.Second
 
 // Client runs commands and pushes files to a remote cluster node.
 type Client interface {
@@ -28,6 +48,9 @@ type Client interface {
 
 type sshClient struct {
 	conn *ssh.Client
+	// done stops the keepalive loop; closed once, by Close.
+	done     chan struct{}
+	closeOne sync.Once
 }
 
 // NewSSHClient dials root@host:22 with password auth (InsecureIgnoreHostKey —
@@ -43,7 +66,42 @@ func NewSSHClient(host, user, password string) (Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("clusterssh: dial %s: %w", host, err)
 	}
-	return &sshClient{conn: conn}, nil
+	c := &sshClient{conn: conn, done: make(chan struct{})}
+	go c.keepalive()
+	return c, nil
+}
+
+// keepalive probes the connection until Close, so a dead transport is noticed
+// as one rather than surfacing later as a command with no exit status.
+func (c *sshClient) keepalive() {
+	t := time.NewTicker(keepaliveInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-t.C:
+			// The request type is the one OpenSSH answers; a failure means the
+			// connection is already gone, so there is nothing left to probe.
+			if _, _, err := c.conn.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// isTransportLoss distinguishes "the transport died" from "the command failed".
+// ssh.ExitMissingError is the exact shape seen on the lab cluster: the channel
+// closed with neither an exit status nor an exit signal.
+func isTransportLoss(err error) bool {
+	if err == nil {
+		return false
+	}
+	var missing *ssh.ExitMissingError
+	if errors.As(err, &missing) {
+		return true
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed)
 }
 
 func (c *sshClient) Run(ctx context.Context, cmd string, onLine func(string)) error {
@@ -90,6 +148,9 @@ func (c *sshClient) Run(ctx context.Context, cmd string, onLine func(string)) er
 		return ctx.Err()
 	case err := <-done:
 		if err != nil {
+			if isTransportLoss(err) {
+				return fmt.Errorf("%s: %w", cmd, ErrConnectionLost)
+			}
 			return fmt.Errorf("%s: %w (%s)", cmd, err, stderr.String())
 		}
 		return nil
@@ -181,5 +242,6 @@ func (c *sshClient) Push(ctx context.Context, localPath, remotePath string) erro
 }
 
 func (c *sshClient) Close() error {
+	c.closeOne.Do(func() { close(c.done) })
 	return c.conn.Close()
 }

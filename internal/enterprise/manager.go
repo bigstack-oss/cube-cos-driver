@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -400,6 +401,13 @@ func (m *Manager) execStep(ctx context.Context, k string, client clusterssh.Clie
 	if runErr != nil {
 		step.State = StepError
 		step.Err = runErr.Error()
+		// A lost transport is not a failed command. The step has to stop either
+		// way -- nothing can read the command's result once the channel is gone
+		// -- but an operator told "the command failed" will re-run work that may
+		// have succeeded, or is still running on the cluster right now.
+		if errors.Is(runErr, clusterssh.ErrConnectionLost) {
+			step.Err = runErr.Error() + " -- the command may have finished, or still be running on the cluster; check there before re-running this step"
+		}
 		in.State = "error"
 		// A Cancel mid-step arrives as a context cancellation; record the run as
 		// cancelled (matching a between-steps Cancel), not a step failure.
