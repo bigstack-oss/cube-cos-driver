@@ -595,14 +595,14 @@ func TestStepDurations_IgnoresSkippedErroredAndCancelledSteps(t *testing.T) {
 // a provider network shared with another cluster, neutron has no record of the
 // other cluster's ports (issue #100).
 func TestLBIPProbesDetectOnWireHolders(t *testing.T) {
-	if !strings.Contains(lbIPProbe, "arping") {
-		t.Error("lbIPProbe does not probe the wire; a free-by-neutron address may still be in use")
+	if !strings.Contains(lbIPPoolProbe, "arping") {
+		t.Error("lbIPPoolProbe does not probe the wire; a free-by-neutron address may still be in use")
 	}
 	// ARP specifically: an Octavia amphora answers neither ICMP nor, unless it
 	// is listening, TCP.
 	for _, bad := range []string{"ping -c", "nc -z"} {
-		if strings.Contains(lbIPProbe, bad) {
-			t.Errorf("lbIPProbe uses %q, which misses an amphora", bad)
+		if strings.Contains(lbIPPoolProbe, bad) {
+			t.Errorf("lbIPPoolProbe uses %q, which misses an amphora", bad)
 		}
 	}
 	if !strings.Contains(lbIPTakenProbe, "arping") {
@@ -632,14 +632,14 @@ func TestLBIPProbeEmbeddedPythonCompiles(t *testing.T) {
 	if err != nil {
 		t.Skip("python3 not available")
 	}
-	start := strings.Index(lbIPProbe, "python3 -c '")
+	start := strings.Index(lbIPPoolProbe, "python3 -c '")
 	if start < 0 {
-		t.Fatal("no embedded python found in lbIPProbe")
+		t.Fatal("no embedded python found in lbIPPoolProbe")
 	}
-	body := lbIPProbe[start+len("python3 -c '"):]
+	body := lbIPPoolProbe[start+len("python3 -c '"):]
 	end := strings.Index(body, "'")
 	if end < 0 {
-		t.Fatal("unterminated embedded python in lbIPProbe")
+		t.Fatal("unterminated embedded python in lbIPPoolProbe")
 	}
 	cmd := exec.Command(py, "-c", "import sys;compile(sys.stdin.read(),\"probe\",\"exec\")")
 	cmd.Stdin = strings.NewReader(body[:end])
@@ -706,5 +706,81 @@ func TestManager_CommandFailure_StillReadsAsOne(t *testing.T) {
 		if s.Name == "advisor_register" && strings.Contains(s.Err, "still be running") {
 			t.Fatalf("a real command failure was reported as a lost connection: %q", s.Err)
 		}
+	}
+}
+
+// The pool probe takes a count, so it must be Sprintf'd -- using it raw emits
+// %!d(MISSING) into the remote command and the suggestion silently degrades
+// to empty.
+func TestLBIPPoolProbeTakesACount(t *testing.T) {
+	if got := strings.Count(lbIPPoolProbe, "%d"); got != 1 {
+		t.Fatalf("lbIPPoolProbe has %d %%d verbs, want 1", got)
+	}
+	out := fmt.Sprintf(lbIPPoolProbe, 5)
+	if strings.Contains(out, "%!") {
+		t.Errorf("Sprintf produced a formatting error: %s", out)
+	}
+	if !strings.Contains(out, `"5"`) {
+		t.Errorf("count not bound into the probe: %s", out)
+	}
+}
+
+// Every console origin address is checked before the install commits to it.
+// They become SANs on a certificate issued during the run, so an address that
+// turns out to be taken is not a value to edit afterwards.
+func TestPreflightChecksEveryConsoleAddress(t *testing.T) {
+	var probed []string
+	var mu sync.Mutex
+	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", func(cmd string) ([]string, error) {
+		if strings.Contains(cmd, "addr=") {
+			mu.Lock()
+			probed = append(probed, cmd)
+			mu.Unlock()
+			return []string{"free"}, nil
+		}
+		return nil, nil
+	}))
+	m.Start("cl1", "advisor", "10.32.10.140", "pw",
+		InstallParams{Project: "appfw", Framework: "appfw", LBIP: "10.32.36.120", OSImage: "r.raw",
+			AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9",
+			AdvisorPool: []string{"10.0.0.10", "10.0.0.11"}}, false, false)
+	waitState(t, m, "cl1", "advisor", "done")
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, want := range []string{"addr=10.0.0.10", "addr=10.0.0.11"} {
+		found := false
+		for _, c := range probed {
+			if strings.Contains(c, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("console address %q was never probed; probed=%v", want, probed)
+		}
+	}
+}
+
+// A taken console address stops the install, rather than being discovered when
+// the console refuses to start.
+func TestPreflightRefusesATakenConsoleAddress(t *testing.T) {
+	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", func(cmd string) ([]string, error) {
+		if strings.Contains(cmd, "addr=10.0.0.11") {
+			return []string{"taken"}, nil
+		}
+		if strings.Contains(cmd, "addr=") {
+			return []string{"free"}, nil
+		}
+		return nil, nil
+	}))
+	m.Start("cl1", "advisor", "10.32.10.140", "pw",
+		InstallParams{Project: "appfw", Framework: "appfw", LBIP: "10.32.36.120", OSImage: "r.raw",
+			AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9",
+			AdvisorPool: []string{"10.0.0.10", "10.0.0.11"}}, false, false)
+	waitState(t, m, "cl1", "advisor", "error")
+
+	in, _ := m.Status("cl1", "advisor")
+	if !strings.Contains(in.Steps[0].Err, "10.0.0.11") {
+		t.Fatalf("preflight Err = %q, want it to name the taken address", in.Steps[0].Err)
 	}
 }

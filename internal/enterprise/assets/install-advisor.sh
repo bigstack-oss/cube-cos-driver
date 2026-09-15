@@ -3,7 +3,7 @@
 # advisor_register only pushes the chart + prereqs to Harbor; this installs
 # the chart and confirms the advisor serves. Idempotent: safe to re-run.
 #
-# args: <framework> <advisor_lb_ip> <chart_version> [base_url]
+# args: <framework> <advisor_lb_ip> <chart_version> [base_url] [console_pool]
 set -uo pipefail
 FRAMEWORK="${1:?framework name required}"
 ADVISOR_LB_IP="${2:?advisor lb ip required}"
@@ -17,6 +17,12 @@ CHART_VER="${3:?chart version required}"
 # An operator with their own terminator or certificate passes the origin as $4
 # and supplies the keypair through the chart directly.
 BASE_URL="${4:-https://$ADVISOR_LB_IP}"
+# Comma-separated addresses for the web console's origins, one per distinct
+# upstream it proxies to. Separate addresses rather than ports or paths:
+# browsers separate cookie jars by host and by nothing else (RFC 6265 ignores
+# port), and a path scheme needs URL rewriting that breaks the OIDC flow.
+# Empty leaves the console off, which is what every install did before.
+CONSOLE_POOL="${5:-}"
 NS=cube-advisor
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
@@ -125,6 +131,22 @@ fi
 # reject a certificate that only has a CN. Reused on re-run for the same
 # reason the passwords are: rotating it would make every browser that has
 # accepted this advisor challenge it again after a routine upgrade.
+#
+# Every console origin address is a SAN too. advisor-api refuses to enable the
+# web console when its certificate does not cover an origin, naming the
+# uncovered one -- so an address left out here is a console that does not
+# start. A *reused* certificate predates any address added since it was issued,
+# which is why the pool is asked for whole up front and why a reuse that does
+# not cover it is refused below rather than quietly installed.
+SANS="IP:${ADVISOR_LB_IP}"
+POOL_ADDRS=()
+if [ -n "$CONSOLE_POOL" ]; then
+  IFS=, read -ra POOL_ADDRS <<< "$CONSOLE_POOL"
+  for a in "${POOL_ADDRS[@]}"; do
+    [ -n "$a" ] && SANS="$SANS,IP:$a"
+  done
+fi
+
 TLSDIR="$(mktemp -d)"; TMPDIRS+=("$TLSDIR")
 if $K -n "$NS" get secret cube-advisor-web-tls >/dev/null 2>&1; then
   $K -n "$NS" get secret cube-advisor-web-tls -o jsonpath='{.data.tls\.crt}' | base64 -d > "$TLSDIR/tls.crt"
@@ -132,9 +154,15 @@ if $K -n "$NS" get secret cube-advisor-web-tls >/dev/null 2>&1; then
 fi
 if [ ! -s "$TLSDIR/tls.crt" ] || [ ! -s "$TLSDIR/tls.key" ]; then
   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-    -subj "/CN=${ADVISOR_LB_IP}" -addext "subjectAltName=IP:${ADVISOR_LB_IP}" \
+    -subj "/CN=${ADVISOR_LB_IP}" -addext "subjectAltName=${SANS}" \
     -keyout "$TLSDIR/tls.key" -out "$TLSDIR/tls.crt" 2>/dev/null \
     || fail "could not issue the advisor's TLS certificate"
+elif [ "${#POOL_ADDRS[@]}" -gt 0 ]; then
+  for a in "${POOL_ADDRS[@]}"; do
+    [ -n "$a" ] || continue
+    openssl x509 -in "$TLSDIR/tls.crt" -noout -text 2>/dev/null | grep -q "IP Address:$a\b" \
+      || fail "the advisor's existing certificate does not cover console address $a — delete the cube-advisor-web-tls secret to reissue it (every browser that has accepted this advisor will challenge it once more)"
+  done
 fi
 
 # The enrollment CA and the tunnel listener's keypair. They live in the release,
@@ -194,6 +222,39 @@ else
   echo "issued an enrollment CA and a tunnel certificate for ${ADVISOR_LB_IP}."
 fi
 
+# --- web console origins ---
+# One origin per distinct upstream: advisor-api refuses a config where two
+# origins share one, and CMP and its Keycloak genuinely share the framework
+# ingress -- they MUST land on one origin, or the OIDC state cookie is set on
+# one and the callback arrives at the other and login fails.
+#
+# Target names are the node's, not ours: cubecos allows cube-cmp, app-fw-idp
+# and cube-cos, and a name the node does not allow is a target the agent
+# refuses to dial.
+WC_ARGS=()
+if [ "${#POOL_ADDRS[@]}" -ge 2 ]; then
+  INGRESS="$($K get svc --all-namespaces --field-selector metadata.name=ingress-lb \
+             -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}' 2>/dev/null)"
+  WC_ARGS+=(--set webConsole.enabled=true --set webConsole.mode=address)
+  n=0
+  if [ -n "$INGRESS" ]; then
+    WC_ARGS+=(--set "webConsole.origins[$n].address=${POOL_ADDRS[$n]}" \
+              --set "webConsole.origins[$n].upstream=https://$INGRESS" \
+              --set "webConsole.origins[$n].targets[0]=cube-cmp" \
+              --set "webConsole.origins[$n].targets[1]=app-fw-idp")
+    n=$((n+1))
+  else
+    echo "warning: no ingress-lb on framework $FRAMEWORK; the CMP console origin is not configured" >&2
+  fi
+  # The node's own dashboard, which every enrolled node serves locally.
+  WC_ARGS+=(--set "webConsole.origins[$n].address=${POOL_ADDRS[$n]}" \
+            --set "webConsole.origins[$n].upstream=http://127.0.0.1:8080" \
+            --set "webConsole.origins[$n].targets[0]=cube-cos")
+  echo "web console enabled on ${#POOL_ADDRS[@]} origin address(es)."
+elif [ -n "$CONSOLE_POOL" ]; then
+  echo "warning: the console pool has fewer than 2 addresses; leaving the web console off" >&2
+fi
+
 helm upgrade --install cube-advisor "oci://$RURL/$RPROJ/cube-advisor" --version "$CHART_VER" \
   -n "$NS" --create-namespace --kubeconfig "$KC" \
   --set lbIP="$ADVISOR_LB_IP" \
@@ -203,6 +264,7 @@ helm upgrade --install cube-advisor "oci://$RURL/$RPROJ/cube-advisor" --version 
   --set-file web.tls.cert="$TLSDIR/tls.crt" \
   --set-file web.tls.key="$TLSDIR/tls.key" \
   "${ENROLL_ARGS[@]}" \
+  "${WC_ARGS[@]}" \
   --kube-insecure-skip-tls-verify --insecure-skip-tls-verify --timeout 20m --wait=false \
   || fail "helm upgrade failed — the release is unchanged; do not uninstall to retry, that deletes the database"
 

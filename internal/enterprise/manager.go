@@ -518,6 +518,28 @@ func (m *Manager) preflight(ctx context.Context, client clusterssh.Client, in *I
 		}
 	}
 
+	// Every console origin address, checked the same way and for the same
+	// reason as the framework's LB IP. These are worth failing on early: the
+	// addresses become SANs on a certificate issued during the install, so an
+	// address that turns out to be taken is not a value to edit afterwards —
+	// it means reissuing that certificate.
+	for _, addr := range in.Params.AdvisorPool {
+		if addr == "" {
+			continue
+		}
+		onLine(fmt.Sprintf("Checking web-console address %s is free…", addr))
+		var taken []string
+		probe := fmt.Sprintf(lbIPTakenProbe, addr)
+		if err := client.Run(ctx, probe, func(l string) { taken = append(taken, strings.TrimSpace(l)) }); err != nil {
+			continue
+		}
+		for _, l := range taken {
+			if l == "taken" {
+				return fmt.Errorf("web-console address %s is already in use (a port or floating IP on this cluster holds it, or it answers ARP on the provider network) — pick a free address in the external range", addr)
+			}
+		}
+	}
+
 	// Every file the plan will push (images, appctl, the CMP .pigz) must exist
 	// and be non-empty — a 0-byte placeholder must fail here, not mid-install.
 	onLine("Verifying staged artifacts…")
@@ -1119,9 +1141,29 @@ type ClusterQuery struct {
 	Version          string   // CubeCOS version from /etc/version, e.g. "3.1.0"
 	Manifest         string   // auto-matched manifest name ("" if none)
 	Manifests        []string // available manifest names, for the version picker
+	// SuggestedAdvisorPool is free addresses for the advisor: its own service
+	// IP first, then one per web-console origin. Fewer than advisorPoolSize
+	// means the subnet could not supply them.
+	SuggestedAdvisorPool []string
 }
 
-// lbIPProbe returns the first FREE IP in the "public" network's allocation pool.
+// advisorPoolSize is how many free addresses the advisor install is offered:
+// its own service IP, plus one per distinct upstream its web console reaches.
+// The floor is 3 (advisor + the app-framework ingress carrying CMP and its
+// Keycloak + the node's own dashboard); the rest is headroom, which is worth
+// more than it looks because every address becomes a certificate SAN.
+const advisorPoolSize = 5
+
+// lbIPPoolProbe returns up to N FREE IPs in the "public" network's allocation
+// pool, newline-separated and fewer than asked for if the pool cannot supply
+// them (the caller decides whether that is fatal).
+//
+// The advisor needs more than one. Its web console proxies a browser to the
+// cluster's own web UIs, and in the offline deployment model -- where no DNS
+// can be assumed -- each of those is a pinned IP address rather than a name.
+// That is forced, not preferred: browsers separate cookie jars by host and by
+// nothing else (RFC 6265 ignores port), and a path-based scheme needs URL
+// rewriting that breaks the OIDC flow.
 // Not the pool start: neutron/OVN grabs the first pool address for the network's
 // metadata port on a freshly-created external network, so a range-start default
 // collides with it and the framework's ingress LB never gets its external FIP.
@@ -1131,7 +1173,7 @@ type ClusterQuery struct {
 // Neutron only knows this cluster's ports, so on a shared provider network an
 // address serving another cluster looks free. Candidates are ARP-probed too:
 // an amphora answers neither ICMP nor, unless listening, TCP.
-const lbIPProbe = `source /etc/admin-openrc.sh && sub=$(openstack subnet list --network public -f value -c ID | head -1) && [ -n "$sub" ] && python3 -c '
+const lbIPPoolProbe = `source /etc/admin-openrc.sh && sub=$(openstack subnet list --network public -f value -c ID | head -1) && [ -n "$sub" ] && python3 -c '
 import json,subprocess,ipaddress,re,sys
 from concurrent.futures import ThreadPoolExecutor
 sub=sys.argv[1]
@@ -1159,12 +1201,17 @@ for p in pools:
             break
     if len(cands)>=64:
         break
+want=int(sys.argv[2]) if len(sys.argv)>2 else 1
+found=[]
 with ThreadPoolExecutor(max_workers=32) as ex:
     for ip,busy in zip(cands,ex.map(live,cands)):
         if not busy:
-            print(ip); sys.exit()
-print("")
-' "$sub"`
+            found.append(ip)
+            if len(found)>=want:
+                break
+for ip in found:
+    print(ip)
+' "$sub" "%d"`
 
 // lbIPTakenProbe (preflight backstop) prints "taken" if the chosen LB IP is
 // held by a port or floating IP on this cluster, or answers ARP — the latter
@@ -1217,9 +1264,21 @@ func (m *Manager) Introspect(host, password, framework string) (ClusterQuery, er
 			q.SuggestedLBIP = ip[0]
 		}
 	}
-	if q.SuggestedLBIP == "" {
-		if lb, _ := sshList(c, lbIPProbe); len(lb) > 0 {
-			q.SuggestedLBIP = lb[0]
+	// One probe for both answers. The framework's ingress may already exist (it
+	// is reused above), but the advisor's addresses never do, so the pool is
+	// asked for regardless and the suggestion falls out of its first entry.
+	pool, _ := sshList(c, fmt.Sprintf(lbIPPoolProbe, advisorPoolSize))
+	if q.SuggestedLBIP == "" && len(pool) > 0 {
+		q.SuggestedLBIP = pool[0]
+	}
+	// The advisor's own address plus one per upstream its console reaches.
+	// Offered whole: every address becomes a SAN on the advisor's serving
+	// certificate, so one added later means reissuing that certificate rather
+	// than editing a value.
+	if len(pool) > 0 {
+		q.SuggestedAdvisorPool = pool
+		if q.SuggestedLBIP != "" && len(pool) > 1 && pool[0] == q.SuggestedLBIP {
+			q.SuggestedAdvisorPool = pool[1:]
 		}
 	}
 	// Default storage backend read from the cluster (not hardcoded).

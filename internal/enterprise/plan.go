@@ -208,7 +208,11 @@ func BuildPlan(module string, p InstallParams, airgap bool, dataDir string, m *M
 				Name:       "install_advisor",
 				Title:      "Deploy + verify Cube AI Advisor",
 				Kind:       "scp+run",
-				Cmd:        fmt.Sprintf("bash /tmp/%s %s %s %s %s", advisorInstallScriptName, p.Project, p.AdvisorLBIP, chartVer, advisorBaseURL(p)),
+				Cmd: fmt.Sprintf("bash /tmp/%s %s %s %s %s %s", advisorInstallScriptName,
+					p.Project, p.AdvisorLBIP, chartVer, advisorBaseURL(p),
+					// Comma-separated, and quoted so an empty pool stays one
+					// empty argument rather than vanishing and shifting $5.
+					shellQuote(strings.Join(p.AdvisorPool, ","))),
 				LocalPath:  localPath(dataDir, "advisor", advisorInstallScriptName),
 				RemotePath: "/tmp",
 			},
@@ -303,6 +307,13 @@ func BuildUninstallPlan(module string, p InstallParams, dataDir string) []planne
 // The default is https on the LoadBalancer, matched by the self-signed
 // certificate the install script issues. http cannot work: the session cookie
 // is Secure, so advisor-api refuses a plain-http origin at startup.
+// shellQuote wraps a value in single quotes for the install command line.
+// The pool is operator-supplied, and an argument that can be empty must still
+// occupy its position or every later argument shifts by one.
+func shellQuote(v string) string {
+	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
+}
+
 func advisorBaseURL(p InstallParams) string {
 	if s := strings.TrimSpace(p.AdvisorBaseURL); s != "" {
 		return strings.TrimRight(s, "/")

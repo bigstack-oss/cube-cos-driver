@@ -123,3 +123,67 @@ func TestAdvisorInstallVerifiesEnrollmentIsLive(t *testing.T) {
 		t.Error("the advisor installer does not fail on a 404 from /api/v1/enroll")
 	}
 }
+
+// CMP and the app framework's Keycloak sit behind one ingress, so they share an
+// upstream — and advisor-api refuses a config where two origins share one. They
+// must land on a single origin for a second reason that costs a login rather
+// than a config error: the OIDC state cookie would otherwise be set on one
+// origin and the callback arrive at the other.
+func TestAdvisorConsolePutsCMPAndItsIdPOnOneOrigin(t *testing.T) {
+	for _, want := range []string{
+		"webConsole.origins[$n].targets[0]=cube-cmp",
+		"webConsole.origins[$n].targets[1]=app-fw-idp",
+	} {
+		if !contains(installAdvisorScript, want) {
+			t.Errorf("the installer does not place %q on the ingress origin; CMP and "+
+				"its IdP on separate origins means the OIDC callback lands on the "+
+				"wrong cookie jar and login fails", want)
+		}
+	}
+}
+
+// Target names are the node's, not the advisor's: cubecos allows cube-cos,
+// cube-cmp and app-fw-idp, and a name the node does not allow is one the agent
+// refuses to dial.
+func TestAdvisorConsoleUsesTheNodesTargetNames(t *testing.T) {
+	for _, want := range []string{"cube-cmp", "app-fw-idp", "cube-cos"} {
+		if !contains(installAdvisorScript, want) {
+			t.Errorf("the installer never names target %q, which is what cubecos allows", want)
+		}
+	}
+	// The chart's example names are not the node's; emitting them would produce
+	// a console whose every target is refused.
+	for _, bad := range []string{"cmp-portal", "cmp-idp", "targets[0]=dashboard"} {
+		if contains(installAdvisorScript, bad) {
+			t.Errorf("the installer emits %q, which no cubecos node allows", bad)
+		}
+	}
+}
+
+// Every console origin address must be a SAN on the advisor's certificate:
+// advisor-api refuses to enable the console when one is not covered, naming it.
+// Getting this wrong produces an install that succeeds and a console that never
+// starts.
+func TestAdvisorCertificateCoversEveryConsoleAddress(t *testing.T) {
+	if !contains(installAdvisorScript, `SANS="$SANS,IP:$a"`) {
+		t.Error("the installer does not add console addresses to the certificate SANs; " +
+			"advisor-api refuses to enable a console whose address its certificate " +
+			"does not cover")
+	}
+	if !contains(installAdvisorScript, `-addext "subjectAltName=${SANS}"`) {
+		t.Error("the accumulated SAN list is not passed to openssl")
+	}
+}
+
+// An install with no pool must behave exactly as it did before the pool
+// existed: console off, not a half-configured one.
+func TestAdvisorConsoleStaysOffWithoutAPool(t *testing.T) {
+	if !contains(installAdvisorScript, `CONSOLE_POOL="${5:-}"`) {
+		t.Error("the pool argument is not optional; every existing caller passes four args")
+	}
+	if !contains(installAdvisorScript, `if [ "${#POOL_ADDRS[@]}" -ge 2 ]`) {
+		t.Error("the installer enables the console without requiring at least two " +
+			"addresses; one address cannot carry both the CMP origin and the " +
+			"node's own dashboard")
+	}
+}

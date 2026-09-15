@@ -34,6 +34,12 @@ type InstallParams struct {
 
 	AdvisorFile string // advisor: cube-advisor-*.pigz basename
 	AdvisorLBIP string // advisor: dedicated LoadBalancer IP for the advisor service
+	// AdvisorPool is the web console's origin addresses, one per distinct
+	// upstream it reaches. Separate addresses rather than ports or paths
+	// because browsers separate cookie jars by host and by nothing else.
+	// Empty leaves the web console off, which is what every install did
+	// before the pool existed.
+	AdvisorPool []string
 	// AdvisorBaseURL is the origin a browser reaches the advisor on, which the
 	// service uses to build its OAuth redirect_uri. Defaults to
 	// http://<AdvisorLBIP>/ when empty.

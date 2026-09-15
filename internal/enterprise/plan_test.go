@@ -121,12 +121,46 @@ func TestAdvisorInstallPassesTheBaseURLToTheScript(t *testing.T) {
 	for _, s := range steps {
 		if strings.Contains(s.Cmd, advisorInstallScriptName) {
 			found = true
-			if !strings.HasSuffix(s.Cmd, "http://localhost:8082") {
-				t.Errorf("install step does not pass the base URL: %q", s.Cmd)
+			// Positional, so assert where it sits rather than that it merely
+			// appears: the console pool follows it, and an argument that
+			// slides one place left is silently read as the base URL.
+			if !strings.Contains(s.Cmd, "1.2.3 http://localhost:8082 ") {
+				t.Errorf("install step does not pass the base URL as the 4th argument: %q", s.Cmd)
 			}
 		}
 	}
 	if !found {
 		t.Fatal("no advisor install step in the plan")
+	}
+}
+
+// The console pool is the 5th argument and must hold its place even when
+// empty: an unquoted empty value vanishes from the command line and every
+// later argument shifts, which is the classic way a positional interface
+// breaks silently.
+func TestAdvisorInstallPassesTheConsolePool(t *testing.T) {
+	steps := BuildPlan(ModuleAdvisor, InstallParams{
+		Project: "appfw", Framework: "appfw", OSImage: "r.raw",
+		AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.32.1.102",
+		AdvisorPool: []string{"10.32.1.104", "10.32.1.105"},
+	}, false, "/data", nil)
+	for _, s := range steps {
+		if strings.Contains(s.Cmd, advisorInstallScriptName) {
+			if !strings.HasSuffix(s.Cmd, "'10.32.1.104,10.32.1.105'") {
+				t.Errorf("install step does not pass the console pool: %q", s.Cmd)
+			}
+		}
+	}
+
+	none := BuildPlan(ModuleAdvisor, InstallParams{
+		Project: "appfw", Framework: "appfw", OSImage: "r.raw",
+		AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.32.1.102",
+	}, false, "/data", nil)
+	for _, s := range none {
+		if strings.Contains(s.Cmd, advisorInstallScriptName) {
+			if !strings.HasSuffix(s.Cmd, "''") {
+				t.Errorf("an empty pool must still occupy its argument slot: %q", s.Cmd)
+			}
+		}
 	}
 }
