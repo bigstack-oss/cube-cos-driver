@@ -78,3 +78,48 @@ func contains(haystack, needle string) bool {
 	}
 	return false
 }
+
+// An advisor with no enrollment CA installs cleanly and cannot enrol anything:
+// the API registers enrollment only when both CA halves are present, so
+// /api/v1/enroll and /api/v1/releases answer 404 and the log reads
+// "enrollment disabled (need -dsn, -ca-cert and -ca-key)". Installing an
+// Advisor that no cluster can reach is not a successful install.
+func TestAdvisorInstallIssuesAnEnrollmentCAWhenThereIsNone(t *testing.T) {
+	for _, want := range []string{
+		// the else branch of the carry-through check — generated only when absent
+		"could not generate the enrollment CA key",
+		"could not issue the enrollment CA certificate",
+		"--set-file enrollment.tunnelCert=",
+		"--set-file enrollment.tunnelKey=",
+	} {
+		if !contains(installAdvisorScript, want) {
+			t.Errorf("the advisor installer does not issue %q; an install with no "+
+				"pre-existing Secret leaves enrollment disabled and no cluster "+
+				"can ever enrol", want)
+		}
+	}
+}
+
+// The agent pins the enrollment CA and offers no flag to loosen it, so the
+// tunnel certificate must name the address agents dial. A CN-only certificate,
+// or a SAN naming anything else, is one no agent can connect through.
+func TestAdvisorTunnelCertificateNamesTheDialledAddress(t *testing.T) {
+	if !contains(installAdvisorScript, "subjectAltName=IP:%s") {
+		t.Error("the tunnel certificate carries no IP SAN for the advisor LB address; " +
+			"agents pin this CA and cannot connect to a certificate that does not name it")
+	}
+}
+
+// Enrollment being registered is the point of installing an Advisor, and it is
+// invisible until some cluster tries months later. An unauthenticated POST must
+// be refused (401), never missing (404) — 404 is the shape of a disabled
+// endpoint, which is exactly the failure this whole change is about.
+func TestAdvisorInstallVerifiesEnrollmentIsLive(t *testing.T) {
+	if !contains(installAdvisorScript, "/api/v1/enroll") {
+		t.Error("the advisor installer never checks that enrollment is registered, " +
+			"so an advisor that cannot enrol anything still reports success")
+	}
+	if !contains(installAdvisorScript, "enrollment is disabled") {
+		t.Error("the advisor installer does not fail on a 404 from /api/v1/enroll")
+	}
+}

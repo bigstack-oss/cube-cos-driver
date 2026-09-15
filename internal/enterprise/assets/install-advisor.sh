@@ -137,10 +137,18 @@ if [ ! -s "$TLSDIR/tls.crt" ] || [ ! -s "$TLSDIR/tls.key" ]; then
     || fail "could not issue the advisor's TLS certificate"
 fi
 
-# The enrollment CA and tunnel keypair are not values this script generates —
-# an operator supplies them — but they live in the release, so an upgrade that
-# does not pass them back renders without that Secret and helm deletes it.
-# Every enrolled agent pins this CA and cannot be re-enrolled remotely.
+# The enrollment CA and the tunnel listener's keypair. They live in the release,
+# so an upgrade that does not pass them back renders without that Secret and
+# helm deletes it — and every enrolled agent pins this CA and cannot be
+# re-enrolled remotely, so losing it strands the whole fleet. Carried through
+# when present, generated when not.
+#
+# Generated rather than left to an operator because the advisor registers its
+# enrollment endpoint only when both CA halves are present: without them the
+# API logs "enrollment disabled (need -dsn, -ca-cert and -ca-key)", /api/v1/enroll
+# and /api/v1/releases both 404, and an advisor that installs cleanly cannot
+# enrol a single cluster. An operator with their own CA still wins — the Secret
+# is read first, and anything already there is carried through untouched.
 ENROLL_ARGS=()
 if $K -n "$NS" get secret cube-advisor-enrollment >/dev/null 2>&1; then
   ENROLLDIR="$(mktemp -d)"; TMPDIRS+=("$ENROLLDIR")
@@ -154,6 +162,36 @@ if $K -n "$NS" get secret cube-advisor-enrollment >/dev/null 2>&1; then
     ENROLL_ARGS+=(--set-file enrollment.tunnelCert="$ENROLLDIR/tunnel.crt" --set-file enrollment.tunnelKey="$ENROLLDIR/tunnel.key")
   fi
   echo "carrying the existing enrollment CA through the upgrade."
+else
+  ENROLLDIR="$(mktemp -d)"; TMPDIRS+=("$ENROLLDIR")
+  # A CA that signs per-node identities, and a server keypair for the tunnel
+  # listener. The tunnel SAN must carry the address agents dial: the agent pins
+  # this CA and offers no flag to loosen it, so a certificate naming anything
+  # else is one no agent can connect through.
+  openssl ecparam -name prime256v1 -genkey -noout -out "$ENROLLDIR/ca.key" 2>/dev/null \
+    || fail "could not generate the enrollment CA key"
+  openssl req -x509 -new -key "$ENROLLDIR/ca.key" -sha256 -days 3650 \
+    -subj "/CN=cube-advisor-enrollment" \
+    -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" \
+    -out "$ENROLLDIR/ca.crt" 2>/dev/null \
+    || fail "could not issue the enrollment CA certificate"
+
+  openssl ecparam -name prime256v1 -genkey -noout -out "$ENROLLDIR/tunnel.key" 2>/dev/null \
+    || fail "could not generate the tunnel key"
+  openssl req -new -key "$ENROLLDIR/tunnel.key" -subj "/CN=${ADVISOR_LB_IP}" \
+    -out "$ENROLLDIR/tunnel.csr" 2>/dev/null \
+    || fail "could not create the tunnel certificate request"
+  printf 'subjectAltName=IP:%s\nextendedKeyUsage=serverAuth\nkeyUsage=critical,digitalSignature,keyEncipherment\n' \
+    "$ADVISOR_LB_IP" > "$ENROLLDIR/tunnel.ext"
+  openssl x509 -req -in "$ENROLLDIR/tunnel.csr" -CA "$ENROLLDIR/ca.crt" -CAkey "$ENROLLDIR/ca.key" \
+    -CAcreateserial -days 3650 -sha256 -extfile "$ENROLLDIR/tunnel.ext" \
+    -out "$ENROLLDIR/tunnel.crt" 2>/dev/null \
+    || fail "could not issue the tunnel certificate"
+
+  ENROLL_ARGS+=(--set-file enrollment.caCert="$ENROLLDIR/ca.crt" --set-file enrollment.caKey="$ENROLLDIR/ca.key")
+  ENROLL_ARGS+=(--set-file enrollment.tunnelCert="$ENROLLDIR/tunnel.crt" --set-file enrollment.tunnelKey="$ENROLLDIR/tunnel.key")
+  echo "issued an enrollment CA and a tunnel certificate for ${ADVISOR_LB_IP}."
 fi
 
 helm upgrade --install cube-advisor "oci://$RURL/$RPROJ/cube-advisor" --version "$CHART_VER" \
@@ -190,5 +228,18 @@ done
 
 curl -sk --max-time 20 "https://${ADVISOR_LB_IP}/" 2>/dev/null | grep -q '<div id="root">' \
   || fail "cube-advisor UI not serving at http://${ADVISOR_LB_IP}/"
+
+# Enrollment is the point of installing this at all, and it is registered only
+# when both CA halves reach the API — so assert it here rather than let the
+# first cluster that tries to enrol discover a 404 months later. An
+# unauthenticated POST must be refused (401), not missing (404): 404 is the
+# shape a disabled enrollment endpoint has.
+code="$(curl -sk --max-time 20 -o /dev/null -w '%{http_code}' \
+        -X POST "https://${ADVISOR_LB_IP}/api/v1/enroll" 2>/dev/null)"
+case "$code" in
+  401|400) : ;;
+  404) fail "cube-advisor is serving but enrollment is disabled (POST /api/v1/enroll -> 404) — the CA never reached the API, so no cluster can enrol" ;;
+  *)   echo "warning: POST /api/v1/enroll answered $code; expected 401" >&2 ;;
+esac
 
 echo "cube-advisor installed and verified: https://${ADVISOR_LB_IP}/"
