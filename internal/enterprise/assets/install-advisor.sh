@@ -259,9 +259,17 @@ if [ "${#POOL_ADDRS[@]}" -ge 2 ]; then
   # loopback: nginx serves the UI on the management address, and 127.0.0.1:8080
   # is httpd, which answers 403 to everything -- a target pointed there looks
   # configured and refuses every request.
+  #
+  # Keycloak, on :10443 of the same address, is a companion rather than an
+  # origin of its own: the dashboard sends the browser straight at it, so the
+  # two have to be reachable from one session, and they share one load
+  # balancer because they share one address.
   WC_ARGS+=(--set "webConsole.origins[$n].address=${POOL_ADDRS[$n]}" \
             --set "webConsole.origins[$n].upstream=https://$CTRL" \
-            --set "webConsole.origins[$n].targets[0]=cube-cos")
+            --set "webConsole.origins[$n].targets[0]=cube-cos" \
+            --set "webConsole.origins[$n].companions[0].address=${POOL_ADDRS[$n]}:10443" \
+            --set "webConsole.origins[$n].companions[0].upstream=https://$CTRL:10443" \
+            --set "webConsole.origins[$n].companions[0].targets[0]=cube-cos-idp")
   echo "web console enabled on ${#POOL_ADDRS[@]} origin address(es)."
 elif [ -n "$CONSOLE_POOL" ]; then
   echo "warning: the console pool has fewer than 2 addresses; leaving the web console off" >&2
