@@ -3,7 +3,8 @@
 # advisor_register only pushes the chart + prereqs to Harbor; this installs
 # the chart and confirms the advisor serves. Idempotent: safe to re-run.
 #
-# args: <framework> <advisor_lb_ip> <chart_version> [base_url] [console_pool] [console_account]
+# args: <framework> <advisor_lb_ip> <chart_version> [base_url] [console_pool]
+#       [console_account] [provider_key_file] [provider_url]
 set -uo pipefail
 FRAMEWORK="${1:?framework name required}"
 ADVISOR_LB_IP="${2:?advisor lb ip required}"
@@ -27,6 +28,10 @@ CONSOLE_POOL="${5:-}"
 # provisions "advisor" for exactly this, so that is the default; empty leaves
 # the console disabled, which is what every install did before.
 CONSOLE_ACCOUNT="${6:-advisor}"
+# The inference endpoint the chat surface calls, and a file holding its key.
+# Both optional: given, they set it; omitted, whatever the deployment already
+# uses is carried through.
+PROVIDER_URL="${8:-}"
 NS=cube-advisor
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
@@ -250,13 +255,52 @@ if [ "${#POOL_ADDRS[@]}" -ge 2 ]; then
   else
     echo "warning: no ingress-lb on framework $FRAMEWORK; the CMP console origin is not configured" >&2
   fi
-  # The node's own dashboard, which every enrolled node serves locally.
+  # The node's own dashboard. Addressed at the control VIP rather than
+  # loopback: nginx serves the UI on the management address, and 127.0.0.1:8080
+  # is httpd, which answers 403 to everything -- a target pointed there looks
+  # configured and refuses every request.
   WC_ARGS+=(--set "webConsole.origins[$n].address=${POOL_ADDRS[$n]}" \
-            --set "webConsole.origins[$n].upstream=http://127.0.0.1:8080" \
+            --set "webConsole.origins[$n].upstream=https://$CTRL" \
             --set "webConsole.origins[$n].targets[0]=cube-cos")
   echo "web console enabled on ${#POOL_ADDRS[@]} origin address(es)."
 elif [ -n "$CONSOLE_POOL" ]; then
   echo "warning: the console pool has fewer than 2 addresses; leaving the web console off" >&2
+fi
+
+# --- the inference provider ---
+# Carried through a re-run, like the TLS and enrollment material above, and for
+# the same reason: this script renders the whole release, so a value it does not
+# pass back is a value helm removes. Leaving it out reset the provider to the
+# chart's placeholder and dropped the key, which turns a working chat surface
+# into one that reports itself enabled and fails on the first question.
+PROVIDER_ARGS=()
+PROVIDER_KEY_FILE="${7:-}"
+if [ -n "$PROVIDER_KEY_FILE" ]; then
+  [ -r "$PROVIDER_KEY_FILE" ] || fail "cannot read the provider key file: $PROVIDER_KEY_FILE"
+  PROVIDER_ARGS+=(--set-file provider.key="$PROVIDER_KEY_FILE")
+  [ -n "$PROVIDER_URL" ] && PROVIDER_ARGS+=(--set provider.url="$PROVIDER_URL")
+  echo "provider set to ${PROVIDER_URL:-the chart default}."
+else
+  # Read back what the deployment is already using. The key lives in the
+  # Secret; the URL is an argument on the container.
+  PREV_KEY="$($K -n "$NS" get secret cube-advisor-secrets -o jsonpath='{.data.providerKey}' 2>/dev/null | base64 -d)"
+  # Read the flag's value by position in the argument list. A jsonpath range
+  # piped through grep looked simpler and silently produced nothing, which is
+  # the failure that let the URL fall back to the chart's placeholder while the
+  # key was carried correctly.
+  PREV_URL="$($K -n "$NS" get deploy cube-advisor -o json 2>/dev/null | jq -r '
+    .spec.template.spec.containers[0].args as $a
+    | ($a | index("-provider-url")) as $i
+    | if $i == null then empty else $a[$i + 1] end')"
+  if [ -n "$PREV_KEY" ]; then
+    PROVIDER_KEEP="$(mktemp)"; TMPDIRS+=("$PROVIDER_KEEP")
+    printf '%s' "$PREV_KEY" > "$PROVIDER_KEEP"
+    PROVIDER_ARGS+=(--set-file provider.key="$PROVIDER_KEEP")
+    echo "carrying the existing provider key through the upgrade."
+  fi
+  if [ -n "$PREV_URL" ]; then
+    PROVIDER_ARGS+=(--set provider.url="$PREV_URL")
+  fi
 fi
 
 # --- the console's SSH user CA ---
@@ -293,6 +337,7 @@ helm upgrade --install cube-advisor "oci://$RURL/$RPROJ/cube-advisor" --version 
   "${ENROLL_ARGS[@]}" \
   "${WC_ARGS[@]}" \
   "${CONSOLE_ARGS[@]}" \
+  "${PROVIDER_ARGS[@]}" \
   --kube-insecure-skip-tls-verify --insecure-skip-tls-verify --timeout 20m --wait=false \
   || fail "helm upgrade failed — the release is unchanged; do not uninstall to retry, that deletes the database"
 
