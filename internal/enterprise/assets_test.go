@@ -228,3 +228,37 @@ func TestAdvisorInstallPrintsTheConsoleCAForTheNodes(t *testing.T) {
 			"the console CA, so the console cannot work end to end")
 	}
 }
+
+// The script renders the whole release, so a value it does not pass back is a
+// value helm removes. The provider was not carried, so every re-run reset the
+// chat surface to the chart's placeholder endpoint and dropped the key —
+// leaving a deployment that reports "chat enabled" and fails on the first
+// question. Seen twice on the 1cc r630, the second time caused by deploying an
+// unrelated fix.
+func TestAdvisorInstallCarriesTheProviderThroughAnUpgrade(t *testing.T) {
+	for _, want := range []string{
+		"get secret cube-advisor-secrets -o jsonpath='{.data.providerKey}'",
+		"--set-file provider.key=",
+		"carrying the existing provider key through the upgrade",
+	} {
+		if !contains(installAdvisorScript, want) {
+			t.Errorf("the advisor installer does not %q; a re-run would reset the "+
+				"provider and the chat surface would fail on its first question", want)
+		}
+	}
+}
+
+// 127.0.0.1:8080 is httpd, which answers 403 to everything. The dashboard is
+// nginx on the management address, so a cube-cos target pointed at loopback
+// looks configured and refuses every request — which is exactly how it
+// presented: a proxied tab showing "403 Forbidden" with nothing in any log.
+func TestAdvisorConsolePointsCubeCosAtTheDashboard(t *testing.T) {
+	if contains(installAdvisorScript, "upstream=http://127.0.0.1:8080") {
+		t.Error("cube-cos still points at 127.0.0.1:8080, which is httpd and 403s; " +
+			"the dashboard is served on the control address")
+	}
+	if !contains(installAdvisorScript, `webConsole.origins[$n].upstream=https://$CTRL`) {
+		t.Error("cube-cos does not point at the control address the rest of this " +
+			"script already resolves")
+	}
+}
