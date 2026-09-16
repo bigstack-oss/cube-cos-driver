@@ -262,3 +262,18 @@ func TestAdvisorConsolePointsCubeCosAtTheDashboard(t *testing.T) {
 			"script already resolves")
 	}
 }
+
+// The dashboard sends the browser at Keycloak on :10443 of the same address,
+// so that endpoint has to be part of the same openable group — a companion,
+// not a separate origin the session does not carry.
+func TestAdvisorInstallGivesTheDashboardItsIdentityProvider(t *testing.T) {
+	for _, want := range []string{
+		"webConsole.origins[$n].companions[0].upstream=https://$CTRL:10443",
+		"webConsole.origins[$n].companions[0].targets[0]=cube-cos-idp",
+		"webConsole.origins[$n].companions[0].address=${POOL_ADDRS[$n]}:10443",
+	} {
+		if !contains(installAdvisorScript, want) {
+			t.Errorf("install-advisor.sh does not set %s", want)
+		}
+	}
+}
