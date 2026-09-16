@@ -187,3 +187,44 @@ func TestAdvisorConsoleStaysOffWithoutAPool(t *testing.T) {
 			"node's own dashboard")
 	}
 }
+
+// advisor-api generates a console CA at startup when the chart passes none,
+// which is right for a dev run and destructive for a deployment: a node pins
+// this CA in sshd and keeps it across firmware upgrades, so a CA regenerated
+// on the next pod restart stops every already-enrolled node from accepting
+// console certificates — silently, because sshd simply stops accepting them.
+func TestAdvisorInstallCarriesTheConsoleCAThroughAnUpgrade(t *testing.T) {
+	for _, want := range []string{
+		"get secret cube-advisor-console-ca",
+		"--set-file console.caKey=",
+		"refusing to upgrade and strand every node that trusts it",
+	} {
+		if !contains(installAdvisorScript, want) {
+			t.Errorf("the advisor installer does not %q; an upgrade would issue a new "+
+				"console CA and every node trusting the old one would stop "+
+				"accepting console sessions", want)
+		}
+	}
+}
+
+// The account is what a certificate authorises on the node. CubeCOS
+// provisions "advisor" for exactly this.
+func TestAdvisorInstallNamesTheConsoleAccount(t *testing.T) {
+	if !contains(installAdvisorScript, "--set console.account=") {
+		t.Error("the installer never sets console.account, so the deployed Advisor " +
+			"logs \"console: disabled (no -console-account)\" and no session can open")
+	}
+	if !contains(installAdvisorScript, `CONSOLE_ACCOUNT="${6:-advisor}"`) {
+		t.Error("the console account is not the 6th argument defaulting to advisor")
+	}
+}
+
+// Nothing pushes the CA to a node — the Advisor mints certificates, the node
+// decides whether to accept them — so the install has to end by telling the
+// operator what to install and how.
+func TestAdvisorInstallPrintsTheConsoleCAForTheNodes(t *testing.T) {
+	if !contains(installAdvisorScript, "hex_cli -c advisor -c console_trust") {
+		t.Error("the installer does not tell the operator how to make nodes trust " +
+			"the console CA, so the console cannot work end to end")
+	}
+}

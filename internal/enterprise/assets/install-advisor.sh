@@ -3,7 +3,7 @@
 # advisor_register only pushes the chart + prereqs to Harbor; this installs
 # the chart and confirms the advisor serves. Idempotent: safe to re-run.
 #
-# args: <framework> <advisor_lb_ip> <chart_version> [base_url] [console_pool]
+# args: <framework> <advisor_lb_ip> <chart_version> [base_url] [console_pool] [console_account]
 set -uo pipefail
 FRAMEWORK="${1:?framework name required}"
 ADVISOR_LB_IP="${2:?advisor lb ip required}"
@@ -23,6 +23,10 @@ BASE_URL="${4:-https://$ADVISOR_LB_IP}"
 # port), and a path scheme needs URL rewriting that breaks the OIDC flow.
 # Empty leaves the console off, which is what every install did before.
 CONSOLE_POOL="${5:-}"
+# The login account console certificates authorise on a node. CubeCOS
+# provisions "advisor" for exactly this, so that is the default; empty leaves
+# the console disabled, which is what every install did before.
+CONSOLE_ACCOUNT="${6:-advisor}"
 NS=cube-advisor
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
@@ -255,6 +259,29 @@ elif [ -n "$CONSOLE_POOL" ]; then
   echo "warning: the console pool has fewer than 2 addresses; leaving the web console off" >&2
 fi
 
+# --- the console's SSH user CA ---
+# advisor-api generates one at startup when the chart passes no key, which
+# suits a dev run and breaks a deployment: a node pins this CA in sshd and
+# keeps it across firmware upgrades, so a CA regenerated on the next pod
+# restart silently stops every already-enrolled node accepting console
+# certificates. Generated once here and passed back on every upgrade, exactly
+# like the enrollment CA above.
+CONSOLE_ARGS=()
+CONSOLEDIR="$(mktemp -d)"; TMPDIRS+=("$CONSOLEDIR")
+if $K -n "$NS" get secret cube-advisor-console-ca >/dev/null 2>&1; then
+  $K -n "$NS" get secret cube-advisor-console-ca -o jsonpath='{.data.ca\.key}' 2>/dev/null | base64 -d > "$CONSOLEDIR/ca.key"
+  [ -s "$CONSOLEDIR/ca.key" ] \
+    || fail "cube-advisor-console-ca exists but its key is unreadable — refusing to upgrade and strand every node that trusts it"
+  echo "carrying the existing console CA through the upgrade."
+else
+  # ed25519: what console/ca.go generates for itself, and what sshd expects in
+  # a TrustedUserCAKeys line.
+  ssh-keygen -q -t ed25519 -N "" -C cube-advisor-console -f "$CONSOLEDIR/ca.key" \
+    || fail "could not generate the console CA"
+  echo "issued a console CA for account ${CONSOLE_ACCOUNT}."
+fi
+CONSOLE_ARGS+=(--set console.account="$CONSOLE_ACCOUNT" --set-file console.caKey="$CONSOLEDIR/ca.key")
+
 helm upgrade --install cube-advisor "oci://$RURL/$RPROJ/cube-advisor" --version "$CHART_VER" \
   -n "$NS" --create-namespace --kubeconfig "$KC" \
   --set lbIP="$ADVISOR_LB_IP" \
@@ -265,6 +292,7 @@ helm upgrade --install cube-advisor "oci://$RURL/$RPROJ/cube-advisor" --version 
   --set-file web.tls.key="$TLSDIR/tls.key" \
   "${ENROLL_ARGS[@]}" \
   "${WC_ARGS[@]}" \
+  "${CONSOLE_ARGS[@]}" \
   --kube-insecure-skip-tls-verify --insecure-skip-tls-verify --timeout 20m --wait=false \
   || fail "helm upgrade failed — the release is unchanged; do not uninstall to retry, that deletes the database"
 
@@ -303,5 +331,17 @@ case "$code" in
   404) fail "cube-advisor is serving but enrollment is disabled (POST /api/v1/enroll -> 404) — the CA never reached the API, so no cluster can enrol" ;;
   *)   echo "warning: POST /api/v1/enroll answered $code; expected 401" >&2 ;;
 esac
+
+# The node half of the console: sshd has to trust this CA before a console
+# session can authenticate, and nothing pushes it — the Advisor mints
+# certificates, the node decides whether to accept them. Print it where the
+# operator installing this will see it.
+if [ -s "$CONSOLEDIR/ca.key.pub" ]; then
+  echo
+  echo "Console CA for account ${CONSOLE_ACCOUNT}. On each node, run:"
+  echo "  hex_cli -c advisor -c console_trust <file containing the line below>"
+  cat "$CONSOLEDIR/ca.key.pub"
+  echo
+fi
 
 echo "cube-advisor installed and verified: https://${ADVISOR_LB_IP}/"
