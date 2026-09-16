@@ -260,16 +260,22 @@ if [ "${#POOL_ADDRS[@]}" -ge 2 ]; then
   # is httpd, which answers 403 to everything -- a target pointed there looks
   # configured and refuses every request.
   #
-  # Keycloak, on :10443 of the same address, is a companion rather than an
-  # origin of its own: the dashboard sends the browser straight at it, so the
-  # two have to be reachable from one session, and they share one load
-  # balancer because they share one address.
+  # The dashboard's own links out, each on another port of the same address:
+  # Keycloak (:10443), Skyline (:9999) and the Ceph dashboard (:7443). They are
+  # companions rather than origins of their own -- the dashboard sends the
+  # browser straight at them, so they have to be reachable from one session,
+  # and they share one load balancer because they share one address.
   WC_ARGS+=(--set "webConsole.origins[$n].address=${POOL_ADDRS[$n]}" \
             --set "webConsole.origins[$n].upstream=https://$CTRL" \
-            --set "webConsole.origins[$n].targets[0]=cube-cos" \
-            --set "webConsole.origins[$n].companions[0].address=${POOL_ADDRS[$n]}:10443" \
-            --set "webConsole.origins[$n].companions[0].upstream=https://$CTRL:10443" \
-            --set "webConsole.origins[$n].companions[0].targets[0]=cube-cos-idp")
+            --set "webConsole.origins[$n].targets[0]=cube-cos")
+  c=0
+  for pair in "10443:cube-cos-idp" "9999:cube-cos-skyline" "7443:cube-cos-ceph"; do
+    port="${pair%%:*}"; name="${pair#*:}"
+    WC_ARGS+=(--set "webConsole.origins[$n].companions[$c].address=${POOL_ADDRS[$n]}:$port" \
+              --set "webConsole.origins[$n].companions[$c].upstream=https://$CTRL:$port" \
+              --set "webConsole.origins[$n].companions[$c].targets[0]=$name")
+    c=$((c+1))
+  done
   echo "web console enabled on ${#POOL_ADDRS[@]} origin address(es)."
 elif [ -n "$CONSOLE_POOL" ]; then
   echo "warning: the console pool has fewer than 2 addresses; leaving the web console off" >&2

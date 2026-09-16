@@ -265,12 +265,17 @@ func TestAdvisorConsolePointsCubeCosAtTheDashboard(t *testing.T) {
 
 // The dashboard sends the browser at Keycloak on :10443 of the same address,
 // so that endpoint has to be part of the same openable group — a companion,
-// not a separate origin the session does not carry.
-func TestAdvisorInstallGivesTheDashboardItsIdentityProvider(t *testing.T) {
+// The dashboard links out to Keycloak, Skyline and the Ceph dashboard, each
+// on another port of the same address. Every one has to be part of the same
+// openable group -- a companion, not a separate origin the session does not
+// carry, which would answer "no such origin" the moment the browser followed
+// the link.
+func TestAdvisorInstallGivesTheDashboardItsCompanions(t *testing.T) {
 	for _, want := range []string{
-		"webConsole.origins[$n].companions[0].upstream=https://$CTRL:10443",
-		"webConsole.origins[$n].companions[0].targets[0]=cube-cos-idp",
-		"webConsole.origins[$n].companions[0].address=${POOL_ADDRS[$n]}:10443",
+		`"10443:cube-cos-idp" "9999:cube-cos-skyline" "7443:cube-cos-ceph"`,
+		"webConsole.origins[$n].companions[$c].address=${POOL_ADDRS[$n]}:$port",
+		"webConsole.origins[$n].companions[$c].upstream=https://$CTRL:$port",
+		"webConsole.origins[$n].companions[$c].targets[0]=$name",
 	} {
 		if !contains(installAdvisorScript, want) {
 			t.Errorf("install-advisor.sh does not set %s", want)
