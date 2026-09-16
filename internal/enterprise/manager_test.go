@@ -784,3 +784,66 @@ func TestPreflightRefusesATakenConsoleAddress(t *testing.T) {
 		t.Fatalf("preflight Err = %q, want it to name the taken address", in.Steps[0].Err)
 	}
 }
+
+// An advisor being upgraded already holds its own console addresses: each
+// origin is a LoadBalancer Service on exactly the pool it was given. Probing
+// them reports the deployment being upgraded as a collision, which refused
+// every re-install of an advisor that had a console — found on the 1cc r630,
+// where preflight blocked the upgrade and nothing downstream ran.
+func TestPreflightSkipsConsoleAddressesTheAdvisorAlreadyOwns(t *testing.T) {
+	var probed []string
+	var mu sync.Mutex
+	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", func(cmd string) ([]string, error) {
+		if strings.Contains(cmd, "cube-advisor-web-") {
+			// This advisor already serves .60; .61 is new to it.
+			return []string{"10.0.0.60"}, nil
+		}
+		if strings.Contains(cmd, "addr=") {
+			mu.Lock()
+			probed = append(probed, cmd)
+			mu.Unlock()
+			return []string{"free"}, nil
+		}
+		return nil, nil
+	}))
+	m.Start("cl1", "advisor", "10.32.10.140", "pw",
+		InstallParams{Project: "appfw", Framework: "appfw", LBIP: "10.32.36.120", OSImage: "r.raw",
+			AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9",
+			AdvisorPool: []string{"10.0.0.60"}}, false, false)
+	waitState(t, m, "cl1", "advisor", "done")
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, c := range probed {
+		if strings.Contains(c, "addr=10.0.0.60") {
+			t.Fatalf("preflight probed an address this advisor already owns: %q", c)
+		}
+	}
+}
+
+// The other half: an address that is genuinely new to this advisor is still
+// probed, or the fix would trade a blocked upgrade for a silent collision.
+func TestPreflightStillProbesAddressesNewToTheAdvisor(t *testing.T) {
+	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", func(cmd string) ([]string, error) {
+		if strings.Contains(cmd, "cube-advisor-web-") {
+			return []string{"10.0.0.60"}, nil // owns .60 only
+		}
+		if strings.Contains(cmd, "addr=10.0.0.61") {
+			return []string{"taken"}, nil
+		}
+		if strings.Contains(cmd, "addr=") {
+			return []string{"free"}, nil
+		}
+		return nil, nil
+	}))
+	m.Start("cl1", "advisor", "10.32.10.140", "pw",
+		InstallParams{Project: "appfw", Framework: "appfw", LBIP: "10.32.36.120", OSImage: "r.raw",
+			AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9",
+			AdvisorPool: []string{"10.0.0.60", "10.0.0.61"}}, false, false)
+	waitState(t, m, "cl1", "advisor", "error")
+
+	in, _ := m.Status("cl1", "advisor")
+	if !strings.Contains(in.Steps[0].Err, "10.0.0.61") {
+		t.Fatalf("preflight Err = %q, want it to name the address that is new and taken", in.Steps[0].Err)
+	}
+}

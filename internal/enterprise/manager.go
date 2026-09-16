@@ -523,8 +523,28 @@ func (m *Manager) preflight(ctx context.Context, client clusterssh.Client, in *I
 	// addresses become SANs on a certificate issued during the install, so an
 	// address that turns out to be taken is not a value to edit afterwards —
 	// it means reissuing that certificate.
+	//
+	// An advisor that is already installed holds these addresses itself: each
+	// console origin is a LoadBalancer Service on exactly the pool it was
+	// given. Probing those reports the deployment being upgraded as a
+	// collision and refuses the upgrade — the same trap the framework check
+	// above avoids by skipping a framework that is already present. The
+	// Service names carry their own address, so the ones this advisor already
+	// owns can be told apart from an address that is new to it.
+	var mine []string
+	if len(in.Params.AdvisorPool) > 0 {
+		_ = client.Run(ctx, advisorConsoleAddrProbe, func(l string) {
+			if a := strings.TrimSpace(l); a != "" {
+				mine = append(mine, a)
+			}
+		})
+	}
 	for _, addr := range in.Params.AdvisorPool {
 		if addr == "" {
+			continue
+		}
+		if sliceHas(mine, addr) {
+			onLine(fmt.Sprintf("Web-console address %s is already this advisor's own — not probing it.", addr))
 			continue
 		}
 		onLine(fmt.Sprintf("Checking web-console address %s is free…", addr))
@@ -1217,6 +1237,13 @@ for ip in found:
 // held by a port or floating IP on this cluster, or answers ARP — the latter
 // catches an address held by another cluster on a shared provider network.
 const lbIPTakenProbe = `source /etc/admin-openrc.sh && addr=%s && { openstack port list --fixed-ip ip-address="$addr" -f value -c id 2>/dev/null; openstack floating ip list --floating-ip-address "$addr" -f value -c id 2>/dev/null; } | grep -q . && echo taken || { dev=$(ip -o route get "$addr" 2>/dev/null | sed -n "s/.* dev \([^ ]*\).*/\1/p"); [ -n "$dev" ] && arping -c2 -w2 -I "$dev" "$addr" >/dev/null 2>&1 && echo taken || echo free; }`
+
+// advisorConsoleAddrProbe lists the addresses this advisor's console origins
+// already hold. The chart names each origin Service cube-advisor-web-<address
+// with dots folded to dashes>, and Octavia names the load balancer after the
+// Service, so the addresses can be read back from the names without asking
+// Kubernetes for anything.
+const advisorConsoleAddrProbe = `source /etc/admin-openrc.sh && openstack loadbalancer list -f value -c name 2>/dev/null | sed -n 's/.*cube-advisor-web-\([0-9-]*\)$/\1/p' | tr '-' '.'`
 
 // storageProbe reads the cluster's default cinder volume type (falling back to
 // the first type) — the storage_backend the image-import CLI validates against.
