@@ -247,24 +247,23 @@ if [ "${#POOL_ADDRS[@]}" -ge 2 ]; then
   WC_ARGS+=(--set webConsole.enabled=true --set webConsole.mode=address)
   n=0
   if [ -n "$INGRESS" ]; then
+    # /portal, not /: the framework ingress serves the portal there and
+    # Keycloak under /auth, and claims nothing at the root.
     WC_ARGS+=(--set "webConsole.origins[$n].address=${POOL_ADDRS[$n]}" \
               --set "webConsole.origins[$n].upstream=https://$INGRESS" \
+              --set "webConsole.origins[$n].path=/portal" \
               --set "webConsole.origins[$n].targets[0]=cube-cmp" \
               --set "webConsole.origins[$n].targets[1]=app-fw-idp")
     n=$((n+1))
   else
     echo "warning: no ingress-lb on framework $FRAMEWORK; the CMP console origin is not configured" >&2
   fi
-  # The node's own dashboard. Addressed at the control VIP rather than
-  # loopback: nginx serves the UI on the management address, and 127.0.0.1:8080
-  # is httpd, which answers 403 to everything -- a target pointed there looks
-  # configured and refuses every request.
+  # The node's own dashboard, at the control VIP rather than loopback:
+  # 127.0.0.1:8080 is httpd, which answers 403 to everything.
   #
-  # The dashboard's own links out, each on another port of the same address:
-  # Keycloak (:10443), Skyline (:9999) and the Ceph dashboard (:7443). They are
-  # companions rather than origins of their own -- the dashboard sends the
-  # browser straight at them, so they have to be reachable from one session,
-  # and they share one load balancer because they share one address.
+  # The three endpoints it links out to are companions rather than origins of
+  # their own: the dashboard sends the browser straight at them, so they must
+  # be reachable from one session, and they share its address and its LB.
   WC_ARGS+=(--set "webConsole.origins[$n].address=${POOL_ADDRS[$n]}" \
             --set "webConsole.origins[$n].upstream=https://$CTRL" \
             --set "webConsole.origins[$n].targets[0]=cube-cos")
@@ -282,11 +281,9 @@ elif [ -n "$CONSOLE_POOL" ]; then
 fi
 
 # --- the inference provider ---
-# Carried through a re-run, like the TLS and enrollment material above, and for
-# the same reason: this script renders the whole release, so a value it does not
-# pass back is a value helm removes. Leaving it out reset the provider to the
-# chart's placeholder and dropped the key, which turns a working chat surface
-# into one that reports itself enabled and fails on the first question.
+# Carried through a re-run, like the TLS and enrollment material above and for
+# the same reason: this script renders the whole release, so a value it does
+# not pass back is one helm removes.
 PROVIDER_ARGS=()
 PROVIDER_KEY_FILE="${7:-}"
 if [ -n "$PROVIDER_KEY_FILE" ]; then
@@ -298,10 +295,8 @@ else
   # Read back what the deployment is already using. The key lives in the
   # Secret; the URL is an argument on the container.
   PREV_KEY="$($K -n "$NS" get secret cube-advisor-secrets -o jsonpath='{.data.providerKey}' 2>/dev/null | base64 -d)"
-  # Read the flag's value by position in the argument list. A jsonpath range
-  # piped through grep looked simpler and silently produced nothing, which is
-  # the failure that let the URL fall back to the chart's placeholder while the
-  # key was carried correctly.
+  # By position in the argument list: a jsonpath range piped through grep
+  # silently produced nothing, carrying the key while the URL fell back.
   PREV_URL="$($K -n "$NS" get deploy cube-advisor -o json 2>/dev/null | jq -r '
     .spec.template.spec.containers[0].args as $a
     | ($a | index("-provider-url")) as $i

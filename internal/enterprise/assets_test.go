@@ -282,3 +282,11 @@ func TestAdvisorInstallGivesTheDashboardItsCompanions(t *testing.T) {
 		}
 	}
 }
+
+// The framework ingress serves the portal under /portal and claims nothing at
+// the root, so an origin opened at / lands on the ingress's own 404.
+func TestAdvisorInstallOpensTheCmpPortalAtItsOwnPath(t *testing.T) {
+	if !contains(installAdvisorScript, "webConsole.origins[$n].path=/portal") {
+		t.Error("install-advisor.sh does not give the CMP origin its landing path")
+	}
+}
