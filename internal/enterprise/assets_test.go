@@ -263,23 +263,46 @@ func TestAdvisorConsolePointsCubeCosAtTheDashboard(t *testing.T) {
 	}
 }
 
-// The dashboard sends the browser at Keycloak on :10443 of the same address,
-// so that endpoint has to be part of the same openable group — a companion,
-// The dashboard links out to Keycloak, Skyline and the Ceph dashboard, each
-// on another port of the same address. Every one has to be part of the same
-// openable group -- a companion, not a separate origin the session does not
-// carry, which would answer "no such origin" the moment the browser followed
-// the link.
+// The dashboard links out to Keycloak, Skyline, the Ceph dashboard and -- for
+// Skyline's federated login -- keystone, each on another port of the same
+// address. Every one has to be part of the same openable group: a companion,
+// not a separate origin the session does not carry, which would answer "no
+// such origin" the moment the browser followed the link.
 func TestAdvisorInstallGivesTheDashboardItsCompanions(t *testing.T) {
 	for _, want := range []string{
-		`"10443:cube-cos-idp" "9999:cube-cos-skyline" "7443:cube-cos-ceph"`,
+		`"https:10443:cube-cos-idp" "https:9999:cube-cos-skyline"`,
+		`"https:7443:cube-cos-ceph" "http:5000:cube-cos-keystone"`,
+		`"https:5443:cube-cos-keystone-sso"`,
 		"webConsole.origins[$n].companions[$c].address=${POOL_ADDRS[$n]}:$port",
-		"webConsole.origins[$n].companions[$c].upstream=https://$CTRL:$port",
+		"webConsole.origins[$n].companions[$c].upstream=$scheme://$CTRL:$port",
 		"webConsole.origins[$n].companions[$c].targets[0]=$name",
 	} {
 		if !contains(installAdvisorScript, want) {
 			t.Errorf("install-advisor.sh does not set %s", want)
 		}
+	}
+}
+
+// keystone's trusted_dashboard is an exact-match list, so the console origin
+// Skyline's federated login returns on has to be declared to the cluster. The
+// installer is the only party that knows it -- it allocated the address.
+func TestAdvisorInstallDeclaresTheSkylineWebssoOrigin(t *testing.T) {
+	for _, want := range []string{
+		`SSO_ORIGIN="https://${POOL_ADDRS[$n]}:9999/api/openstack/skyline/api/v1/websso"`,
+		`hex_cli -c advisor sso_origin_set "$SSO_ORIGIN"`,
+	} {
+		if !contains(installAdvisorScript, want) {
+			t.Errorf("install-advisor.sh does not set %s", want)
+		}
+	}
+}
+
+// keystone's public endpoint is the one companion that is not TLS. A loop that
+// assumed https for every entry sent the browser at an upstream that does not
+// speak it, and the federated login died at the first redirect out of Skyline.
+func TestAdvisorInstallDoesNotAssumeEveryCompanionIsTLS(t *testing.T) {
+	if contains(installAdvisorScript, "companions[$c].upstream=https://$CTRL:$port") {
+		t.Error("install-advisor.sh still hardcodes https for every companion upstream")
 	}
 }
 

@@ -261,20 +261,35 @@ if [ "${#POOL_ADDRS[@]}" -ge 2 ]; then
   # The node's own dashboard, at the control VIP rather than loopback:
   # 127.0.0.1:8080 is httpd, which answers 403 to everything.
   #
-  # The three endpoints it links out to are companions rather than origins of
-  # their own: the dashboard sends the browser straight at them, so they must
-  # be reachable from one session, and they share its address and its LB.
+  # The endpoints it links out to are companions rather than origins of their
+  # own: the dashboard sends the browser straight at them, so they must be
+  # reachable from one session, and they share its address and its LB.
+  #
+  # Keystone is here because Skyline's federated login leaves Skyline for it.
+  # :5000 is the one plain-HTTP upstream, hence a scheme per entry.
   WC_ARGS+=(--set "webConsole.origins[$n].address=${POOL_ADDRS[$n]}" \
             --set "webConsole.origins[$n].upstream=https://$CTRL" \
             --set "webConsole.origins[$n].targets[0]=cube-cos")
   c=0
-  for pair in "10443:cube-cos-idp" "9999:cube-cos-skyline" "7443:cube-cos-ceph"; do
-    port="${pair%%:*}"; name="${pair#*:}"
+  for spec in "https:10443:cube-cos-idp" "https:9999:cube-cos-skyline" \
+              "https:7443:cube-cos-ceph" "http:5000:cube-cos-keystone" \
+              "https:5443:cube-cos-keystone-sso"; do
+    scheme="${spec%%:*}"; rest="${spec#*:}"; port="${rest%%:*}"; name="${rest#*:}"
     WC_ARGS+=(--set "webConsole.origins[$n].companions[$c].address=${POOL_ADDRS[$n]}:$port" \
-              --set "webConsole.origins[$n].companions[$c].upstream=https://$CTRL:$port" \
+              --set "webConsole.origins[$n].companions[$c].upstream=$scheme://$CTRL:$port" \
               --set "webConsole.origins[$n].companions[$c].targets[0]=$name")
     c=$((c+1))
   done
+  # keystone's trusted_dashboard is an exact-match list, and only this script
+  # knows the origin -- it allocated the address. The CLI records it on every
+  # control node and hex_config carries it across a firmware update.
+  # Best effort: without it Skyline logs in with Keystone Credentials.
+  SSO_ORIGIN="https://${POOL_ADDRS[$n]}:9999/api/openstack/skyline/api/v1/websso"
+  if hex_cli -c advisor sso_origin_set "$SSO_ORIGIN" >/dev/null 2>&1; then
+    echo "skyline federated login enabled for $SSO_ORIGIN"
+  else
+    echo "warning: could not declare $SSO_ORIGIN as a trusted WebSSO origin; skyline will need Keystone Credentials" >&2
+  fi
   echo "web console enabled on ${#POOL_ADDRS[@]} origin address(es)."
 elif [ -n "$CONSOLE_POOL" ]; then
   echo "warning: the console pool has fewer than 2 addresses; leaving the web console off" >&2
