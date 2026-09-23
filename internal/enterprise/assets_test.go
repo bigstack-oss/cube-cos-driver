@@ -285,16 +285,18 @@ func TestAdvisorInstallGivesTheDashboardItsCompanions(t *testing.T) {
 	}
 }
 
-// keystone's trusted_dashboard is an exact-match list, so the console origin
-// Skyline's federated login returns on has to be declared to the cluster. The
-// installer is the only party that knows it -- it allocated the address.
-func TestAdvisorInstallDeclaresTheSkylineWebssoOrigin(t *testing.T) {
-	for _, want := range []string{
-		`SSO_ORIGIN="https://${POOL_ADDRS[$n]}:9999/api/openstack/skyline/api/v1/websso"`,
-		`hex_cli -c advisor sso_origin_set "$SSO_ORIGIN"`,
+// The Advisor reports its console origins to every agent on connect, so the
+// installer has nothing to tell the cluster. The call it used to make could not
+// work anyway: hex_cli exits 0 on an unknown subcommand, so the guard printed
+// success against any image that had never heard of sso_origin_set.
+func TestAdvisorInstallDoesNotDeclareOriginsToTheCluster(t *testing.T) {
+	for _, unwanted := range []string{
+		"sso_origin_set",
+		"sso_origin_clear",
+		"SSO_ORIGIN=",
 	} {
-		if !contains(installAdvisorScript, want) {
-			t.Errorf("install-advisor.sh does not set %s", want)
+		if contains(installAdvisorScript, unwanted) {
+			t.Errorf("install-advisor.sh still references %s", unwanted)
 		}
 	}
 }
