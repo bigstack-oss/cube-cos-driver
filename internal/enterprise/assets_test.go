@@ -270,11 +270,11 @@ func TestAdvisorConsolePointsCubeCosAtTheDashboard(t *testing.T) {
 // such origin" the moment the browser followed the link.
 func TestAdvisorInstallGivesTheDashboardItsCompanions(t *testing.T) {
 	for _, want := range []string{
-		`"https|10443|cube-cos-idp|Rancher|"`,
-		`"https|9999|cube-cos-skyline|OpenStack|"`,
-		`"https|7443|cube-cos-ceph|Ceph|"`,
-		`"http|5000|cube-cos-keystone||hidden"`,
-		`"https|5443|cube-cos-keystone-sso||hidden"`,
+		`"https|10443|cube-cos-idp|Rancher||"`,
+		`"https|9999|cube-cos-skyline|OpenStack||"`,
+		`"https|7443|cube-cos-ceph|Ceph||/ceph/"`,
+		`"http|5000|cube-cos-keystone||hidden|"`,
+		`"https|5443|cube-cos-keystone-sso||hidden|"`,
 		"webConsole.origins[$n].companions[$c].address=${POOL_ADDRS[$n]}:$port",
 		"webConsole.origins[$n].companions[$c].upstream=$scheme://$CTRL:$port",
 		"webConsole.origins[$n].companions[$c].targets[0]=$name",
@@ -316,9 +316,7 @@ func TestAdvisorInstallOpensTheCmpPortalAtItsOwnPath(t *testing.T) {
 	}
 }
 
-// The tab should list the four applications the dashboard's own integrations
-// page shows, under the same names -- not six rows of target names, two of
-// which are SSO plumbing nobody opens.
+// The tab lists the dashboard's four applications by name, not six targets.
 func TestAdvisorInstallNamesTheApplicationsTheDashboardLists(t *testing.T) {
 	for _, want := range []string{
 		`webConsole.origins[$n].label=CubeCOS`,
@@ -331,9 +329,7 @@ func TestAdvisorInstallNamesTheApplicationsTheDashboardLists(t *testing.T) {
 	}
 }
 
-// Rancher and Keycloak share :10443 and differ only by path, so that origin
-// has to offer a second named entrance; otherwise Keycloak is reachable only
-// by knowing it lives under Rancher's host.
+// Keycloak shares :10443 with Rancher, so that origin carries a second link.
 func TestAdvisorInstallGivesKeycloakItsOwnEntrance(t *testing.T) {
 	for _, want := range []string{
 		`companions[$c].links[0].label=Keycloak`,
@@ -342,5 +338,15 @@ func TestAdvisorInstallGivesKeycloakItsOwnEntrance(t *testing.T) {
 		if !contains(installAdvisorScript, want) {
 			t.Errorf("install-advisor.sh does not set %s", want)
 		}
+	}
+}
+
+// The Ceph dashboard lives under /ceph/; its root answers 404.
+func TestAdvisorInstallOpensCephAtItsOwnPath(t *testing.T) {
+	if !contains(installAdvisorScript, `companions[$c].path=$path`) {
+		t.Error("install-advisor.sh does not set a companion landing path")
+	}
+	if !contains(installAdvisorScript, `"https|7443|cube-cos-ceph|Ceph||/ceph/"`) {
+		t.Error("the Ceph companion does not land under /ceph/")
 	}
 }
