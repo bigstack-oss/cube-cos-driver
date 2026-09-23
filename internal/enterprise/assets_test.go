@@ -352,3 +352,21 @@ func TestAdvisorInstallOpensCephAtItsOwnPath(t *testing.T) {
 		t.Error("the Ceph companion does not land under /ceph/")
 	}
 }
+
+// healthz is polled 30 times but the UI check used to be one unretried request,
+// so an install whose UI was serving seconds later failed outright -- seen on
+// the 1cc r630 twice, on advisor 0.4.2 and 0.4.6. The error also named http://
+// while the request it describes is https://.
+func TestAdvisorInstallRetriesTheUICheck(t *testing.T) {
+	for _, want := range []string{
+		`for _ in $(seq 1 12); do`,
+		`[ -n "$served" ] || fail "cube-advisor UI not serving at https://${ADVISOR_LB_IP}/"`,
+	} {
+		if !contains(installAdvisorScript, want) {
+			t.Errorf("install-advisor.sh does not contain %s", want)
+		}
+	}
+	if contains(installAdvisorScript, `UI not serving at http://`) {
+		t.Error("the UI failure still names http:// for an https:// request")
+	}
+}
