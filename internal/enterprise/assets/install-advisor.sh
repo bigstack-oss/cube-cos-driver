@@ -267,30 +267,27 @@ if [ "${#POOL_ADDRS[@]}" -ge 2 ]; then
   #
   # Keystone is here because Skyline's federated login leaves Skyline for it.
   # :5000 is the one plain-HTTP upstream, hence a scheme per entry.
-  #
-  # The labels and the hidden flag are what the tab lists: the same four
-  # applications the dashboard's own /integrations/applications page shows,
-  # under the same names. Keystone and its SAML service provider are hidden --
-  # the browser traverses them during a federated login, nobody opens them.
+  # Labels and hidden match the dashboard's /integrations/applications list;
+  # the two keystone entries are SSO plumbing, so hidden.
   WC_ARGS+=(--set "webConsole.origins[$n].address=${POOL_ADDRS[$n]}" \
             --set "webConsole.origins[$n].upstream=https://$CTRL" \
             --set "webConsole.origins[$n].label=CubeCOS" \
             --set "webConsole.origins[$n].targets[0]=cube-cos")
   c=0
-  for spec in "https|10443|cube-cos-idp|Rancher|" \
-              "https|9999|cube-cos-skyline|OpenStack|" \
-              "https|7443|cube-cos-ceph|Ceph|" \
-              "http|5000|cube-cos-keystone||hidden" \
-              "https|5443|cube-cos-keystone-sso||hidden"; do
-    IFS='|' read -r scheme port name label hidden <<<"$spec"
+  # Fields: scheme|port|target|label|hidden|path. Ceph alone needs a path.
+  for spec in "https|10443|cube-cos-idp|Rancher||" \
+              "https|9999|cube-cos-skyline|OpenStack||" \
+              "https|7443|cube-cos-ceph|Ceph||/ceph/" \
+              "http|5000|cube-cos-keystone||hidden|" \
+              "https|5443|cube-cos-keystone-sso||hidden|"; do
+    IFS='|' read -r scheme port name label hidden path <<<"$spec"
     WC_ARGS+=(--set "webConsole.origins[$n].companions[$c].address=${POOL_ADDRS[$n]}:$port" \
               --set "webConsole.origins[$n].companions[$c].upstream=$scheme://$CTRL:$port" \
               --set "webConsole.origins[$n].companions[$c].targets[0]=$name")
     [ -n "$label" ] && WC_ARGS+=(--set "webConsole.origins[$n].companions[$c].label=$label")
     [ -n "$hidden" ] && WC_ARGS+=(--set "webConsole.origins[$n].companions[$c].hidden=true")
-    # Rancher and Keycloak are one port apart only by path, so the :10443
-    # origin offers two named entrances rather than making an operator guess
-    # that Keycloak lives under Rancher's host.
+    [ -n "$path" ] && WC_ARGS+=(--set "webConsole.origins[$n].companions[$c].path=$path")
+    # Keycloak shares :10443 with Rancher, so it gets a named link.
     if [ "$name" = "cube-cos-idp" ]; then
       WC_ARGS+=(--set "webConsole.origins[$n].companions[$c].links[0].label=Keycloak" \
                 --set "webConsole.origins[$n].companions[$c].links[0].path=/auth/admin")
