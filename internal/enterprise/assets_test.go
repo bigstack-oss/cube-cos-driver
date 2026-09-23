@@ -270,9 +270,11 @@ func TestAdvisorConsolePointsCubeCosAtTheDashboard(t *testing.T) {
 // such origin" the moment the browser followed the link.
 func TestAdvisorInstallGivesTheDashboardItsCompanions(t *testing.T) {
 	for _, want := range []string{
-		`"https:10443:cube-cos-idp" "https:9999:cube-cos-skyline"`,
-		`"https:7443:cube-cos-ceph" "http:5000:cube-cos-keystone"`,
-		`"https:5443:cube-cos-keystone-sso"`,
+		`"https|10443|cube-cos-idp|Rancher|"`,
+		`"https|9999|cube-cos-skyline|OpenStack|"`,
+		`"https|7443|cube-cos-ceph|Ceph|"`,
+		`"http|5000|cube-cos-keystone||hidden"`,
+		`"https|5443|cube-cos-keystone-sso||hidden"`,
 		"webConsole.origins[$n].companions[$c].address=${POOL_ADDRS[$n]}:$port",
 		"webConsole.origins[$n].companions[$c].upstream=$scheme://$CTRL:$port",
 		"webConsole.origins[$n].companions[$c].targets[0]=$name",
@@ -311,5 +313,34 @@ func TestAdvisorInstallDoesNotAssumeEveryCompanionIsTLS(t *testing.T) {
 func TestAdvisorInstallOpensTheCmpPortalAtItsOwnPath(t *testing.T) {
 	if !contains(installAdvisorScript, "webConsole.origins[$n].path=/portal") {
 		t.Error("install-advisor.sh does not give the CMP origin its landing path")
+	}
+}
+
+// The tab should list the four applications the dashboard's own integrations
+// page shows, under the same names -- not six rows of target names, two of
+// which are SSO plumbing nobody opens.
+func TestAdvisorInstallNamesTheApplicationsTheDashboardLists(t *testing.T) {
+	for _, want := range []string{
+		`webConsole.origins[$n].label=CubeCOS`,
+		`companions[$c].label=$label`,
+		`companions[$c].hidden=true`,
+	} {
+		if !contains(installAdvisorScript, want) {
+			t.Errorf("install-advisor.sh does not set %s", want)
+		}
+	}
+}
+
+// Rancher and Keycloak share :10443 and differ only by path, so that origin
+// has to offer a second named entrance; otherwise Keycloak is reachable only
+// by knowing it lives under Rancher's host.
+func TestAdvisorInstallGivesKeycloakItsOwnEntrance(t *testing.T) {
+	for _, want := range []string{
+		`companions[$c].links[0].label=Keycloak`,
+		`companions[$c].links[0].path=/auth/admin`,
+	} {
+		if !contains(installAdvisorScript, want) {
+			t.Errorf("install-advisor.sh does not set %s", want)
+		}
 	}
 }

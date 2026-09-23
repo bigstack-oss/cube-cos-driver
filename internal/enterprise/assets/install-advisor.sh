@@ -267,17 +267,34 @@ if [ "${#POOL_ADDRS[@]}" -ge 2 ]; then
   #
   # Keystone is here because Skyline's federated login leaves Skyline for it.
   # :5000 is the one plain-HTTP upstream, hence a scheme per entry.
+  #
+  # The labels and the hidden flag are what the tab lists: the same four
+  # applications the dashboard's own /integrations/applications page shows,
+  # under the same names. Keystone and its SAML service provider are hidden --
+  # the browser traverses them during a federated login, nobody opens them.
   WC_ARGS+=(--set "webConsole.origins[$n].address=${POOL_ADDRS[$n]}" \
             --set "webConsole.origins[$n].upstream=https://$CTRL" \
+            --set "webConsole.origins[$n].label=CubeCOS" \
             --set "webConsole.origins[$n].targets[0]=cube-cos")
   c=0
-  for spec in "https:10443:cube-cos-idp" "https:9999:cube-cos-skyline" \
-              "https:7443:cube-cos-ceph" "http:5000:cube-cos-keystone" \
-              "https:5443:cube-cos-keystone-sso"; do
-    scheme="${spec%%:*}"; rest="${spec#*:}"; port="${rest%%:*}"; name="${rest#*:}"
+  for spec in "https|10443|cube-cos-idp|Rancher|" \
+              "https|9999|cube-cos-skyline|OpenStack|" \
+              "https|7443|cube-cos-ceph|Ceph|" \
+              "http|5000|cube-cos-keystone||hidden" \
+              "https|5443|cube-cos-keystone-sso||hidden"; do
+    IFS='|' read -r scheme port name label hidden <<<"$spec"
     WC_ARGS+=(--set "webConsole.origins[$n].companions[$c].address=${POOL_ADDRS[$n]}:$port" \
               --set "webConsole.origins[$n].companions[$c].upstream=$scheme://$CTRL:$port" \
               --set "webConsole.origins[$n].companions[$c].targets[0]=$name")
+    [ -n "$label" ] && WC_ARGS+=(--set "webConsole.origins[$n].companions[$c].label=$label")
+    [ -n "$hidden" ] && WC_ARGS+=(--set "webConsole.origins[$n].companions[$c].hidden=true")
+    # Rancher and Keycloak are one port apart only by path, so the :10443
+    # origin offers two named entrances rather than making an operator guess
+    # that Keycloak lives under Rancher's host.
+    if [ "$name" = "cube-cos-idp" ]; then
+      WC_ARGS+=(--set "webConsole.origins[$n].companions[$c].links[0].label=Keycloak" \
+                --set "webConsole.origins[$n].companions[$c].links[0].path=/auth/admin")
+    fi
     c=$((c+1))
   done
   # keystone's trusted_dashboard is an exact-match list, and only this script
