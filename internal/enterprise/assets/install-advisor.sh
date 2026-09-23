@@ -294,16 +294,8 @@ if [ "${#POOL_ADDRS[@]}" -ge 2 ]; then
     fi
     c=$((c+1))
   done
-  # keystone's trusted_dashboard is an exact-match list, and only this script
-  # knows the origin -- it allocated the address. The CLI records it on every
-  # control node and hex_config carries it across a firmware update.
-  # Best effort: without it Skyline logs in with Keystone Credentials.
-  SSO_ORIGIN="https://${POOL_ADDRS[$n]}:9999/api/openstack/skyline/api/v1/websso"
-  if hex_cli -c advisor sso_origin_set "$SSO_ORIGIN" >/dev/null 2>&1; then
-    echo "skyline federated login enabled for $SSO_ORIGIN"
-  else
-    echo "warning: could not declare $SSO_ORIGIN as a trusted WebSSO origin; skyline will need Keystone Credentials" >&2
-  fi
+  # Nothing to tell the cluster about the origins: the Advisor reports them to
+  # every agent on connect and each node applies them itself.
   echo "web console enabled on ${#POOL_ADDRS[@]} origin address(es)."
 elif [ -n "$CONSOLE_POOL" ]; then
   echo "warning: the console pool has fewer than 2 addresses; leaving the web console off" >&2
