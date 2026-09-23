@@ -391,8 +391,19 @@ for _ in $(seq 1 30); do
 done
 [ -n "$ok" ] || fail "cube-advisor healthz not ok at https://${ADVISOR_LB_IP}/healthz"
 
-curl -sk --max-time 20 "https://${ADVISOR_LB_IP}/" 2>/dev/null | grep -q '<div id="root">' \
-  || fail "cube-advisor UI not serving at http://${ADVISOR_LB_IP}/"
+# Polled, like healthz above. healthz answers from the pod as soon as it is
+# ready, but the Octavia LB can still be settling the listener for the root
+# path a moment later -- so a single unretried request here failed installs
+# whose UI was serving fine seconds afterwards.
+served=""
+for _ in $(seq 1 12); do
+  if curl -sk --max-time 20 "https://${ADVISOR_LB_IP}/" 2>/dev/null | grep -q '<div id="root">'; then
+    served=1
+    break
+  fi
+  sleep 5
+done
+[ -n "$served" ] || fail "cube-advisor UI not serving at https://${ADVISOR_LB_IP}/"
 
 # Enrollment is the point of installing this at all, and it is registered only
 # when both CA halves reach the API — so assert it here rather than let the
