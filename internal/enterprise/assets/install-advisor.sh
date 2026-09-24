@@ -91,6 +91,20 @@ if $K get namespace "$NS" -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Te
   $K get namespace "$NS" >/dev/null 2>&1 && fail "namespace $NS still terminating — clear it before reinstalling"
 fi
 
+# --- agent release directory (carried through, never set here) -------------
+# enrollment.releasesHostPath is where a deployment serves signed agent
+# releases from (/api/v1/releases). The driver never sets it, so an upgrade
+# that does not pass it back renders the release without the mount and every
+# enrolment fails at "cannot fetch manifest.txt". Read back like the
+# enrollment material above.
+REL_ARGS=()
+RELHP="$(helm get values cube-advisor -n "$NS" --kubeconfig "$KC" --kube-insecure-skip-tls-verify -o json 2>/dev/null \
+  | python3 -c 'import json,sys; print((json.load(sys.stdin) or {}).get("enrollment",{}).get("releasesHostPath",""))' 2>/dev/null)"
+if [ -n "$RELHP" ]; then
+  REL_ARGS+=(--set enrollment.releasesHostPath="$RELHP")
+  echo "carrying the agent release directory ($RELHP) through the upgrade."
+fi
+
 # --- install or upgrade the chart ---
 # No "already installed, skipping" guard: helm upgrade --install is exactly the
 # command for "may or may not exist", and skipping it made a re-run a no-op, so
@@ -365,6 +379,7 @@ helm upgrade --install cube-advisor "oci://$RURL/$RPROJ/cube-advisor" --version 
   --set-file web.tls.cert="$TLSDIR/tls.crt" \
   --set-file web.tls.key="$TLSDIR/tls.key" \
   "${ENROLL_ARGS[@]}" \
+  "${REL_ARGS[@]}" \
   "${WC_ARGS[@]}" \
   "${CONSOLE_ARGS[@]}" \
   "${PROVIDER_ARGS[@]}" \
