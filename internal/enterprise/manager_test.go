@@ -112,8 +112,10 @@ func TestManager_CMP_ExistingActiveFramework_SkipsCreate(t *testing.T) {
 		t.Fatalf("should not recreate an active framework: %v", mc.Runs)
 	}
 	in, _ := m.Status("cl1", "cmp")
-	if stepState(in, "framework_create") != "skipped" {
-		t.Fatalf("framework_create should be skipped, got %s", stepState(in, "framework_create"))
+	// No OS image was given: the plan installs onto the framework that is
+	// there and carries no create step at all.
+	if stepState(in, "framework_create") != "" {
+		t.Fatalf("framework_create should not be planned, got %s", stepState(in, "framework_create"))
 	}
 	if !containsCmd(mc.Runs, "app_register") {
 		t.Fatalf("app_register should still run: %v", mc.Runs)
@@ -143,8 +145,8 @@ func TestManager_Advisor_ExistingActiveFramework_SkipsCreate(t *testing.T) {
 		t.Fatalf("should not recreate an active framework: %v", mc.Runs)
 	}
 	in, _ := m.Status("cl1", "advisor")
-	if stepState(in, "framework_create") != "skipped" {
-		t.Fatalf("framework_create should be skipped, got %s", stepState(in, "framework_create"))
+	if stepState(in, "framework_create") != "" {
+		t.Fatalf("framework_create should not be planned, got %s", stepState(in, "framework_create"))
 	}
 	if stepState(in, "advisor_register") != "done" {
 		t.Fatalf("advisor_register should be done, got %s", stepState(in, "advisor_register"))
@@ -162,7 +164,7 @@ func TestManager_Advisor_ExistingActiveFramework_SkipsCreate(t *testing.T) {
 // framework and would otherwise leave a stale "done" record behind.
 func TestManager_AppFWUninstall_CascadesAdvisor(t *testing.T) {
 	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", nil))
-	m.Start("cl1", "advisor", "10.32.10.140", "pw", InstallParams{Project: "appfw", Framework: "appfw",
+	m.Start("cl1", "advisor", "10.32.10.140", "pw", InstallParams{Project: "appfw", Framework: "appfw", OSImage: "r.raw",
 		AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9", LBIP: "10.32.36.120"}, false, false)
 	waitState(t, m, "cl1", "advisor", "done")
 
