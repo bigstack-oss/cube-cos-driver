@@ -424,11 +424,30 @@ else
   echo "warning: could not create the first administrator; run 'advisorctl local init' in the api pod" >&2
 fi
 
+# --- a load balancer Octavia left in ERROR ---
+# The framework's cloud provider creates one Octavia LB per LoadBalancer
+# Service and, when Octavia fails it (an amphora that found no host, a
+# transient Neutron error), leaves it in ERROR and never retries. Deleting
+# the failed LB is what makes the provider create it again on its next
+# sync. Scoped to this release's Services, exactly like the uninstall sweep.
+reap_error_lbs() {
+  source /etc/admin-openrc.sh 2>/dev/null || return 0
+  local lb name st
+  while read -r lb name st; do
+    case "$name" in kube_service_${FRAMEWORK}_${NS}_*) ;; *) continue ;; esac
+    [ "$st" = ERROR ] || continue
+    echo "load balancer $name is in ERROR — deleting it so the framework recreates it…"
+    openstack loadbalancer delete "$lb" --cascade 2>/dev/null || true
+  done < <(openstack loadbalancer list -f value -c id -c name -c provisioning_status 2>/dev/null)
+}
+
 # --- verify: healthz + UI serving via the dedicated Advisor LB IP ---
-# Octavia LB provisioning takes minutes, so poll before failing.
+# Octavia LB provisioning takes minutes, so poll before failing; every
+# minute a failed LB is reaped so a recreate gets its chance inside the wait.
 echo "verifying cube-advisor is serving…"
 ok=""
-for _ in $(seq 1 30); do
+for i in $(seq 1 60); do
+  [ $((i % 6)) -eq 0 ] && reap_error_lbs
   # healthz answers "ok <version>" (bare "ok" when unversioned).
   BODY="$(curl -skf --max-time 10 "https://${ADVISOR_LB_IP}/healthz" 2>/dev/null)"
   case "$BODY" in
