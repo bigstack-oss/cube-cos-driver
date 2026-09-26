@@ -31,6 +31,7 @@ CONSOLE_ACCOUNT="${6:-advisor}"
 # The inference endpoint the chat surface calls, and a file holding its key.
 # Both optional: given, they set it; omitted, whatever the deployment already
 # uses is carried through.
+PROVIDER_KEY_FILE="${7:-}"
 PROVIDER_URL="${8:-}"
 PROVIDER_MODEL="${9:-}"
 NS=cube-advisor
@@ -43,8 +44,9 @@ fail() { echo "ERROR: $*" >&2; exit 1; }
 HOSTS_PIN=""; TMPDIRS=()
 cleanup() {
   [ -n "$HOSTS_PIN" ] && sudo sed -i "/${HOSTS_PIN}/d" /etc/hosts
-  # The staged provider key is for this run only.
-  [ -n "${7:-}" ] && rm -f "${7}"
+  # The staged provider key is for this run only. (A global, not $7: inside a
+  # function the positional parameters are the function's own.)
+  [ -n "$PROVIDER_KEY_FILE" ] && rm -f "$PROVIDER_KEY_FILE"
   [ ${#TMPDIRS[@]} -gt 0 ] && rm -rf "${TMPDIRS[@]}"
   return 0
 }
@@ -323,7 +325,6 @@ fi
 # the same reason: this script renders the whole release, so a value it does
 # not pass back is one helm removes.
 PROVIDER_ARGS=()
-PROVIDER_KEY_FILE="${7:-}"
 if [ -n "$PROVIDER_KEY_FILE" ]; then
   [ -r "$PROVIDER_KEY_FILE" ] || fail "cannot read the provider key file: $PROVIDER_KEY_FILE"
   PROVIDER_ARGS+=(--set-file provider.key="$PROVIDER_KEY_FILE")
