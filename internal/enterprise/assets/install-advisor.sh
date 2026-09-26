@@ -403,6 +403,27 @@ $K -n "$NS" rollout status statefulset/cube-advisor-db --timeout=10m 2>/dev/null
 echo "waiting for advisor workload…"
 $K -n "$NS" rollout status deploy/cube-advisor --timeout=15m 2>/dev/null || fail "cube-advisor deployment not ready"
 
+# --- the first administrator ---
+# Migrations deliberately seed no account (the hosted service must not ship
+# admin/admin); the offline installer is where the first one is made. Local
+# sign-in is otherwise impossible, and a deployment nobody can sign in to is
+# not installed. The account can do nothing but replace its password.
+#
+# Before the serving check, and followed by a restart: advisor-api reads the
+# issuers table once at startup, so an issuer added afterwards is not seen
+# until the next start — "no issuers configured; sign-in will refuse every
+# attempt" in its log is exactly that.
+if $K -n "$NS" exec deploy/cube-advisor -c api -- advisorctl local init \
+     -dsn "postgres://postgres:${DBPW}@cube-advisor-db:5432/advisor?sslmode=disable" >/dev/null 2>&1; then
+  # Idempotent: an account that already exists is left as it is, password
+  # included — so on a re-run this line is only true if nobody changed it.
+  echo "first administrator: admin / admin (unless already changed) — the UI asks for a new password at first sign-in"
+  $K -n "$NS" rollout restart deploy/cube-advisor >/dev/null 2>&1
+  $K -n "$NS" rollout status deploy/cube-advisor --timeout=10m 2>/dev/null || fail "cube-advisor did not come back after the restart"
+else
+  echo "warning: could not create the first administrator; run 'advisorctl local init' in the api pod" >&2
+fi
+
 # --- verify: healthz + UI serving via the dedicated Advisor LB IP ---
 # Octavia LB provisioning takes minutes, so poll before failing.
 echo "verifying cube-advisor is serving…"
@@ -444,19 +465,6 @@ case "$code" in
   *)   echo "warning: POST /api/v1/enroll answered $code; expected 401" >&2 ;;
 esac
 
-# --- the first administrator ---
-# Migrations deliberately seed no account (the hosted service must not ship
-# admin/admin); the offline installer is where the first one is made. Local
-# sign-in is otherwise impossible, and a deployment nobody can sign in to is
-# not installed. The account can do nothing but replace its password.
-if $K -n "$NS" exec deploy/cube-advisor -c api -- advisorctl local init \
-     -dsn "postgres://postgres:${DBPW}@cube-advisor-db:5432/advisor?sslmode=disable" >/dev/null 2>&1; then
-  # Idempotent: an account that already exists is left as it is, password
-  # included — so on a re-run this line is only true if nobody changed it.
-  echo "first administrator: admin / admin (unless already changed) — the UI asks for a new password at first sign-in"
-else
-  echo "warning: could not create the first administrator; run 'advisorctl local init' in the api pod" >&2
-fi
 
 # The node half of the console: sshd has to trust this CA before a console
 # session can authenticate, and nothing pushes it — the Advisor mints
