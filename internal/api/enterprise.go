@@ -172,6 +172,26 @@ func (h *enterpriseHandlers) resolveHost(id, vip string) (string, int, string) {
 	return host, 0, ""
 }
 
+// fileProviderKey writes the advisor's inference key to a 0600 file under the
+// data dir for the run to stage; the run removes it when it ends.
+func (h *enterpriseHandlers) fileProviderKey(id, key string) (string, error) {
+	dir := filepath.Join(h.dataDir, "advisor")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	safe := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' {
+			return r
+		}
+		return '_'
+	}, id)
+	path := filepath.Join(dir, ".provider-key-"+safe)
+	if err := os.WriteFile(path, []byte(key), 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 // persistPassword encrypts the install password at rest as a sidecar file
 // (mirrors the inventory store's box.Encrypt idiom for BMC passwords).
 // Best-effort: Start already has the plaintext it needs to dial.
@@ -206,6 +226,9 @@ func (h *enterpriseHandlers) start(w http.ResponseWriter, r *http.Request) {
 		Password       string                   `json:"password"`
 		Manifest       string                   `json:"manifest"`
 		Vip            string                   `json:"vip"` // ad-hoc target by VIP
+		// ProviderKey is the advisor's inference API key. Filed, not kept:
+		// see InstallParams.AdvisorProviderKeyFile.
+		ProviderKey string `json:"providerKey"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
@@ -270,8 +293,19 @@ func (h *enterpriseHandlers) start(w http.ResponseWriter, r *http.Request) {
 		password = defaultPassword(host)
 	}
 	manifest := enterprise.FindManifest(enterprise.LoadManifests(h.dir.Get()), body.Manifest)
+	if body.Module == enterprise.ModuleAdvisor && body.ProviderKey != "" {
+		f, err := h.fileProviderKey(id, body.ProviderKey)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not stage the provider key: %v", err)
+			return
+		}
+		body.Params.AdvisorProviderKeyFile = f
+	}
 	in, err := h.mgr.Start(id, body.Module, host, password, body.Params, body.Manual, body.SimulateAirgap, manifest)
 	if err != nil {
+		if body.Params.AdvisorProviderKeyFile != "" {
+			os.Remove(body.Params.AdvisorProviderKeyFile)
+		}
 		writeError(w, http.StatusConflict, "%v", err)
 		return
 	}

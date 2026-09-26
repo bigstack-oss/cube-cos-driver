@@ -204,15 +204,36 @@ func BuildPlan(module string, p InstallParams, airgap bool, dataDir string, m *M
 			// advisor_register only pushes the chart + prereqs; this deploys the
 			// advisor end-to-end (helm install, rollout waits) and self-verifies
 			// that it serves.
-			plannedStep{
-				Name:       "install_advisor",
-				Title:      "Deploy + verify Cube AI Advisor",
+		)
+		// The provider key travels as a file, never on a command line: the
+		// install command is echoed into the run's output.
+		remoteKey := ""
+		if p.AdvisorProviderKeyFile != "" {
+			remoteKey = "/tmp/" + filepath.Base(p.AdvisorProviderKeyFile)
+			steps = append(steps, plannedStep{
+				Name:       "advisor_provider_key",
+				Title:      "Stage the inference provider key",
 				Kind:       "scp+run",
-				Cmd: fmt.Sprintf("bash /tmp/%s %s %s %s %s %s", advisorInstallScriptName,
+				Cmd:        fmt.Sprintf("chmod 0600 %s", shellQuote(remoteKey)),
+				LocalPath:  p.AdvisorProviderKeyFile,
+				RemotePath: "/tmp",
+			})
+		}
+		steps = append(steps,
+			plannedStep{
+				Name:  "install_advisor",
+				Title: "Deploy + verify Cube AI Advisor",
+				Kind:  "scp+run",
+				Cmd: fmt.Sprintf("bash /tmp/%s %s %s %s %s %s %s %s %s %s", advisorInstallScriptName,
 					p.Project, p.AdvisorLBIP, chartVer, advisorBaseURL(p),
 					// Comma-separated, and quoted so an empty pool stays one
 					// empty argument rather than vanishing and shifting $5.
-					shellQuote(strings.Join(p.AdvisorPool, ","))),
+					shellQuote(strings.Join(p.AdvisorPool, ",")),
+					// The console login account, the staged key file (or
+					// nothing), the provider URL and model — each quoted so
+					// an empty one keeps its position.
+					shellQuote("advisor"), shellQuote(remoteKey),
+					shellQuote(p.AdvisorProviderURL), shellQuote(p.AdvisorProviderModel)),
 				LocalPath:  localPath(dataDir, "advisor", advisorInstallScriptName),
 				RemotePath: "/tmp",
 			},

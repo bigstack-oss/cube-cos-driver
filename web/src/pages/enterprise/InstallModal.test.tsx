@@ -265,6 +265,10 @@ describe('InstallModal', () => {
       expect(body.module).toBe('advisor')
       expect(body.params.AdvisorFile).toBe('cube-advisor-1.0.0.pigz')
       expect(body.params.AdvisorLBIP).toBe('10.32.36.121')
+      expect(body.params.AdvisorProviderURL).toBe('https://api.anthropic.com/v1')
+      expect(body.params.AdvisorProviderModel).toBe('claude-sonnet-5')
+      // No key typed → none sent; the driver never invents one.
+      expect(body.providerKey).toBeUndefined()
       expect(body.params.Framework).toBe('demo-project')
       // CMP-only field stays empty for an advisor install.
       expect(body.params.AppFile).toBe('')
