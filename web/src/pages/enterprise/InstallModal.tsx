@@ -179,6 +179,12 @@ export function InstallModal({
   const [pigz, setPigz] = useState('')
   const [advisorPigz, setAdvisorPigz] = useState('')
   const [advisorLbIp, setAdvisorLbIp] = useState('')
+  // Comma-separated in the field; the driver suggests free addresses.
+  const [advisorPool, setAdvisorPool] = useState('')
+  const [advisorBaseUrl, setAdvisorBaseUrl] = useState('')
+  const [providerUrl, setProviderUrl] = useState('https://api.anthropic.com/v1')
+  const [providerKey, setProviderKey] = useState('')
+  const [providerModel, setProviderModel] = useState('claude-sonnet-5')
   const [manual, setManual] = useState(false)
   const [airgap, setAirgap] = useState(false)
 
@@ -265,6 +271,7 @@ export function InstallModal({
         if (!info.airgapSupported) setAirgap(false)
         setSuggestedLbIp(info.suggestedLBIP)
         setSuggestedStorage(info.suggestedStorage)
+        setAdvisorPool((info.suggestedAdvisorPool ?? []).join(','))
         setVersion(info.version)
         setManifestOpts(info.manifests)
         // Auto-select the manifest matched to the detected version; operator
@@ -306,6 +313,16 @@ export function InstallModal({
         LBImage: lbImage,
         AdvisorFile: module === 'advisor' ? advisorPigz : '',
         AdvisorLBIP: module === 'advisor' ? advisorLbIp : '',
+        AdvisorPool:
+          module === 'advisor'
+            ? advisorPool
+                .split(',')
+                .map((a) => a.trim())
+                .filter(Boolean)
+            : [],
+        AdvisorBaseURL: module === 'advisor' ? advisorBaseUrl.trim() : '',
+        AdvisorProviderURL: module === 'advisor' ? providerUrl.trim() : '',
+        AdvisorProviderModel: module === 'advisor' ? providerModel.trim() : '',
         StorageBackend: suggestedStorage,
       }
       const body: StartInstallBody = {
@@ -316,6 +333,7 @@ export function InstallModal({
         password,
         manifest,
         vip: tvip || undefined,
+        providerKey: module === 'advisor' && providerKey ? providerKey : undefined,
       }
       const install = await startInstall(clusterId, body)
       setStarted(install)
@@ -484,6 +502,37 @@ export function InstallModal({
                 value={advisorLbIp}
                 placeholder="e.g. 10.32.1.121"
                 onChange={setAdvisorLbIp}
+              />
+              <Field
+                label="Web-console addresses"
+                value={advisorPool}
+                placeholder="free addresses, comma-separated — one per upstream (CMP, CubeCOS)"
+                onChange={setAdvisorPool}
+              />
+              <Field
+                label="Advisor URL"
+                value={advisorBaseUrl}
+                placeholder={advisorLbIp ? `https://${advisorLbIp}` : 'https://<Advisor LB IP>'}
+                onChange={setAdvisorBaseUrl}
+              />
+              <Field
+                label="Inference provider URL"
+                value={providerUrl}
+                placeholder="https://api.anthropic.com/v1"
+                onChange={setProviderUrl}
+              />
+              <Field
+                label="Inference provider API key"
+                type="password"
+                value={providerKey}
+                placeholder="sk-… (chat stays off without one)"
+                onChange={setProviderKey}
+              />
+              <Field
+                label="Inference model"
+                value={providerModel}
+                placeholder="claude-sonnet-5"
+                onChange={setProviderModel}
               />
             </>
           )}

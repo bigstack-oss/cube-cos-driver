@@ -32,6 +32,7 @@ CONSOLE_ACCOUNT="${6:-advisor}"
 # Both optional: given, they set it; omitted, whatever the deployment already
 # uses is carried through.
 PROVIDER_URL="${8:-}"
+PROVIDER_MODEL="${9:-}"
 NS=cube-advisor
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
@@ -42,6 +43,8 @@ fail() { echo "ERROR: $*" >&2; exit 1; }
 HOSTS_PIN=""; TMPDIRS=()
 cleanup() {
   [ -n "$HOSTS_PIN" ] && sudo sed -i "/${HOSTS_PIN}/d" /etc/hosts
+  # The staged provider key is for this run only.
+  [ -n "${7:-}" ] && rm -f "${7}"
   [ ${#TMPDIRS[@]} -gt 0 ] && rm -rf "${TMPDIRS[@]}"
   return 0
 }
@@ -311,7 +314,8 @@ if [ -n "$PROVIDER_KEY_FILE" ]; then
   [ -r "$PROVIDER_KEY_FILE" ] || fail "cannot read the provider key file: $PROVIDER_KEY_FILE"
   PROVIDER_ARGS+=(--set-file provider.key="$PROVIDER_KEY_FILE")
   [ -n "$PROVIDER_URL" ] && PROVIDER_ARGS+=(--set provider.url="$PROVIDER_URL")
-  echo "provider set to ${PROVIDER_URL:-the chart default}."
+  [ -n "$PROVIDER_MODEL" ] && PROVIDER_ARGS+=(--set provider.model="$PROVIDER_MODEL")
+  echo "provider set to ${PROVIDER_URL:-the chart default}${PROVIDER_MODEL:+, model $PROVIDER_MODEL}."
 else
   # Read back what the deployment is already using. The key lives in the
   # Secret; the URL is an argument on the container.
@@ -330,6 +334,13 @@ else
   fi
   if [ -n "$PREV_URL" ]; then
     PROVIDER_ARGS+=(--set provider.url="$PREV_URL")
+  fi
+  PREV_MODEL="$($K -n "$NS" get deploy cube-advisor -o json 2>/dev/null | jq -r '
+    .spec.template.spec.containers[0].args as $a
+    | ($a | index("-provider-model")) as $i
+    | if $i == null then empty else $a[$i + 1] end')"
+  if [ -n "$PREV_MODEL" ]; then
+    PROVIDER_ARGS+=(--set provider.model="$PREV_MODEL")
   fi
 fi
 
@@ -417,6 +428,20 @@ case "$code" in
   404) fail "cube-advisor is serving but enrollment is disabled (POST /api/v1/enroll -> 404) — the CA never reached the API, so no cluster can enrol" ;;
   *)   echo "warning: POST /api/v1/enroll answered $code; expected 401" >&2 ;;
 esac
+
+# --- the first administrator ---
+# Migrations deliberately seed no account (the hosted service must not ship
+# admin/admin); the offline installer is where the first one is made. Local
+# sign-in is otherwise impossible, and a deployment nobody can sign in to is
+# not installed. The account can do nothing but replace its password.
+if $K -n "$NS" exec deploy/cube-advisor -c api -- advisorctl local init \
+     -dsn "postgres://postgres:${DBPW}@cube-advisor-db:5432/advisor?sslmode=disable" >/dev/null 2>&1; then
+  # Idempotent: an account that already exists is left as it is, password
+  # included — so on a re-run this line is only true if nobody changed it.
+  echo "first administrator: admin / admin (unless already changed) — the UI asks for a new password at first sign-in"
+else
+  echo "warning: could not create the first administrator; run 'advisorctl local init' in the api pod" >&2
+fi
 
 # The node half of the console: sshd has to trust this CA before a console
 # session can authenticate, and nothing pushes it — the Advisor mints

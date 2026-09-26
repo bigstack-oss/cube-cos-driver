@@ -19,6 +19,12 @@ export type InstallParams = {
   LBImage: string
   AdvisorFile: string
   AdvisorLBIP: string
+  // Web-console origin addresses, one per upstream; empty leaves it off.
+  AdvisorPool: string[]
+  // The origin browsers reach the advisor on; '' = https://<AdvisorLBIP>.
+  AdvisorBaseURL: string
+  AdvisorProviderURL: string
+  AdvisorProviderModel: string
   StorageBackend: string
 }
 
@@ -61,6 +67,9 @@ export type StartInstallBody = {
   manifest: string
   // ad-hoc target by VIP instead of a configured cluster (optional)
   vip?: string
+  // The advisor's inference API key; filed on the driver for the run, never
+  // stored with the run.
+  providerKey?: string
 }
 
 const jsonOrThrow = async (resp: Response): Promise<unknown> => {
@@ -232,6 +241,7 @@ export type ClusterInfo = {
   suggestedStorage: string
   version: string
   manifest: string
+  suggestedAdvisorPool?: string[]
   manifests: string[]
 }
 

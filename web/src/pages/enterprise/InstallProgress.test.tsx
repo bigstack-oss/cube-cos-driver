@@ -30,6 +30,10 @@ const baseInstall = (overrides: Partial<Install>): Install => ({
     LBImage: 'amphora.qcow2',
     AdvisorFile: '',
     AdvisorLBIP: '',
+    AdvisorPool: [],
+    AdvisorBaseURL: '',
+    AdvisorProviderURL: '',
+    AdvisorProviderModel: '',
     StorageBackend: 'CubeStorage',
   },
   Steps: [

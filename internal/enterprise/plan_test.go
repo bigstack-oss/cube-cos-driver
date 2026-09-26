@@ -146,7 +146,7 @@ func TestAdvisorInstallPassesTheConsolePool(t *testing.T) {
 	}, false, "/data", nil)
 	for _, s := range steps {
 		if strings.Contains(s.Cmd, advisorInstallScriptName) {
-			if !strings.HasSuffix(s.Cmd, "'10.32.1.104,10.32.1.105'") {
+			if !strings.Contains(s.Cmd, " '10.32.1.104,10.32.1.105' 'advisor' ") {
 				t.Errorf("install step does not pass the console pool: %q", s.Cmd)
 			}
 		}
@@ -158,9 +158,56 @@ func TestAdvisorInstallPassesTheConsolePool(t *testing.T) {
 	}, false, "/data", nil)
 	for _, s := range none {
 		if strings.Contains(s.Cmd, advisorInstallScriptName) {
-			if !strings.HasSuffix(s.Cmd, "''") {
+			if !strings.Contains(s.Cmd, " '' 'advisor' ") {
 				t.Errorf("an empty pool must still occupy its argument slot: %q", s.Cmd)
 			}
+		}
+	}
+}
+
+// The provider key rides as a staged file, never on the install command line
+// (which is echoed into the run's output), and its absence keeps every later
+// positional argument in place.
+func TestAdvisorInstallStagesTheProviderKeyAsAFile(t *testing.T) {
+	steps := BuildPlan(ModuleAdvisor, InstallParams{
+		Project: "appfw", Framework: "appfw", OSImage: "r.raw",
+		AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.32.1.102",
+		AdvisorProviderURL: "https://api.anthropic.com/v1", AdvisorProviderModel: "claude-sonnet-5",
+		AdvisorProviderKeyFile: "/data/advisor/.provider-key-10.32.1.200",
+	}, false, "/data", nil)
+	var names []string
+	for _, s := range steps {
+		names = append(names, s.Name)
+		switch s.Name {
+		case "advisor_provider_key":
+			if s.LocalPath != "/data/advisor/.provider-key-10.32.1.200" || s.RemotePath != "/tmp" {
+				t.Errorf("key step stages %q to %q", s.LocalPath, s.RemotePath)
+			}
+		case "install_advisor":
+			want := " 'advisor' '/tmp/.provider-key-10.32.1.200' 'https://api.anthropic.com/v1' 'claude-sonnet-5'"
+			if !strings.HasSuffix(s.Cmd, want) {
+				t.Errorf("install step = %q, want suffix %q", s.Cmd, want)
+			}
+			if strings.Contains(s.Cmd, "sk-") {
+				t.Errorf("a key value reached the command line: %q", s.Cmd)
+			}
+		}
+	}
+	joined := strings.Join(names, " ")
+	if !strings.Contains(joined, "advisor_provider_key install_advisor") {
+		t.Errorf("key is not staged right before the install: %v", names)
+	}
+
+	none := BuildPlan(ModuleAdvisor, InstallParams{
+		Project: "appfw", Framework: "appfw", OSImage: "r.raw",
+		AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.32.1.102",
+	}, false, "/data", nil)
+	for _, s := range none {
+		if s.Name == "advisor_provider_key" {
+			t.Error("no key, yet a key step was planned")
+		}
+		if s.Name == "install_advisor" && !strings.HasSuffix(s.Cmd, " 'advisor' '' '' ''") {
+			t.Errorf("without a key the positions still have to be held: %q", s.Cmd)
 		}
 	}
 }

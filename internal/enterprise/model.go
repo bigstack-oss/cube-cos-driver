@@ -52,6 +52,13 @@ type InstallParams struct {
 	// Secure cookies only on a secure context, so plain HTTP on a bare lab IP
 	// cannot complete a sign-in at all while localhost and HTTPS both can.
 	AdvisorBaseURL string
+	// The inference provider the chat surface calls. The key never sits in
+	// this struct: it is written to a 0600 file under the data dir for the
+	// run and staged to the node, and both copies are removed when the run
+	// ends. Only the file's path travels here, and not into the saved run.
+	AdvisorProviderURL     string
+	AdvisorProviderModel   string
+	AdvisorProviderKeyFile string `json:"-"`
 
 	StorageBackend string // cinder volume type for image import; from cluster query
 }

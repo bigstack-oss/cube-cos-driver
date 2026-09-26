@@ -1098,6 +1098,10 @@ func (m *Manager) cleanup(k string, in *Install, cancel context.CancelFunc, clie
 	if cancel != nil {
 		cancel() // release our own context regardless of map ownership
 	}
+	// The provider key file lives only for the run.
+	if f := in.Params.AdvisorProviderKeyFile; f != "" {
+		os.Remove(f)
+	}
 	m.mu.Lock()
 	if m.installs[k] == in {
 		delete(m.cancels, k)
