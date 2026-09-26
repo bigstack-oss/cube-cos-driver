@@ -499,6 +499,19 @@ func (m *Manager) preflight(ctx context.Context, client clusterssh.Client, in *I
 	// can't get its external FIP if a port already holds that address (e.g. the
 	// external network's OVN metadata port squats the range start), which then
 	// leaves the framework registry unreachable.
+	if !planHasStep(plan, "framework_create") && in.Module != ModuleAppFW && in.Op != "uninstall" {
+		// No OS image was given, so nothing here can create the framework:
+		// it has to exist already.
+		name := in.Params.Framework
+		if name == "" {
+			name = in.Params.Project
+		}
+		if name == "" || !listHasName(fw, name) {
+			return fmt.Errorf("App-framework %q is not on this cluster — install App-Framework first, or pick an OS image to create it as part of this install", name)
+		}
+		onLine(fmt.Sprintf("App-framework %q present — installing onto it.", name))
+	}
+
 	if planHasStep(plan, "framework_create") {
 		name := in.Params.Project
 		present := name != "" && listHasName(fw, name)

@@ -110,7 +110,10 @@ func BuildPlan(module string, p InstallParams, airgap bool, dataDir string, m *M
 		}
 	}
 
-	{
+	// CMP and the Advisor install onto an App-Framework. With no OS image
+	// named there is nothing to create one from, so the framework steps are
+	// left out and preflight verifies the framework is already there.
+	if module == ModuleAppFW || p.OSImage != "" {
 		steps = append(steps,
 			plannedStep{
 				Name:       "import_fs",

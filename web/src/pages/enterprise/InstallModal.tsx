@@ -162,6 +162,9 @@ export function InstallModal({
   const [infoLoading, setInfoLoading] = useState(false)
   const [airgapSupported, setAirgapSupported] = useState(true)
   const [suggestedLbIp, setSuggestedLbIp] = useState('')
+  // Frameworks/projects the cluster already has; CMP and the Advisor can
+  // install onto one without an OS image or a framework LB IP.
+  const [projects, setProjects] = useState<string[]>([])
   const [suggestedStorage, setSuggestedStorage] = useState('')
   const [version, setVersion] = useState('')
   const [manifestOpts, setManifestOpts] = useState<string[]>([])
@@ -257,6 +260,7 @@ export function InstallModal({
       setVersion('')
       setManifestOpts([])
       setManifest('')
+      setProjects([])
       return
     }
     setInfoErr('')
@@ -264,6 +268,7 @@ export function InstallModal({
     clusterInfo(clusterId, password, tvip || undefined, framework)
       .then((info) => {
         setNetworkOpts(info.networks)
+        setProjects(info.projects ?? [])
         const pub = info.networks.includes('public') ? 'public' : ''
         setPublicNet(pub)
         setMgmtNet(pub)
@@ -288,6 +293,9 @@ export function InstallModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clusterId, framework])
 
+  // The framework is already on the cluster: CMP and the Advisor install onto
+  // it, and the OS image / LB IP that would create it are not needed.
+  const frameworkPresent = module !== 'appfw' && projects.includes(framework)
   const osImages = artifacts.AppFW.filter((n) => n.endsWith('.raw'))
   // only .pigz packages — the CMP dir also holds .pigz.md5 and the portal scripts.
   const pigzImages = artifacts.CMP.filter((n) => n.endsWith('.pigz'))
@@ -357,8 +365,7 @@ export function InstallModal({
           !clusterId ||
           infoLoading ||
           !framework ||
-          !lbIp ||
-          !osImage ||
+          (!frameworkPresent && (!lbIp || !osImage)) ||
           (module === 'cmp' && !pigz) ||
           (module === 'advisor' && (!advisorPigz || !advisorLbIp)) ||
           starting,

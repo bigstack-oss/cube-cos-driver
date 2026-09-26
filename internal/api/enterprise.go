@@ -245,7 +245,9 @@ func (h *enterpriseHandlers) start(w http.ResponseWriter, r *http.Request) {
 	// Both modules' plans import the rancher image + framework_create keyed on
 	// OSImage; an empty value can't be resolved to a file and would scp the
 	// artifacts directory. Reject it here with a clear message.
-	if body.Params.OSImage == "" {
+	// The OS image creates the framework. CMP and the Advisor may install
+	// onto one that exists, in which case preflight checks it is there.
+	if body.Params.OSImage == "" && body.Module == enterprise.ModuleAppFW {
 		writeError(w, http.StatusBadRequest, "params.OSImage is required (the rancher cluster image .raw)")
 		return
 	}

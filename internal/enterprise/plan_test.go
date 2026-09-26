@@ -30,9 +30,9 @@ func TestBuildPlan_AppFW_Airgap(t *testing.T) {
 	}
 }
 func TestBuildPlan_CMP_AlwaysRunsAppFWFirst(t *testing.T) {
-	// The App-Framework sequence is always in the CMP plan; framework_create is
-	// idempotent (skips/waits when the framework is already active).
-	got := names(BuildPlan(ModuleCMP, InstallParams{}, false, "/data", nil))
+	// With an OS image the App-Framework sequence is in the CMP plan;
+	// framework_create is idempotent (skips/waits when already active).
+	got := names(BuildPlan(ModuleCMP, InstallParams{OSImage: "r.raw"}, false, "/data", nil))
 	want := []string{"preflight", "import_fs", "import_lb", "import", "framework_create", "app_register", "install_portal", "complete"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
@@ -209,5 +209,27 @@ func TestAdvisorInstallStagesTheProviderKeyAsAFile(t *testing.T) {
 		if s.Name == "install_advisor" && !strings.HasSuffix(s.Cmd, " 'advisor' '' '' ''") {
 			t.Errorf("without a key the positions still have to be held: %q", s.Cmd)
 		}
+	}
+}
+
+// No OS image means "onto the framework that is already there": the plan
+// carries no framework steps and preflight is what checks it exists.
+func TestBuildPlan_Advisor_OntoAnExistingFrameworkNeedsNoOSImage(t *testing.T) {
+	steps := BuildPlan(ModuleAdvisor, InstallParams{
+		Project: "appfw", Framework: "appfw",
+		AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9",
+	}, false, "/data", nil)
+	var names []string
+	for _, s := range steps {
+		names = append(names, s.Name)
+	}
+	want := []string{"preflight", "advisor_register", "install_advisor", "complete"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+	// App-Framework itself always needs one.
+	fw := BuildPlan(ModuleAppFW, InstallParams{Project: "appfw"}, false, "/data", nil)
+	if !planHasStep(fw, "framework_create") {
+		t.Error("an App-Framework install without an OS image dropped framework_create")
 	}
 }
