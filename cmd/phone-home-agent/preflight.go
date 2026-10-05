@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -253,21 +254,41 @@ func carrier(b model.PreflightBundle) (bool, string) {
 	return true, ""
 }
 
+// errIPMIWedged: the in-band KCS did not answer before the deadline; go-ipmi's
+// /dev/ipmi0 I/O ignores its context, so withIPMI abandons the stuck goroutine.
+var errIPMIWedged = errors.New("in-band IPMI unresponsive (KCS wedged)")
+
+func withIPMI(timeout time.Duration, fn func() error) error {
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		return errIPMIWedged
+	}
+}
+
 // writeSEL logs a compact OEM record to the local BMC over KCS (/dev/ipmi0),
 // so the orchestrator can read node status out-of-band even when the data-plane
 // network is down. Best effort — a missing/again unwritable BMC is not fatal.
 func writeSEL(phase, result, detail string) error {
-	client, err := goipmi.NewOpenClient()
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := client.Connect(ctx); err != nil {
-		return err
-	}
-	defer client.Close(ctx)
+	return withIPMI(5*time.Second, func() error {
+		client, err := goipmi.NewOpenClient()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := client.Connect(ctx); err != nil {
+			return err
+		}
+		defer client.Close(ctx)
+		return addSEL(ctx, client, phase, result, detail)
+	})
+}
 
+func addSEL(ctx context.Context, client *goipmi.Client, phase, result, detail string) error {
 	var oem [6]byte
 	oem[0] = phaseCode[phase]
 	oem[1] = resultCode[result]
@@ -280,7 +301,7 @@ func writeSEL(phase, result, detail string) error {
 			OEMDefined:     oem,
 		},
 	}
-	_, err = client.AddSELEntry(ctx, sel)
+	_, err := client.AddSELEntry(ctx, sel)
 	return err
 }
 
@@ -289,33 +310,38 @@ func writeSEL(phase, result, detail string) error {
 // step) is in the local SEL, read out-of-band over KCS — no in-band network
 // required. The stage byte (OEM byte 2) keeps each gate distinct.
 func selGatePresent(stage byte) bool {
-	client, err := goipmi.NewOpenClient()
-	if err != nil {
-		return false
-	}
+	present := false
 	// Generous timeout: the SEL can hold ~100 entries (BMC hardware events —
 	// PSU/voltage/fan warnings — dwarf our records), and reading them all over
 	// the slow KCS interface can exceed a few seconds. Too short a timeout makes
 	// the read fail and the gate never releases even though the go IS present.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := client.Connect(ctx); err != nil {
-		return false
-	}
-	defer client.Close(ctx)
-	entries, err := client.GetSELEntries(ctx, 0)
-	if err != nil {
-		return false
-	}
-	for _, e := range entries {
-		o := e.OEMTimestamped
-		if o != nil && o.ManufacturerID == cubeManufacturerID &&
-			o.OEMDefined[0] == selGateGo[0] && o.OEMDefined[1] == selGateGo[1] &&
-			o.OEMDefined[2] == stage {
-			return true
+	_ = withIPMI(30*time.Second, func() error {
+		client, err := goipmi.NewOpenClient()
+		if err != nil {
+			return err
 		}
-	}
-	return false
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := client.Connect(ctx); err != nil {
+			return err
+		}
+		defer client.Close(ctx)
+		entries, err := client.GetSELEntries(ctx, 0)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			o := e.OEMTimestamped
+			if o != nil && o.ManufacturerID == cubeManufacturerID &&
+				o.OEMDefined[0] == selGateGo[0] && o.OEMDefined[1] == selGateGo[1] &&
+				o.OEMDefined[2] == stage {
+				present = true
+				return nil
+			}
+		}
+		return nil
+	})
+	return present
 }
 
 // waitSELGate blocks until the go record for the given stage appears in the
@@ -429,39 +455,42 @@ const cubeEndpointManufacturerID uint32 = 0x0BC0DF
 // BMC SEL (KCS, no network) and returns "http://ip:port", or "" if none. The
 // driver stamps this when it powers the node for inspect/deploy.
 func driverEndpointFromSEL() string {
-	client, err := goipmi.NewOpenClient()
-	if err != nil {
-		return ""
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := client.Connect(ctx); err != nil {
-		return ""
-	}
-	defer client.Close(ctx)
-	entries, err := client.GetSELEntries(ctx, 0)
-	if err != nil {
-		return ""
-	}
 	var best string
-	var bestAt time.Time
-	for _, e := range entries {
-		o := e.OEMTimestamped
-		if o == nil || o.ManufacturerID != cubeEndpointManufacturerID {
-			continue
+	_ = withIPMI(5*time.Second, func() error {
+		client, err := goipmi.NewOpenClient()
+		if err != nil {
+			return err
 		}
-		b := o.OEMDefined
-		if b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 {
-			continue // unset address
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := client.Connect(ctx); err != nil {
+			return err
 		}
-		port := int(b[4])<<8 | int(b[5])
-		if port == 0 {
-			continue
+		defer client.Close(ctx)
+		entries, err := client.GetSELEntries(ctx, 0)
+		if err != nil {
+			return err
 		}
-		if best == "" || o.Timestamp.After(bestAt) {
-			best = fmt.Sprintf("http://%d.%d.%d.%d:%d", b[0], b[1], b[2], b[3], port)
-			bestAt = o.Timestamp
+		var bestAt time.Time
+		for _, e := range entries {
+			o := e.OEMTimestamped
+			if o == nil || o.ManufacturerID != cubeEndpointManufacturerID {
+				continue
+			}
+			b := o.OEMDefined
+			if b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 {
+				continue // unset address
+			}
+			port := int(b[4])<<8 | int(b[5])
+			if port == 0 {
+				continue
+			}
+			if best == "" || o.Timestamp.After(bestAt) {
+				best = fmt.Sprintf("http://%d.%d.%d.%d:%d", b[0], b[1], b[2], b[3], port)
+				bestAt = o.Timestamp
+			}
 		}
-	}
+		return nil
+	})
 	return best
 }
