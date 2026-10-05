@@ -533,3 +533,41 @@ func TestRefusedInspectKeepsRunningInspect(t *testing.T) {
 		t.Fatalf("a refused start must not reset any boot device, got %d", n)
 	}
 }
+
+// An earlier inspect's no-check-in timer must not fail a newer inspect of the
+// same machine: only the run that armed the timer may be expired by it.
+func TestStaleInspectTimeoutSparesNewerRun(t *testing.T) {
+	exec := NewFakeExecutor()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(store, exec, Config{PollInterval: time.Millisecond, StageTimeout: 2 * time.Second, InspectTimeout: 300 * time.Millisecond})
+	node := []Node{{MachineID: "m1", BMCAddress: "b1"}}
+	labels := map[string]string{"m1": "cc1"}
+
+	if err := m.StartInspect(node, labels, ""); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond) // first run's timer fires at ~300ms
+	if err := m.StartInspect(node, labels, ""); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(250 * time.Millisecond) // past the first timer, before the second
+
+	state := func() string {
+		for _, s := range m.Inspects() {
+			if s.MachineID == "m1" {
+				return s.State
+			}
+		}
+		return ""
+	}
+	if got := state(); got != "booting" {
+		t.Fatalf("newer inspect was expired by the earlier run's timer: state %q", got)
+	}
+	time.Sleep(200 * time.Millisecond) // past the second run's own timer
+	if got := state(); got != "error" {
+		t.Fatalf("newer inspect should expire on its own timer, state %q", got)
+	}
+}

@@ -22,6 +22,8 @@ type Config struct {
 	// GateRecheck is how often the driver re-verifies that a node's authorized
 	// gate records are still on its BMC, and re-writes any that vanished.
 	GateRecheck time.Duration
+	// InspectTimeout bounds an inspect with no check-in. 0 = 15 min.
+	InspectTimeout time.Duration
 }
 
 func (c Config) withDefaults() Config {
@@ -123,6 +125,14 @@ func NewManager(store *Store, exec Executor, cfg Config) *Manager {
 // check-in before it's marked errored (dead PSU, PXE failure, wrong network).
 const inspectCheckinTimeout = 15 * time.Minute
 
+// inspectTimeout is the no-check-in bound; tests shorten it via Config.
+func (m *Manager) inspectTimeout() time.Duration {
+	if m.cfg.InspectTimeout > 0 {
+		return m.cfg.InspectTimeout
+	}
+	return inspectCheckinTimeout
+}
+
 // StartInspect force-PXEs + power-cycles each machine so it boots the installer
 // in inventory mode (agent --inventory: report hardware, then halt). Progress is
 // tracked per machine for the UI.
@@ -139,10 +149,14 @@ func (m *Manager) StartInspect(nodes []Node, labels map[string]string, image str
 			prevNode[n.MachineID] = pn
 		}
 	}
+	// Each run's timeout only expires its own status entry.
+	runs := map[string]*InspectStatus{}
 	for _, n := range nodes {
-		m.inspects[n.MachineID] = &InspectStatus{
+		st := &InspectStatus{
 			MachineID: n.MachineID, Label: labels[n.MachineID], State: "booting", UpdatedAt: nowUTC(),
 		}
+		m.inspects[n.MachineID] = st
+		runs[n.MachineID] = st
 		m.inspectNodes[n.MachineID] = n
 	}
 	m.mu.Unlock()
@@ -194,8 +208,8 @@ func (m *Manager) StartInspect(nodes []Node, labels map[string]string, image str
 			}
 			// No-checkin timeout: if the node never boots to inspect (dead PSU,
 			// PXE failure), don't leave it hanging "booting" — mark it error.
-			time.Sleep(inspectCheckinTimeout)
-			m.expireInspect(n.MachineID)
+			time.Sleep(m.inspectTimeout())
+			m.expireInspectRun(n.MachineID, runs[n.MachineID])
 		}(n, i)
 	}
 	return nil
@@ -222,8 +236,17 @@ func (m *Manager) inspectsBooted(machineIDs []string) bool {
 // that checked in and inventoried is already "reported" and left untouched.
 func (m *Manager) expireInspect(machineID string) {
 	m.mu.Lock()
+	s := m.inspects[machineID]
+	m.mu.Unlock()
+	m.expireInspectRun(machineID, s)
+}
+
+// expireInspectRun expires run only while it is still the machine's current
+// inspect, so an earlier run's timer cannot fail a newer inspect.
+func (m *Manager) expireInspectRun(machineID string, run *InspectStatus) {
+	m.mu.Lock()
 	expired := false
-	if s := m.inspects[machineID]; s != nil && s.State == "booting" {
+	if s := m.inspects[machineID]; s != nil && s == run && s.State == "booting" {
 		s.State = "error"
 		s.Message = "no check-in within timeout — node did not boot to inspect (check power / PXE)"
 		s.UpdatedAt = nowUTC()
