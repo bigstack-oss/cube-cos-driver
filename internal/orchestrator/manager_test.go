@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -492,5 +493,43 @@ func TestInspectResetsBootDeviceOnTerminal(t *testing.T) {
 	got := exec.BootDiskNodes()
 	if len(got) != 2 || !got["m1"] || !got["m2"] {
 		t.Fatalf("SetBootDisk not issued for terminal inspects: %v", got)
+	}
+}
+
+// A start refused because the PXE default is busy must leave a running
+// inspect alone: no error state, no boot-device reset, no entry for machines
+// that were not inspecting.
+func TestRefusedInspectKeepsRunningInspect(t *testing.T) {
+	exec := NewFakeExecutor()
+	m := newTestManager(t, exec)
+	ff := &fakeFlipper{}
+	m.SetPXEFlipper(ff)
+
+	if err := m.StartInspect([]Node{{MachineID: "m1", BMCAddress: "b1"}}, map[string]string{"m1": "cc1"}, "img"); err != nil {
+		t.Fatal(err)
+	}
+	ff.failWith = errors.New("PXE default is busy")
+	err := m.StartInspect([]Node{{MachineID: "m1", BMCAddress: "b1"}, {MachineID: "m2", BMCAddress: "b2"}},
+		map[string]string{"m1": "cc1", "m2": "cc2"}, "img")
+	if err == nil {
+		t.Fatal("second start should be refused")
+	}
+
+	got := map[string]string{}
+	for _, s := range m.Inspects() {
+		got[s.MachineID] = s.State
+	}
+	if got["m1"] != "booting" {
+		t.Fatalf("running inspect m1 should stay booting, got %q", got["m1"])
+	}
+	if _, ok := got["m2"]; ok {
+		t.Fatalf("refused machine m2 should have no inspect entry, got %q", got["m2"])
+	}
+	if !m.IsInspecting("m1") {
+		t.Fatal("m1 should still be inspecting")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := len(exec.BootDiskNodes()); n != 0 {
+		t.Fatalf("a refused start must not reset any boot device, got %d", n)
 	}
 }

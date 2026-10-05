@@ -128,6 +128,17 @@ const inspectCheckinTimeout = 15 * time.Minute
 // tracked per machine for the UI.
 func (m *Manager) StartInspect(nodes []Node, labels map[string]string, image string) error {
 	m.mu.Lock()
+	// Keep what was there, so a refused start leaves a running inspect intact.
+	prevStatus := map[string]*InspectStatus{}
+	prevNode := map[string]Node{}
+	for _, n := range nodes {
+		if s, ok := m.inspects[n.MachineID]; ok {
+			prevStatus[n.MachineID] = s
+		}
+		if pn, ok := m.inspectNodes[n.MachineID]; ok {
+			prevNode[n.MachineID] = pn
+		}
+	}
 	for _, n := range nodes {
 		m.inspects[n.MachineID] = &InspectStatus{
 			MachineID: n.MachineID, Label: labels[n.MachineID], State: "booting", UpdatedAt: nowUTC(),
@@ -148,9 +159,22 @@ func (m *Manager) StartInspect(nodes []Node, labels map[string]string, image str
 		inspectArm = "driver_server=" + url
 	}
 	if err := m.flipForBoot(context.Background(), image, inspectArm, func() bool { return m.inspectsBooted(ids) }); err != nil {
+		// Refused (e.g. PXE default busy): nothing booted, so put back the
+		// previous state instead of erroring an inspect that may still be live.
+		m.mu.Lock()
 		for _, n := range nodes {
-			m.setInspect(n.MachineID, "error", err.Error())
+			if s, ok := prevStatus[n.MachineID]; ok {
+				m.inspects[n.MachineID] = s
+			} else {
+				delete(m.inspects, n.MachineID)
+			}
+			if pn, ok := prevNode[n.MachineID]; ok {
+				m.inspectNodes[n.MachineID] = pn
+			} else {
+				delete(m.inspectNodes, n.MachineID)
+			}
 		}
+		m.mu.Unlock()
 		return err
 	}
 	for i, n := range nodes {
