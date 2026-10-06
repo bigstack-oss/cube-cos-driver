@@ -227,5 +227,70 @@ func (c ClusterDetail) Validate() error {
 	if needsControl && !hasControl {
 		return invalidf("compute/storage nodes present but no control-function node")
 	}
+	return c.validateMgmtCIDR()
+}
+
+// validateMgmtCIDR rejects a mgmtCIDR that overlaps a real network. CubeCOS
+// carves its internal service networks (Octavia lb-mgmt, Manila) out of the
+// whole range, so any overlap reroutes real traffic onto them.
+func (c ClusterDetail) validateMgmtCIDR() error {
+	cidr := c.ClusterConfig.RoleSettings.MgmtCIDR
+	if cidr == "" {
+		return nil // CubeCOS default 10.254.0.0/16
+	}
+	ip, mgmt, err := net.ParseCIDR(cidr)
+	if err != nil || ip.To4() == nil {
+		return invalidf("mgmtCIDR %q is not an IPv4 CIDR", cidr)
+	}
+	if ones, _ := mgmt.Mask.Size(); ones != 16 && ones != 8 {
+		return invalidf("mgmtCIDR %s must be a /16 or /8 (CubeCOS internal service range, default 10.254.0.0/16)", cidr)
+	}
+	check := func(what string, n *net.IPNet) error {
+		if n != nil && (mgmt.Contains(n.IP) || n.Contains(mgmt.IP)) {
+			return invalidf("mgmtCIDR %s overlaps %s %s; it is CubeCOS's internal service range and must not overlap real networks (default 10.254.0.0/16)", cidr, what, n)
+		}
+		return nil
+	}
+	host := func(s string) *net.IPNet {
+		if ip := net.ParseIP(s); ip != nil {
+			return &net.IPNet{IP: ip, Mask: net.CIDRMask(len(ip)*8, len(ip)*8)}
+		}
+		return nil
+	}
+	for _, n := range c.NodeData {
+		for _, f := range n.AllIFs() {
+			if f.IPAddr == "" {
+				continue
+			}
+			sub := host(f.IPAddr)
+			if m := net.ParseIP(f.IPMask).To4(); m != nil && sub != nil {
+				sub = &net.IPNet{IP: sub.IP.Mask(net.IPMask(m)), Mask: net.IPMask(m)}
+			}
+			if err := check("node "+n.Hostname+" "+f.Name+" subnet", sub); err != nil {
+				return err
+			}
+		}
+		if err := check("node "+n.Hostname+" default gateway", host(n.DefaultGateway)); err != nil {
+			return err
+		}
+	}
+	for _, d := range c.ClusterConfig.DNS {
+		if err := check("DNS server", host(d)); err != nil {
+			return err
+		}
+	}
+	if err := check("external IP", host(c.ClusterConfig.RoleSettings.ExtIP)); err != nil {
+		return err
+	}
+	if err := check("virtual IP", host(c.ClusterConfig.HASettings.VirtualIP)); err != nil {
+		return err
+	}
+	if sr := c.ClusterConfig.SetReady; sr != nil && sr.CreateExternal && sr.CIDR != "" {
+		if _, n, err := net.ParseCIDR(sr.CIDR); err == nil {
+			if err := check("set-ready external network", n); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }

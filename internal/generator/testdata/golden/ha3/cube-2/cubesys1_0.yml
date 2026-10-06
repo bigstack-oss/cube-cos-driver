@@ -10,7 +10,7 @@ controller: sky-vip
 external: 10.32.140.100
 region: RegionOne
 secret-seed: xzpfwk
-mgmt-cidr: 10.254.0.0/16
+mgmt-cidr: 10.100.0.0/16
 management: IF.1
 provider: bond0
 overlay: bond0.101

@@ -207,7 +207,7 @@ export const ClusterWizard = (props: ClusterWizardProps) => {
           }
         />
         <CosInput
-          label="Management CIDR"
+          label="Internal service CIDR (must not overlap node networks)"
           value={config.roleSettings.mgmtCIDR}
           onChange={(e) =>
             patch({
