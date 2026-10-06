@@ -135,10 +135,10 @@ func SetTimeout(root, value string) error {
 }
 
 // reEntryArgs captures the custom kernel-arg segment of a menuentry's linuxefi
-// line — everything between "erst_disable" and the "pxe_via_nfs="/"pxe_via_http="/"pxe_net_busid="
+// line — everything between "erst_disable" and the "pxe_via_nfs="/"pxe_net_busid="
 // marker. The driver injects zero-touch arming (autoinstall driver_server=…)
 // there for a deploy and strips it after.
-var reEntryArgs = regexp.MustCompile(`(erst_disable)(.*?)( pxe_(?:via_nfs|via_http|net_busid)=)`)
+var reEntryArgs = regexp.MustCompile(`(erst_disable)(.*?)( pxe_(?:via_nfs|net_busid)=)`)
 
 // entryLine finds the index of the menuentry line for entry (its linuxefi line).
 func entryLine(lines []string, entry string) int {
