@@ -187,3 +187,26 @@ func TestFlipperForcesTimeoutOverAmbientWaitForever(t *testing.T) {
 		t.Fatalf("ambient timeout not restored: %q", to)
 	}
 }
+
+func TestSetEntryArgsHTTPOnlyEntry(t *testing.T) {
+	d := t.TempDir()
+	grub := "set default='h (UEFI)'\nset timeout=0\n" +
+		"menuentry 'h (UEFI)' { linuxefi /b rw erst_disable pxe_via_http=http://10.32.0.200:8080/h ; initrdefi /h/i }\n"
+	if err := os.WriteFile(filepath.Join(d, "grub.cfg"), []byte(grub), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	arm := "autoinstall driver_server=http://x:1"
+	if err := SetEntryArgs(d, "h (UEFI)", arm); err != nil {
+		t.Fatalf("arming an HTTP-only entry: %v", err)
+	}
+	b, _ := os.ReadFile(filepath.Join(d, "grub.cfg"))
+	if !strings.Contains(string(b), "erst_disable "+arm+" pxe_via_http=") {
+		t.Fatalf("armed line malformed:\n%s", b)
+	}
+	if err := SetEntryArgs(d, "h (UEFI)", ""); err != nil {
+		t.Fatal(err)
+	}
+	if b2, _ := os.ReadFile(filepath.Join(d, "grub.cfg")); string(b2) != grub {
+		t.Fatalf("strip did not restore the entry:\n%s", b2)
+	}
+}
