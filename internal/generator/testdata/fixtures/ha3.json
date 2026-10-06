@@ -10,7 +10,7 @@
             "extIP": "10.32.140.100",
             "region": "RegionOne",
             "secretSeed": "xzpfwk",
-            "mgmtCIDR": "10.254.0.0/16"
+            "mgmtCIDR": "10.100.0.0/16"
         },
         "HA": true,
         "HASettings": {

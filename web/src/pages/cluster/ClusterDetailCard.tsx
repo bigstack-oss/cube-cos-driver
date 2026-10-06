@@ -32,7 +32,7 @@ export const ClusterDetailCard = (props: ClusterDetailCardProps) => {
         <Item label="Timezone" value={config.timezone.name} />
         <Item label="Region" value={config.roleSettings.region} />
         <Item label="External IP" value={config.roleSettings.extIP} />
-        <Item label="Management CIDR" value={config.roleSettings.mgmtCIDR} />
+        <Item label="Internal service CIDR" value={config.roleSettings.mgmtCIDR} />
         <Item label="Secret seed" value={config.roleSettings.secretSeed} />
         <div className="flex flex-col">
           <span className="secondary-body5 text-functional-text-light">

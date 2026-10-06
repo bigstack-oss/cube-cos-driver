@@ -55,6 +55,18 @@ func TestValidateFailures(t *testing.T) {
 		{"bad dns ip", func(d *ClusterDetail) { d.ClusterConfig.DNS = []string{"not-an-ip"} }},
 		{"short id", func(d *ClusterDetail) { d.ClusterInfo.ID = "short" }},
 		{"no nodes", func(d *ClusterDetail) { d.NodeData = nil }},
+		{"mgmtCIDR overlaps node subnet", func(d *ClusterDetail) { d.ClusterConfig.RoleSettings.MgmtCIDR = "10.254.0.0/16" }},
+		{"mgmtCIDR contains gateway", func(d *ClusterDetail) {
+			d.ClusterConfig.RoleSettings.MgmtCIDR = "10.9.0.0/16"
+			d.NodeData[0].DefaultGateway = "10.9.0.1"
+		}},
+		{"mgmtCIDR contains DNS", func(d *ClusterDetail) { d.ClusterConfig.DNS = []string{"10.100.0.53"} }},
+		{"mgmtCIDR contains VIP", func(d *ClusterDetail) { d.ClusterConfig.HASettings.VirtualIP = "10.100.1.1" }},
+		{"mgmtCIDR overlaps set-ready cidr", func(d *ClusterDetail) {
+			d.ClusterConfig.SetReady = &SetReadySettings{CreateExternal: true, CIDR: "10.100.0.0/24"}
+		}},
+		{"mgmtCIDR not /16 or /8", func(d *ClusterDetail) { d.ClusterConfig.RoleSettings.MgmtCIDR = "10.100.0.0/24" }},
+		{"mgmtCIDR not a CIDR", func(d *ClusterDetail) { d.ClusterConfig.RoleSettings.MgmtCIDR = "10.100.0.0" }},
 		{"compute without control", func(d *ClusterDetail) {
 			for i := range d.NodeData {
 				d.NodeData[i].Role = "compute"
@@ -88,5 +100,13 @@ func TestJSONRoundTrip(t *testing.T) {
 	}
 	if d2.NodeData[1].BondIFs[0].Slaves[1] != d.NodeData[1].BondIFs[0].Slaves[1] {
 		t.Fatal("round trip lost bond slaves")
+	}
+}
+
+func TestMgmtCIDREmptyUsesCubeDefault(t *testing.T) {
+	d := loadHA3(t)
+	d.ClusterConfig.RoleSettings.MgmtCIDR = ""
+	if err := d.Validate(); err != nil {
+		t.Fatalf("empty mgmtCIDR should be accepted: %v", err)
 	}
 }

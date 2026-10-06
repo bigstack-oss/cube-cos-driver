@@ -46,7 +46,7 @@ describe('ClusterWizard', () => {
 
     // Role settings defaults valid.
     expect(
-      (screen.getByLabelText('Management CIDR') as HTMLInputElement).value,
+      (screen.getByLabelText('Internal service CIDR (must not overlap node networks)') as HTMLInputElement).value,
     ).toBe('10.254.0.0/16')
     await user.click(next())
 
