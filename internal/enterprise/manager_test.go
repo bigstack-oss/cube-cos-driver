@@ -849,3 +849,42 @@ func TestPreflightStillProbesAddressesNewToTheAdvisor(t *testing.T) {
 		t.Fatalf("preflight Err = %q, want it to name the address that is new and taken", in.Steps[0].Err)
 	}
 }
+
+// Images the extpack already imported into glance need no staged local file.
+func TestManager_AppFW_ImagesFromExtpack_NoLocalFiles(t *testing.T) {
+	m, mc := newTestMgr(t, frameworkActiveAfterCreate("cmp", nil))
+	for _, f := range []string{"r.raw", "m.qcow2", "a.qcow2"} {
+		os.Remove(filepath.Join(m.dir.Get(), "appfw", f))
+	}
+	m.Start("cl1", "appfw", "10.32.10.140", "pw",
+		InstallParams{Project: "cmp", PublicNet: "public", MgmtNet: "public", LBIP: "10.32.36.120", OSImage: "r.raw", FsImage: "m.qcow2", LBImage: "a.qcow2"}, false, false)
+	waitState(t, m, "cl1", "appfw", "done")
+	if containsCmd(mc.Runs, "import local r.raw") || !containsCmd(mc.Runs, "framework_create cmp public public 10.32.36.120 r") {
+		t.Fatalf("runs=%v", mc.Runs)
+	}
+}
+
+// A missing local file whose image is not in glance either still fails preflight,
+// and the error points at the extpack.
+func TestManager_AppFW_MissingImageNotInGlance_FailsPreflight(t *testing.T) {
+	m, _ := newTestMgr(t, func(cmd string) ([]string, error) {
+		if strings.Contains(cmd, "image show r") {
+			return nil, errors.New("No Image found")
+		}
+		return nil, nil
+	})
+	os.Remove(filepath.Join(m.dir.Get(), "appfw", "r.raw"))
+	m.Start("cl1", "appfw", "10.32.10.140", "pw",
+		InstallParams{Project: "cmp", PublicNet: "public", MgmtNet: "public", LBIP: "10.32.36.120", OSImage: "r.raw", FsImage: "m.qcow2", LBImage: "a.qcow2"}, false, false)
+	waitState(t, m, "cl1", "appfw", "error")
+	in, _ := m.Status("cl1", "appfw")
+	var msg string
+	for _, s := range in.Steps {
+		if s.Name == "preflight" {
+			msg = s.Err
+		}
+	}
+	if !strings.Contains(msg, "missing artifact: r.raw") || !strings.Contains(msg, "import_extpack") {
+		t.Fatalf("preflight err=%q", msg)
+	}
+}

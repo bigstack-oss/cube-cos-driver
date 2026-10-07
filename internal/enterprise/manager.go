@@ -582,6 +582,16 @@ func (m *Manager) preflight(ctx context.Context, client clusterssh.Client, in *I
 		}
 		name := filepath.Base(ps.LocalPath)
 		fi, err := os.Stat(ps.LocalPath)
+		if err != nil && ps.ImageName != "" {
+			// The 3.2.0 extpack imports the appfw images into glance on the
+			// cluster (hex_cli iaas image import_extpack); no local copy needed then.
+			show := "source /etc/admin-openrc.sh && openstack image show " + ps.ImageName
+			if client.Run(ctx, show, func(string) {}) == nil {
+				onLine(fmt.Sprintf("  ✓ %s already in glance (extpack) — %s not needed", ps.ImageName, name))
+				continue
+			}
+			return fmt.Errorf("missing artifact: %s (stage it, or import the extpack first: hex_cli -c iaas -c image -c import_extpack local <file>)", name)
+		}
 		if err != nil {
 			return fmt.Errorf("missing artifact: %s", name)
 		}
