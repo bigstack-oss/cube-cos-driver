@@ -1,6 +1,8 @@
 package enterprise
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -231,5 +233,26 @@ func TestBuildPlan_Advisor_OntoAnExistingFrameworkNeedsNoOSImage(t *testing.T) {
 	fw := BuildPlan(ModuleAppFW, InstallParams{Project: "appfw"}, false, "/data", nil)
 	if !planHasStep(fw, "framework_create") {
 		t.Error("an App-Framework install without an OS image dropped framework_create")
+	}
+}
+
+func TestBuildPlan_CMP_KeycloakExtensionsWhenStaged(t *testing.T) {
+	dir := t.TempDir()
+	p := InstallParams{AppFile: "cube-portal-2.1.1+rev4902.pigz", Framework: "appfw"}
+	if got := names(BuildPlan(ModuleCMP, p, false, dir, nil)); !reflect.DeepEqual(got, []string{"preflight", "app_register", "install_portal", "complete"}) {
+		t.Fatalf("no bundle staged: got %v", got)
+	}
+	os.MkdirAll(filepath.Join(dir, "cubecmp"), 0o755)
+	os.WriteFile(filepath.Join(dir, "cubecmp", "keycloak-extensions-2.1.1+rev4902.tgz"), []byte("x"), 0o644)
+	plan := BuildPlan(ModuleCMP, p, false, dir, nil)
+	if got := names(plan); !reflect.DeepEqual(got, []string{"preflight", "app_register", "keycloak_extensions", "install_portal", "complete"}) {
+		t.Fatalf("bundle staged: got %v", got)
+	}
+	ps := plan[2]
+	if ps.Kind != "scp+run" || ps.RemotePath != "/tmp" || filepath.Base(ps.LocalPath) != "keycloak-extensions-2.1.1+rev4902.tgz" {
+		t.Fatalf("step: %+v", ps)
+	}
+	if !strings.Contains(ps.Cmd, "base64 -d | bash -s -- '/tmp/keycloak-extensions-2.1.1+rev4902.tgz'") {
+		t.Fatalf("cmd does not run the embedded script on the pushed bundle: %q", ps.Cmd)
 	}
 }

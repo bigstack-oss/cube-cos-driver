@@ -16,6 +16,9 @@ const portalUninstallScriptName = "cube-portal-uninstall.sh"
 const advisorInstallScriptName = "cube-advisor-install.sh"
 const advisorUninstallScriptName = "cube-advisor-uninstall.sh"
 
+//go:embed assets/keycloak-extensions.sh
+var keycloakExtensionsScript string
+
 //go:embed assets/install-portal.sh
 var installPortalScript string
 

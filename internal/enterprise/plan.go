@@ -1,6 +1,7 @@
 package enterprise
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -173,6 +174,20 @@ func BuildPlan(module string, p InstallParams, airgap bool, dataDir string, m *M
 				LocalPath:  localPath(dataDir, "cubecmp", p.AppFile),
 				RemotePath: cephfsUpdate,
 			},
+		)
+		// CMP 2.1.1's post-install needs its Keycloak extensions, which the
+		// app-framework Keycloak lacks (cubecmp#1580); add them when staged.
+		if kc := "keycloak-extensions-" + chartVer + ".tgz"; fileExists(localPath(dataDir, "cubecmp", kc)) {
+			steps = append(steps, plannedStep{
+				Name:       "keycloak_extensions",
+				Title:      "Add CubeCMP Keycloak extensions",
+				Kind:       "scp+run",
+				Cmd:        fmt.Sprintf("echo %s | base64 -d | bash -s -- %s", base64.StdEncoding.EncodeToString([]byte(keycloakExtensionsScript)), shellQuote("/tmp/"+kc)),
+				LocalPath:  localPath(dataDir, "cubecmp", kc),
+				RemotePath: "/tmp",
+			})
+		}
+		steps = append(steps,
 			// app_register only pushes the chart + prereqs; this deploys the portal
 			// end-to-end (helm install, DB-migration retry) and self-verifies that
 			// it serves and admin permission was granted.
