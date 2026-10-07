@@ -1207,6 +1207,7 @@ type ClusterQuery struct {
 	SuggestedStorage string   // default cinder volume type, for image import
 	Version          string   // CubeCOS version from /etc/version, e.g. "3.1.0"
 	Manifest         string   // auto-matched manifest name ("" if none)
+	ManifestOSImage  string   // the matched manifest's appfw.osImage, for extpack installs
 	Manifests        []string // available manifest names, for the version picker
 	// SuggestedAdvisorPool is free addresses for the advisor: its own service
 	// IP first, then one per web-console origin. Fewer than advisorPoolSize
@@ -1367,6 +1368,9 @@ func (m *Manager) Introspect(host, password, framework string) (ClusterQuery, er
 		q.Version = version
 		if mf := MatchManifest(manifests, version, build, commit); mf != nil {
 			q.Manifest = mf.Name
+			if mf.Appfw != nil {
+				q.ManifestOSImage = mf.Appfw.OSImage
+			}
 			// only an explicit value overrides the live probe above
 			if mf.AirgapSupported != nil {
 				q.AirgapSupported = *mf.AirgapSupported

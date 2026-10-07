@@ -22,7 +22,12 @@ type Manifest struct {
 	// unset lets the cluster probe answer (ClusterInfo greps airgap_sim_apply);
 	// false pins off a release that lacks the function, true forces it on (#77).
 	AirgapSupported *bool `json:"airgapSupported"`
-	Import          struct {
+	// Appfw names what the release's extpack carries; OSImage is the rancher
+	// glance image framework_create uses when the images come from the extpack.
+	Appfw *struct {
+		OSImage string `json:"osImage"`
+	} `json:"appfw,omitempty"`
+	Import struct {
 		Tenant         string `json:"tenant"`
 		Visibility     string `json:"visibility"`
 		StorageBackend string `json:"storageBackend"`

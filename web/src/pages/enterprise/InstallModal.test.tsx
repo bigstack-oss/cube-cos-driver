@@ -23,7 +23,7 @@ const artifacts = {
 }
 
 // Shared fetch stub for clusters/cluster-detail/artifacts/install-POST.
-const stubFetch = () => {
+const stubFetch = (arts: typeof artifacts = artifacts, info: Record<string, unknown> = {}) => {
   fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
     if (url === '/api/v1/clusters') {
       return new Response(
@@ -42,7 +42,7 @@ const stubFetch = () => {
       )
     }
     if (url === '/api/v1/enterprise/artifacts') {
-      return new Response(JSON.stringify(artifacts), { status: 200 })
+      return new Response(JSON.stringify(arts), { status: 200 })
     }
     if (url.endsWith('/enterprise/cluster-info') && init?.method === 'POST') {
       return new Response(
@@ -55,6 +55,7 @@ const stubFetch = () => {
           version: '3.1.0',
           manifest: '',
           manifests: [],
+          ...info,
         }),
         { status: 200 },
       )
@@ -157,6 +158,38 @@ describe('InstallModal', () => {
     await waitFor(() =>
       expect(screen.getByLabelText('install progress')).toBeTruthy(),
     )
+  })
+
+  it('installs from an extpack with the manifest OS image when appfw/ holds only a .ext', async () => {
+    const user = userEvent.setup()
+    stubFetch(
+      { AppFW: ['CUBE_3.2.0_20261007-0633_.ext'], CMP: ['cube-portal-2.1.1+rev4902.pigz'], Advisor: [] },
+      { manifest: 'v3.2.0', manifestOSImage: 'rancher-cluster-image-rke2-v1.32.4' },
+    )
+    render(
+      <MemoryRouter>
+        <InstallModal module="cmp" onClose={vi.fn()} />
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(screen.getByText('sky-lab')).toBeTruthy())
+    await user.selectOptions(screen.getByLabelText('Cluster'), 'aabbccddee01')
+    await user.type(screen.getByLabelText('LB IP'), '10.32.36.120')
+    await waitFor(() => expect(screen.getByLabelText('Extpack')).toBeTruthy())
+    expect((screen.getByLabelText('Extpack') as HTMLSelectElement).value).toBe('CUBE_3.2.0_20261007-0633_.ext')
+    await waitFor(() => expect(screen.getByText('rancher-cluster-image-rke2-v1.32.4')).toBeTruthy())
+    await user.selectOptions(screen.getByLabelText('OS image'), 'rancher-cluster-image-rke2-v1.32.4')
+    await user.selectOptions(screen.getByLabelText('.pigz package'), 'cube-portal-2.1.1+rev4902.pigz')
+    await user.click(screen.getByRole('button', { name: 'Install' }))
+    await waitFor(() => {
+      const posted = fetchMock.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).endsWith('/enterprise/install') &&
+          (c[1] as RequestInit | undefined)?.method === 'POST',
+      )
+      expect(posted).toBeTruthy()
+      const params = JSON.parse((posted![1] as RequestInit).body as string).params
+      expect(params.ExtpackFile).toBe('CUBE_3.2.0_20261007-0633_.ext')
+      expect(params.OSImage).toBe('rancher-cluster-image-rke2-v1.32.4')
+    })
   })
 
   it('keeps Install disabled for cmp until a .pigz is selected', async () => {

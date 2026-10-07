@@ -169,6 +169,8 @@ export function InstallModal({
   const [version, setVersion] = useState('')
   const [manifestOpts, setManifestOpts] = useState<string[]>([])
   const [manifest, setManifest] = useState('')
+  const [manifestOSImage, setManifestOSImage] = useState('')
+  const [extpack, setExtpack] = useState('')
 
   const [password, setPassword] = useState('')
   // framework is the app-framework name (framework_create FRAMEWORK_NAME, and
@@ -200,7 +202,11 @@ export function InstallModal({
       .then(setClusters)
       .catch(() => setClusters([]))
     getArtifacts()
-      .then(setArtifacts)
+      .then((a) => {
+        setArtifacts(a)
+        const ext = a.AppFW.find((n) => n.endsWith('.ext'))
+        if (ext) setExtpack(ext)
+      })
       .catch(() => setArtifacts({ AppFW: [], CMP: [], Advisor: [] }))
   }, [])
 
@@ -260,6 +266,7 @@ export function InstallModal({
       setVersion('')
       setManifestOpts([])
       setManifest('')
+      setManifestOSImage('')
       setProjects([])
       return
     }
@@ -282,6 +289,7 @@ export function InstallModal({
         // Auto-select the manifest matched to the detected version; operator
         // can override.
         setManifest(info.manifest)
+        setManifestOSImage(info.manifestOSImage ?? '')
       })
       .catch((e) => {
         setNetworkOpts([])
@@ -296,7 +304,11 @@ export function InstallModal({
   // The framework is already on the cluster: CMP and the Advisor install onto
   // it, and the OS image / LB IP that would create it are not needed.
   const frameworkPresent = module !== 'appfw' && projects.includes(framework)
-  const osImages = artifacts.AppFW.filter((n) => n.endsWith('.raw'))
+  const extpacks = artifacts.AppFW.filter((n) => n.endsWith('.ext'))
+  // An extpack carries the rancher image, so the manifest names it; otherwise pick a staged .raw.
+  const osImages = extpack
+    ? [manifestOSImage].filter(Boolean)
+    : artifacts.AppFW.filter((n) => n.endsWith('.raw'))
   // only .pigz packages — the CMP dir also holds .pigz.md5 and the portal scripts.
   const pigzImages = artifacts.CMP.filter((n) => n.endsWith('.pigz'))
   // same filter, but for the advisor dir's .pigz package + install/uninstall scripts.
@@ -315,6 +327,7 @@ export function InstallModal({
         MgmtNet: mgmtNet,
         LBIP: lbIp,
         OSImage: osImage,
+        ExtpackFile: frameworkPresent ? '' : extpack,
         Framework: module === 'cmp' || module === 'advisor' ? framework : '',
         AppFile: module === 'cmp' ? pigz : '',
         FsImage: fsImage,
@@ -475,6 +488,18 @@ export function InstallModal({
             tabFill={suggestedLbIp}
             onChange={setLbIp}
           />
+          {extpacks.length > 0 && (
+            <Select
+              label="Extpack"
+              value={extpack}
+              options={extpacks}
+              placeholder="No extpack (use staged image files)"
+              onChange={(v) => {
+                setExtpack(v)
+                setOsImage('')
+              }}
+            />
+          )}
           <Select
             label="OS image"
             value={osImage}
