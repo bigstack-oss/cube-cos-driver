@@ -42,3 +42,16 @@ func TestManifest_AirgapSupportedUnsetIsNotFalse(t *testing.T) {
 		t.Fatalf("explicit true must stay true, got %v", got["on"])
 	}
 }
+
+func TestManifest_AppfwOSImage(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "manifests")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "v.json"), []byte(`{"name":"v3.2.0","match":{"version":"3.2.0"},"appfw":{"osImage":"rancher-cluster-image-rke2-v1.32.4"}}`), 0o644)
+	m := FindManifest(LoadManifests(root), "v3.2.0")
+	if m == nil || m.Appfw == nil || m.Appfw.OSImage != "rancher-cluster-image-rke2-v1.32.4" {
+		t.Fatalf("appfw.osImage not decoded: %+v", m)
+	}
+}

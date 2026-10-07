@@ -13,6 +13,8 @@ export type InstallParams = {
   MgmtNet: string
   LBIP: string
   OSImage: string
+  // an extpack (.ext under appfw/) to import the appfw images from, instead of FsImage/LBImage/OSImage files
+  ExtpackFile?: string
   Framework: string
   AppFile: string
   FsImage: string
@@ -241,6 +243,8 @@ export type ClusterInfo = {
   suggestedStorage: string
   version: string
   manifest: string
+  // the matched manifest's appfw.osImage: the rancher glance image an extpack carries
+  manifestOSImage?: string
   suggestedAdvisorPool?: string[]
   manifests: string[]
 }
