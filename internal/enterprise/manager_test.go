@@ -888,3 +888,62 @@ func TestManager_AppFW_MissingImageNotInGlance_FailsPreflight(t *testing.T) {
 		t.Fatalf("preflight err=%q", msg)
 	}
 }
+
+func TestScpRun_PresentSkipsUploadAndImport(t *testing.T) {
+	mc := &clusterssh.MockClient{} // every command succeeds: presence check passes
+	ps := plannedStep{Name: "import_extpack", Kind: "scp+run", Cmd: "IMPORT", Present: "PRESENT",
+		LocalPath: filepath.Join(t.TempDir(), "x.ext"), RemotePath: cephfsGlance}
+	skipped, err := scpRun(context.Background(), mc, ps, func(string) {})
+	if err != nil || !skipped {
+		t.Fatalf("skipped=%v err=%v", skipped, err)
+	}
+	if len(mc.Pushes) != 0 || containsRun(mc.Runs, "IMPORT") {
+		t.Fatalf("pushed %v / ran %v despite presence", mc.Pushes, mc.Runs)
+	}
+}
+
+func TestScpRun_PresentVerifiedAfterImport(t *testing.T) {
+	imported := false
+	mc := &clusterssh.MockClient{Script: func(cmd string) ([]string, error) {
+		switch {
+		case cmd == "IMPORT":
+			imported = true
+		case cmd == "PRESENT" && !imported:
+			return nil, errors.New("absent")
+		}
+		return nil, nil
+	}}
+	local := filepath.Join(t.TempDir(), "x.ext")
+	os.WriteFile(local, []byte("ext"), 0o644)
+	ps := plannedStep{Kind: "scp+run", Cmd: "IMPORT", Present: "PRESENT", LocalPath: local, RemotePath: cephfsGlance}
+	if skipped, err := scpRun(context.Background(), mc, ps, func(string) {}); err != nil || skipped {
+		t.Fatalf("skipped=%v err=%v", skipped, err)
+	}
+	if len(mc.Pushes) != 1 || !imported {
+		t.Fatalf("pushes=%v imported=%v", mc.Pushes, imported)
+	}
+}
+
+func TestScpRun_PresentStillAbsentAfterImportFails(t *testing.T) {
+	mc := &clusterssh.MockClient{Script: func(cmd string) ([]string, error) {
+		if cmd == "PRESENT" {
+			return nil, errors.New("absent")
+		}
+		return nil, nil
+	}}
+	local := filepath.Join(t.TempDir(), "x.ext")
+	os.WriteFile(local, []byte("ext"), 0o644)
+	ps := plannedStep{Kind: "scp+run", Cmd: "IMPORT", Present: "PRESENT", LocalPath: local, RemotePath: cephfsGlance}
+	if _, err := scpRun(context.Background(), mc, ps, func(string) {}); err == nil || !strings.Contains(err.Error(), "x.ext") {
+		t.Fatalf("an import that leaves the images absent must fail naming the extpack, got %v", err)
+	}
+}
+
+func containsRun(runs []string, cmd string) bool {
+	for _, r := range runs {
+		if r == cmd {
+			return true
+		}
+	}
+	return false
+}

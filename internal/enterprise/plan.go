@@ -50,6 +50,15 @@ done
 exit 0
 `
 
+// extpackPresent passes once everything an extpack carries is on the cluster:
+// the three appfw glance images and the rancher-agent in the offline registry.
+// %s = the rancher OS image's glance name.
+const extpackPresent = `source /etc/admin-openrc.sh 2>/dev/null &&
+openstack image show manila-service-image >/dev/null 2>&1 &&
+openstack image show amphora-x64-haproxy >/dev/null 2>&1 &&
+openstack image show %s >/dev/null 2>&1 &&
+curl -sf http://localhost:5080/v2/rancher/rancher-agent/tags/list | grep -q '"tags":\["'`
+
 // localPath builds the path to a bundled artifact under the enterprise images
 // folder (root/<sub>/<file>). root is the configurable enterprise dir.
 func localPath(root, sub, file string) string {
@@ -114,7 +123,17 @@ func BuildPlan(module string, p InstallParams, airgap bool, dataDir string, m *M
 	// CMP and the Advisor install onto an App-Framework. With no OS image
 	// named there is nothing to create one from, so the framework steps are
 	// left out and preflight verifies the framework is already there.
-	if module == ModuleAppFW || p.OSImage != "" {
+	if (module == ModuleAppFW || p.OSImage != "") && p.ExtpackFile != "" {
+		steps = append(steps, plannedStep{
+			Name:       "import_extpack",
+			Title:      "Import App-Framework images (extpack)",
+			Kind:       "scp+run",
+			Cmd:        "hex_cli -c iaas -c image -c import_extpack local " + shellQuote(p.ExtpackFile),
+			LocalPath:  localPath(dataDir, "appfw", p.ExtpackFile),
+			RemotePath: cephfsGlance,
+			Present:    fmt.Sprintf(extpackPresent, shellQuote(osImageName)),
+		})
+	} else if module == ModuleAppFW || p.OSImage != "" {
 		steps = append(steps,
 			plannedStep{
 				Name:       "import_fs",
@@ -150,16 +169,18 @@ func BuildPlan(module string, p InstallParams, airgap bool, dataDir string, m *M
 				RemotePath: cephfsGlance,
 				ImageName:  osImageName,
 			},
-			plannedStep{
-				Name:      "framework_create",
-				Title:     "Create app framework",
-				Kind:      "framework",
-				Framework: p.Project,
-				LBIP:      p.LBIP,
-				Cmd: fmt.Sprintf("hex_cli -c app -c framework_create %s %s %s %s %s",
-					p.Project, p.PublicNet, p.MgmtNet, p.LBIP, osImageName),
-			},
 		)
+	}
+	if module == ModuleAppFW || p.OSImage != "" {
+		steps = append(steps, plannedStep{
+			Name:      "framework_create",
+			Title:     "Create app framework",
+			Kind:      "framework",
+			Framework: p.Project,
+			LBIP:      p.LBIP,
+			Cmd: fmt.Sprintf("hex_cli -c app -c framework_create %s %s %s %s %s",
+				p.Project, p.PublicNet, p.MgmtNet, p.LBIP, osImageName),
+		})
 	}
 
 	if module == ModuleCMP {
