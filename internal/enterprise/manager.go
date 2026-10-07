@@ -582,6 +582,13 @@ func (m *Manager) preflight(ctx context.Context, client clusterssh.Client, in *I
 		}
 		name := filepath.Base(ps.LocalPath)
 		fi, err := os.Stat(ps.LocalPath)
+		if err != nil && ps.Present != "" {
+			if client.Run(ctx, ps.Present, func(string) {}) == nil {
+				onLine(fmt.Sprintf("  ✓ %s already imported — not needed", name))
+				continue
+			}
+			return fmt.Errorf("missing artifact: %s", name)
+		}
 		if err != nil && ps.ImageName != "" {
 			// The 3.2.0 extpack imports the appfw images into glance on the
 			// cluster (hex_cli iaas image import_extpack); no local copy needed then.
@@ -678,6 +685,13 @@ func scpRun(ctx context.Context, client clusterssh.Client, ps plannedStep, onLin
 		}
 		onLine(fmt.Sprintf("Image %q not found — importing.", ps.ImageName))
 	}
+	if ps.Present != "" {
+		onLine(fmt.Sprintf("Checking whether %s is already imported…", file))
+		if client.Run(ctx, ps.Present, discard) == nil {
+			onLine(fmt.Sprintf("Everything %s carries is already on the cluster — skipping.", file))
+			return true, nil
+		}
+	}
 	// Skip the (potentially large) upload if the same file is already staged on
 	// the cluster from a prior run — a size match guards against partial uploads.
 	remote := ps.RemotePath + "/" + file
@@ -699,6 +713,12 @@ func scpRun(ctx context.Context, client clusterssh.Client, ps plannedStep, onLin
 	onLine(fmt.Sprintf("%s %s…", verb, file))
 	if err := client.Run(ctx, ps.Cmd, onLine); err != nil {
 		return false, err
+	}
+	if ps.Present != "" {
+		if client.Run(ctx, ps.Present, discard) != nil {
+			return false, fmt.Errorf("import of %s finished but its images are not all on the cluster (check the command output)", file)
+		}
+		onLine(fmt.Sprintf("%s imported and confirmed.", file))
 	}
 	// Don't trust the CLI exit code — confirm the image actually landed in
 	// glance (the import CLI can print an error yet exit 0).

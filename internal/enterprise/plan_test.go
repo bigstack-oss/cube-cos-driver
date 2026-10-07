@@ -256,3 +256,36 @@ func TestBuildPlan_CMP_KeycloakExtensionsWhenStaged(t *testing.T) {
 		t.Fatalf("cmd does not run the embedded script on the pushed bundle: %q", ps.Cmd)
 	}
 }
+
+func TestBuildPlan_ExtpackReplacesImageImports(t *testing.T) {
+	p := InstallParams{Project: "appfw", Framework: "appfw", OSImage: "rancher-cluster-image-rke2-v1.32.4.raw",
+		ExtpackFile: "CUBE_3.2.0_20261007-0633_.ext", AppFile: "cube-portal-2.1.1.pigz"}
+	plan := BuildPlan(ModuleCMP, p, false, "/data", nil)
+	want := []string{"preflight", "import_extpack", "framework_create", "app_register", "install_portal", "complete"}
+	if got := names(plan); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	ps := plan[1]
+	if ps.Kind != "scp+run" || ps.RemotePath != cephfsGlance || ps.LocalPath != "/data/appfw/CUBE_3.2.0_20261007-0633_.ext" {
+		t.Fatalf("step: %+v", ps)
+	}
+	if ps.Cmd != "hex_cli -c iaas -c image -c import_extpack local 'CUBE_3.2.0_20261007-0633_.ext'" {
+		t.Fatalf("cmd: %q", ps.Cmd)
+	}
+	for _, need := range []string{"manila-service-image", "amphora-x64-haproxy", "rancher-cluster-image-rke2-v1.32.4", "rancher/rancher-agent"} {
+		if !strings.Contains(ps.Present, need) {
+			t.Fatalf("presence check misses %s: %q", need, ps.Present)
+		}
+	}
+	if ps.ImageName != "" {
+		t.Fatal("extpack step must use Present, not a single ImageName")
+	}
+}
+
+func TestBuildPlan_NoExtpackKeepsImageImports(t *testing.T) {
+	got := names(BuildPlan(ModuleAppFW, InstallParams{OSImage: "r.raw"}, false, "/data", nil))
+	want := []string{"preflight", "import_fs", "import_lb", "import", "framework_create"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}

@@ -27,10 +27,13 @@ type InstallParams struct {
 	MgmtNet   string // default "public"
 	LBIP      string
 	OSImage   string // rancher .raw basename (no path)
-	Framework string // CMP: target framework (may equal Project when auto-created)
-	AppFile   string // CMP: cube-portal-*.pigz basename
-	FsImage   string // manila-*.qcow2 basename
-	LBImage   string // amphora-*.qcow2 basename
+	// ExtpackFile, when set, imports the appfw images from this .ext under appfw/
+	// instead of the separate FsImage/LBImage/OSImage files.
+	ExtpackFile string
+	Framework   string // CMP: target framework (may equal Project when auto-created)
+	AppFile     string // CMP: cube-portal-*.pigz basename
+	FsImage     string // manila-*.qcow2 basename
+	LBImage     string // amphora-*.qcow2 basename
 
 	AdvisorFile string // advisor: cube-advisor-*.pigz basename
 	AdvisorLBIP string // advisor: dedicated LoadBalancer IP for the advisor service
@@ -97,6 +100,7 @@ type plannedStep struct {
 	LocalPath         string // for scp+run: <DataDir>/enterprise/.../<file>
 	RemotePath        string // for scp+run: cephfs dir
 	ImageName         string // for scp+run image imports: glance image name to idempotency-check
+	Present           string // for scp+run: remote check, exit 0 = already in place (skip); must pass after the run
 	Framework         string // for framework: the app-framework name to create + poll to active
 	LBIP              string // for framework: the ingress LB IP, to verify registry reachability
 }
