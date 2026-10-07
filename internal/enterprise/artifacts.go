@@ -31,7 +31,8 @@ func readDir(baseDir, subDir string) []string {
 		return []string{}
 	}
 
-	var names []string
+	// non-nil so an empty dir encodes as [] (the UI calls .filter on it), not null
+	names := []string{}
 	for _, entry := range entries {
 		// Skip directories and dotfiles
 		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {

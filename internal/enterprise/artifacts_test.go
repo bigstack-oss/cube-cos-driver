@@ -1,6 +1,7 @@
 package enterprise
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -158,5 +159,13 @@ func TestDiscoverArtifacts_EmptyDirs(t *testing.T) {
 	// Empty dirs should return empty slices
 	if len(got.AppFW) != 0 || len(got.CMP) != 0 {
 		t.Fatalf("expected empty slices, got AppFW=%v CMP=%v", got.AppFW, got.CMP)
+	}
+	// The extpack flow leaves appfw/ empty; the UI needs [] there, not null.
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"AppFW":[],"CMP":[],"Advisor":[]}`; string(b) != want {
+		t.Fatalf("json = %s, want %s", b, want)
 	}
 }
