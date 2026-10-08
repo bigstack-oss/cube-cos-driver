@@ -515,6 +515,50 @@ func TestManager_Cancel_ManualRacesNext(t *testing.T) {
 	}
 }
 
+// Next on an auto run must refuse: the runner owns the steps, and a second
+// executor would run the current step concurrently on the shared client.
+func TestManager_Next_RefusesAutoRun(t *testing.T) {
+	dir := t.TempDir()
+	appfw := filepath.Join(dir, "enterprise", "appfw")
+	os.MkdirAll(appfw, 0o755)
+	for _, f := range []string{"r.raw", "m.qcow2", "a.qcow2"} {
+		os.WriteFile(filepath.Join(appfw, f), []byte("x"), 0o644)
+	}
+	st, _ := NewStore(filepath.Join(dir, "installs"))
+	bc := &blockingClient{started: make(chan struct{}, 1), release: make(chan struct{})}
+	m := NewManager(st, NewDir(dir, filepath.Join(dir, "enterprise")), func(h, u, p string) (clusterssh.Client, error) { return bc, nil })
+
+	if _, err := m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false /*auto*/, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	<-bc.started // the runner is mid-preflight
+	res := make(chan error, 1)
+	go func() { res <- m.Next("cl1", "appfw") }()
+	select {
+	case err := <-res:
+		if err == nil {
+			t.Fatal("Next on an auto run succeeded, want refusal")
+		}
+	case <-time.After(2 * time.Second):
+		close(bc.release)
+		t.Fatal("Next ran a step of an auto run")
+	}
+	close(bc.release)
+	var in *Install
+	for i := 0; i < 200; i++ {
+		in, _ = m.Status("cl1", "appfw")
+		if in.Steps[0].State != StepActive {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	m.Cancel("cl1", "appfw")
+	waitState(t, m, "cl1", "appfw", "cancelled")
+	if n := strings.Count(in.Steps[0].Output, "Checking cluster reachability"); n != 1 {
+		t.Fatalf("preflight ran %d times, want 1", n)
+	}
+}
+
 // --- helpers ---
 
 func waitState(t *testing.T, m *Manager, cl, mod, want string) {

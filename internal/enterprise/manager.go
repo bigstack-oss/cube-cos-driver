@@ -254,6 +254,10 @@ func (m *Manager) Next(clusterID, module string) error {
 		m.mu.Unlock()
 		return nil
 	}
+	if !in.Manual { // the auto runner owns the steps
+		m.mu.Unlock()
+		return fmt.Errorf("%s for %s/%s is not manual; its steps run automatically", in.Op, clusterID, module)
+	}
 	if m.busy[k] {
 		m.mu.Unlock()
 		return fmt.Errorf("step already in progress for %s/%s", clusterID, module)
