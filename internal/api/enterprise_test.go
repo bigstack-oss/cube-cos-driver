@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/bigstack-oss/cube-cos-driver/internal/clusterssh"
+	"github.com/bigstack-oss/cube-cos-driver/internal/enterprise"
 	"github.com/bigstack-oss/cube-cos-driver/internal/storage"
 )
 
@@ -337,4 +340,50 @@ func keysOf(m map[string]any) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func TestStart_MatrixGate(t *testing.T) {
+	srv, id, dataDir := enterpriseFixture(t)
+	mdir := filepath.Join(dataDir, "enterprise", "manifests")
+	os.MkdirAll(mdir, 0o755)
+	os.WriteFile(filepath.Join(mdir, "t.json"), []byte(`{"schema":2,"name":"vT","match":{"version":"9.9.9"},
+	  "modules":{"cmp":[{"version":"2.1.1","status":"supported"},{"version":"2.0.0","status":"blocked","reason":"no"}]}}`), 0o644)
+	post := func(file string, lab bool) int {
+		body := fmt.Sprintf(`{"module":"cmp","manifest":"vT","lab":%t,"manual":true,"params":{"Project":"appfw","Framework":"appfw","AppFile":%q}}`, lab, file)
+		resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+id+"/enterprise/install", []byte(body))
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if c := post("cube-portal-2.0.0.pigz", true); c != http.StatusBadRequest {
+		t.Fatalf("blocked: %d, want 400", c)
+	}
+	if c := post("cube-portal-3.0.0.pigz", false); c != http.StatusBadRequest {
+		t.Fatalf("unlisted: %d, want 400", c)
+	}
+	if c := post("cube-portal-3.0.0.pigz", true); c == http.StatusBadRequest {
+		t.Fatalf("unlisted + lab must pass the gate, got 400")
+	}
+}
+
+func TestStart_NoManifestNoGate(t *testing.T) {
+	srv, id, _ := enterpriseFixture(t)
+	body := `{"module":"cmp","manifest":"","manual":true,"params":{"Project":"appfw","Framework":"appfw","AppFile":"cube-portal-latest.pigz"}}`
+	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+id+"/enterprise/install", []byte(body))
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusBadRequest {
+		t.Fatalf("no manifest must not gate, got 400")
+	}
+}
+
+func TestMatrixEndpoint(t *testing.T) {
+	srv, _, _ := enterpriseFixture(t)
+	resp := do(t, "GET", srv.URL+"/api/v1/enterprise/matrix", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	var ms []enterprise.Manifest
+	if err := json.NewDecoder(resp.Body).Decode(&ms); err != nil || enterprise.FindManifest(ms, "v3.2.0") == nil {
+		t.Fatalf("embedded v3.2.0 missing from /matrix: %v %v", err, enterprise.ManifestNames(ms))
+	}
 }

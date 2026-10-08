@@ -27,6 +27,7 @@ type enterpriseHandlers struct {
 func (h *enterpriseHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/enterprise/artifacts", h.artifacts)
 	mux.HandleFunc("GET /api/v1/enterprise/dir", h.getDir)
+	mux.HandleFunc("GET /api/v1/enterprise/matrix", h.matrix)
 	mux.HandleFunc("PUT /api/v1/enterprise/dir", h.setDir)
 	mux.HandleFunc("GET /api/v1/enterprise/installs", h.installs)
 	mux.HandleFunc("GET /api/v1/enterprise/step-stats", h.stepStats)
@@ -56,6 +57,11 @@ func (h *enterpriseHandlers) artifacts(w http.ResponseWriter, r *http.Request) {
 
 // getDir returns the enterprise images folder + whether it's mounted and how
 // many appfw/cmp/advisor artifacts it holds. The UI settings modal reads this.
+// matrix returns every known manifest: the support matrix.
+func (h *enterpriseHandlers) matrix(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, enterprise.LoadManifests(h.dir.Get()))
+}
+
 func (h *enterpriseHandlers) getDir(w http.ResponseWriter, r *http.Request) {
 	dir, mounted, appfw, cmp, advisor := h.dir.Status()
 	writeJSON(w, http.StatusOK, map[string]any{"imageDir": dir, "mounted": mounted, "appfwCount": appfw, "cmpCount": cmp, "advisorCount": advisor})
@@ -226,6 +232,7 @@ func (h *enterpriseHandlers) start(w http.ResponseWriter, r *http.Request) {
 		SimulateAirgap bool                     `json:"simulateAirgap"`
 		Password       string                   `json:"password"`
 		Manifest       string                   `json:"manifest"`
+		Lab            bool                     `json:"lab"`
 		Vip            string                   `json:"vip"` // ad-hoc target by VIP
 		// ProviderKey is the advisor's inference API key. Filed, not kept:
 		// see InstallParams.AdvisorProviderKeyFile.
@@ -296,6 +303,19 @@ func (h *enterpriseHandlers) start(w http.ResponseWriter, r *http.Request) {
 		password = defaultPassword(host)
 	}
 	manifest := enterprise.FindManifest(enterprise.LoadManifests(h.dir.Get()), body.Manifest)
+	file := body.Params.AppFile
+	if body.Module == enterprise.ModuleAdvisor {
+		file = body.Params.AdvisorFile
+	}
+	warn, gateErr := enterprise.CheckModule(manifest, body.Module, file, body.Lab)
+	if gateErr != nil {
+		writeError(w, http.StatusBadRequest, "%v", gateErr)
+		return
+	}
+	var warnings []string
+	if warn != "" {
+		warnings = append(warnings, warn)
+	}
 	if body.Module == enterprise.ModuleAdvisor && body.ProviderKey != "" {
 		f, err := h.fileProviderKey(id, body.ProviderKey)
 		if err != nil {
@@ -304,7 +324,7 @@ func (h *enterpriseHandlers) start(w http.ResponseWriter, r *http.Request) {
 		}
 		body.Params.AdvisorProviderKeyFile = f
 	}
-	in, err := h.mgr.Start(id, body.Module, host, password, body.Params, body.Manual, body.SimulateAirgap, manifest)
+	in, err := h.mgr.Start(id, body.Module, host, password, body.Params, body.Manual, body.SimulateAirgap, warnings, manifest)
 	if err != nil {
 		if body.Params.AdvisorProviderKeyFile != "" {
 			os.Remove(body.Params.AdvisorProviderKeyFile)

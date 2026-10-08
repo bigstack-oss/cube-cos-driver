@@ -91,6 +91,7 @@ type Install struct {
 	Current        int
 	State          string // "running" | "done" | "error"
 	Portal         string
+	Warnings       []string
 }
 
 // plannedStep is the executable form of a step (not persisted; rebuilt from params).
