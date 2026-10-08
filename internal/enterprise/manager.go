@@ -496,10 +496,16 @@ func cliFailureMarker(output string) string {
 // cluster's own /etc/version, not the client-named one. No match, no constraints.
 func (m *Manager) enforceMatrix(client clusterssh.Client, in *Install, onLine func(string)) error {
 	var mf *Manifest
-	if ver, _ := sshList(client, "cat /etc/version"); len(ver) > 0 {
-		version, build, commit := ParseVersion(ver[0])
-		mf = MatchManifest(LoadManifests(m.dir.Get()), version, build, commit)
+	ver, err := sshList(client, "cat /etc/version")
+	if err != nil || len(ver) == 0 {
+		reason := "empty"
+		if err != nil {
+			reason = err.Error()
+		}
+		return fmt.Errorf("cannot read the cluster version (/etc/version) to apply the support matrix: %s", reason)
 	}
+	version, build, commit := ParseVersion(ver[0])
+	mf = MatchManifest(LoadManifests(m.dir.Get()), version, build, commit)
 	if mf == nil {
 		if in.Module == ModuleAdvisor {
 			onLine("⚠ advisor bundle signature not checked: no support-matrix manifest matches this cluster's version")
