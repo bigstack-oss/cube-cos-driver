@@ -7,4 +7,4 @@ releases:
     cmp:
       - { version: "2.1.1", status: supported }
     advisor:
-      - { version: "0.4.25", status: untested }
+      - { version: "0.4.25", status: supported }

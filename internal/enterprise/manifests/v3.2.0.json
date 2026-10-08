@@ -30,7 +30,7 @@
     "advisor": [
       {
         "version": "0.4.25",
-        "status": "untested"
+        "status": "supported"
       }
     ],
     "cmp": [
