@@ -26,8 +26,8 @@ func TestManifest_AirgapSupportedUnsetIsNotFalse(t *testing.T) {
 	write("on.json", `{"name":"on","match":{"version":"3.2.0"},"airgapSupported":true}`)
 
 	loaded := LoadManifests(root)
-	if len(loaded) != 3 {
-		t.Fatalf("loaded %d manifests, want 3 — the fixture is not being read", len(loaded))
+	if FindManifest(loaded, "unset") == nil || FindManifest(loaded, "off") == nil || FindManifest(loaded, "on") == nil {
+		t.Fatalf("missing test manifests in: %v", ManifestNames(loaded))
 	}
 	got := map[string]*bool{}
 	for _, m := range loaded {
@@ -85,5 +85,42 @@ func TestManifest_V1HasNoModules(t *testing.T) {
 	}
 	if m.Schema != 0 || m.Modules != nil || m.Trust != nil {
 		t.Fatalf("v1 manifest grew v2 fields: %+v", m)
+	}
+}
+
+func TestLoadManifests_OverrideWinsByName(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "manifests")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "lab.json"), []byte(`{"name":"v3.2.0","match":{"version":"3.2.0","build":"lab"}}`), 0o644)
+	embedded := []Manifest{{Name: "v3.2.0"}, {Name: "v3.1.20"}}
+	got := mergeManifests(embedded, loadDir(os.DirFS(root), "manifests"))
+	if len(got) != 2 {
+		t.Fatalf("got %d manifests, want 2 (override replaces, not appends)", len(got))
+	}
+	if m := FindManifest(got, "v3.2.0"); m == nil || m.Match.Build != "lab" {
+		t.Fatalf("override did not win: %+v", m)
+	}
+	if got[0].Name != "v3.1.20" {
+		t.Fatalf("not sorted by name: %v", ManifestNames(got))
+	}
+}
+
+func TestLoadManifests_BadOverrideKeepsEmbedded(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "manifests")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "v3.2.0.json"), []byte(`{"name":"v3.2.0",`), 0o644)
+	got := mergeManifests([]Manifest{{Name: "v3.2.0", Schema: 2}}, loadDir(os.DirFS(root), "manifests"))
+	if m := FindManifest(got, "v3.2.0"); m == nil || m.Schema != 2 {
+		t.Fatalf("malformed override erased the embedded manifest: %+v", m)
+	}
+}
+
+func TestLoadManifests_IncludesEmbedded(t *testing.T) {
+	want := loadDir(embeddedManifests, "manifests")
+	got := LoadManifests(t.TempDir())
+	if len(got) != len(want) {
+		t.Fatalf("LoadManifests on an empty data dir = %d, want the %d embedded", len(got), len(want))
 	}
 }
