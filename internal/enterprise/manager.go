@@ -140,10 +140,12 @@ func (m *Manager) StepDurations() map[string]float64 {
 // Start reserves the key, builds the plan, persists the Install, and (unless manual) runs it.
 func (m *Manager) Start(clusterID, module, vip, password string, p InstallParams, manual, airgap bool, warnings []string, mf ...*Manifest) (*Install, error) {
 	var manifest *Manifest
-	if len(mf) > 0 {
+	var mfName string
+	if len(mf) > 0 && mf[0] != nil {
 		manifest = mf[0]
+		mfName = manifest.Name
 	}
-	return m.launch(clusterID, module, vip, password, p, manual, airgap, warnings, "install",
+	return m.launch(clusterID, module, vip, password, p, manual, airgap, warnings, mfName, "install",
 		func() []plannedStep { return BuildPlan(module, p, airgap, m.dir.Get(), manifest) })
 }
 
@@ -151,13 +153,13 @@ func (m *Manager) Start(clusterID, module, vip, password string, p InstallParams
 // framework_delete, which removes the framework and every app on it). It shares the
 // install run machinery — same key, store, progress, and (auto/manual) runner.
 func (m *Manager) StartUninstall(clusterID, module, vip, password string, p InstallParams, manual bool) (*Install, error) {
-	return m.launch(clusterID, module, vip, password, p, manual, false, nil, "uninstall",
+	return m.launch(clusterID, module, vip, password, p, manual, false, nil, "", "uninstall",
 		func() []plannedStep { return BuildUninstallPlan(module, p, m.dir.Get()) })
 }
 
 // launch reserves the (cluster, module) key, dials, builds the plan for the op, and
 // starts the runner. Shared by Start (install) and StartUninstall (uninstall).
-func (m *Manager) launch(clusterID, module, vip, password string, p InstallParams, manual, airgap bool, warnings []string, op string, buildPlan func() []plannedStep) (*Install, error) {
+func (m *Manager) launch(clusterID, module, vip, password string, p InstallParams, manual, airgap bool, warnings []string, manifest, op string, buildPlan func() []plannedStep) (*Install, error) {
 	k := key(clusterID, module)
 
 	in := &Install{
@@ -169,6 +171,7 @@ func (m *Manager) launch(clusterID, module, vip, password string, p InstallParam
 		Manual:         manual,
 		SimulateAirgap: airgap,
 		Warnings:       warnings,
+		Manifest:       manifest,
 		Params:         p,
 		Current:        0,
 		State:          "running",
@@ -484,6 +487,16 @@ func cliFailureMarker(output string) string {
 func (m *Manager) preflight(ctx context.Context, client clusterssh.Client, in *Install, plan []plannedStep, onLine func(string)) error {
 	for _, w := range in.Warnings {
 		onLine("⚠ " + w)
+	}
+	if in.Module == ModuleAdvisor && in.Op != "uninstall" {
+		if mf := FindManifest(LoadManifests(m.dir.Get()), in.Manifest); mf != nil && mf.Trust != nil && mf.Trust.AdvisorReleaseKey != nil {
+			onLine("Verifying the advisor bundle is signed with " + mf.Name + "'s release key…")
+			vs, err := VerifyAdvisorBundle(localPath(m.dir.Get(), "advisor", in.Params.AdvisorFile), mf.Trust.AdvisorReleaseKey)
+			if err != nil {
+				return err
+			}
+			onLine("  ✓ agent release(s) " + strings.Join(vs, ", ") + " verify")
+		}
 	}
 	onLine("Checking cluster reachability…")
 	if err := client.Run(ctx, "cubectl node exec -p 'hostname'", onLine); err != nil {
