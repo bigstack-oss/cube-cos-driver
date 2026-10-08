@@ -1,0 +1,8 @@
+{
+  "version": "3.2.0",
+  "airgapSupported": true,
+  "import": { "tenant": "admin", "visibility": "public", "storageBackend": "CubeStorage", "os": "Others" },
+  "appfw": { "extpack": { "file": "CUBE_3.2.0_20261007-0633_.ext" },
+             "osImage": "rancher-cluster-image-rke2-v1.32.4" },
+  "advisorReleaseKey": { "p384": "advisor-release.pub.pem", "mldsa87": "advisor-release-mldsa87.pub.pem" }
+}

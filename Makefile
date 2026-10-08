@@ -14,7 +14,7 @@ AGENT := bin/phone-home-agent
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GOFLAGS := -trimpath -ldflags '-s -w -X main.version=$(VERSION)'
 
-.PHONY: all build test web ensure-dist clean
+.PHONY: all build test web ensure-dist clean manifests manifests-check
 
 all: web build
 
@@ -22,9 +22,16 @@ build: ensure-dist
 	CGO_ENABLED=0 go build $(GOFLAGS) -o $(BIN) ./cmd/cube-cos-driver
 	CGO_ENABLED=0 go build $(GOFLAGS) -o $(AGENT) ./cmd/phone-home-agent
 
-test: ensure-dist
+test: ensure-dist manifests-check
 	go vet ./...
 	go test ./...
+
+manifests:
+	go run ./cmd/manifestgen
+
+manifests-check:
+	@tmp=$$(mktemp -d) && go run ./cmd/manifestgen -out $$tmp && \
+	  diff -r -x .keep $$tmp internal/enterprise/manifests || { echo "manifests drifted: run make manifests"; exit 1; }
 
 # The embed dir is gitignored; provide a placeholder so `go build` works
 # without a web build.

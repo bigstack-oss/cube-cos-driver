@@ -1,0 +1,43 @@
+{
+  "name": "v3.2.0",
+  "match": {
+    "version": "3.2.0",
+    "commit": "",
+    "build": ""
+  },
+  "appctl": "",
+  "airgapSupported": true,
+  "appfw": {
+    "extpack": {
+      "file": "CUBE_3.2.0_20261007-0633_.ext"
+    },
+    "osImage": "rancher-cluster-image-rke2-v1.32.4"
+  },
+  "import": {
+    "tenant": "admin",
+    "visibility": "public",
+    "storageBackend": "CubeStorage",
+    "os": "Others"
+  },
+  "schema": 2,
+  "trust": {
+    "advisorReleaseKey": {
+      "p384": "-----BEGIN PUBLIC KEY-----\nMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEt+moBq0FUyQtoijy0G4m3/KuntMGQfZ6\n7sG2zU6ZMg8+ZstE7pAlJIbQ41uXO0Cu1m41cNWMRt7aKAO5B6rTiwqadIuleVk5\nw+yNkV+XYIycxh/o6PAKQ94/h5n1gCt1\n-----END PUBLIC KEY-----\n",
+      "mldsa87": "-----BEGIN PUBLIC KEY-----\n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\nZxVtPXWV5l3MaPHYH1H+iB7bPN+VrA==\n-----END PUBLIC KEY-----\n"
+    }
+  },
+  "modules": {
+    "advisor": [
+      {
+        "version": "0.4.25",
+        "status": "untested"
+      }
+    ],
+    "cmp": [
+      {
+        "version": "2.1.1",
+        "status": "supported"
+      }
+    ]
+  }
+}
