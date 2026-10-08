@@ -65,6 +65,19 @@ func newTestMgr(t *testing.T, script func(string) ([]string, error)) (*Manager, 
 	os.MkdirAll(advisor, 0o755)
 	os.WriteFile(filepath.Join(advisor, "cube-advisor-1.2.3.pigz"), []byte("x"), 0o644)
 	st, _ := NewStore(filepath.Join(dir, "installs"))
+	inner := script
+	// default /etc/version answer so cmp/advisor preflight can read the cluster version
+	script = func(cmd string) ([]string, error) {
+		var out []string
+		var err error
+		if inner != nil {
+			out, err = inner(cmd)
+		}
+		if strings.Contains(cmd, "cat /etc/version") && err == nil && len(out) == 0 {
+			return []string{testClusterVersion}, nil
+		}
+		return out, err
+	}
 	mc := &clusterssh.MockClient{Script: script}
 	return NewManager(st, NewDir(dir, filepath.Join(dir, "enterprise")), func(h, u, p string) (clusterssh.Client, error) { return mc, nil }), mc
 }
@@ -1089,5 +1102,32 @@ func TestPreflight_NoMatchingManifestNoConstraints(t *testing.T) {
 	writeCmpManifest(t, m, "vOther", "1.0.0")
 	if out, err := runMatrixPreflight(m, cmpInstall("cube-portal-3.0.0.pigz", "", false)); err != nil && strings.Contains(err.Error(), "support matrix") {
 		t.Fatalf("no matching manifest must not constrain: %v (%s)", err, out)
+	}
+}
+
+func TestPreflight_UnreadableClusterVersionFails(t *testing.T) {
+	m, _ := newTestMgr(t, nil)
+	writeCmpManifest(t, m, "vT", "9.9.9")
+	base := frameworkActiveAfterCreate("appfw", nil)
+	cases := map[string]func(string) ([]string, error){
+		"error": func(cmd string) ([]string, error) {
+			if strings.Contains(cmd, "cat /etc/version") {
+				return nil, fmt.Errorf("ssh boom")
+			}
+			return base(cmd)
+		},
+		"empty": func(cmd string) ([]string, error) {
+			if strings.Contains(cmd, "cat /etc/version") {
+				return []string{"  ", ""}, nil
+			}
+			return base(cmd)
+		},
+	}
+	for name, script := range cases {
+		mc := &clusterssh.MockClient{Script: script}
+		err := m.preflight(context.Background(), mc, cmpInstall("cube-portal-2.1.0.pigz", "", false), nil, func(string) {})
+		if err == nil || !strings.Contains(err.Error(), "cannot read the cluster version (/etc/version)") {
+			t.Fatalf("%s: err = %v, want version-unreadable refusal", name, err)
+		}
 	}
 }
