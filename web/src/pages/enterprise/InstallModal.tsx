@@ -6,11 +6,14 @@ import { useEffect, useState } from 'react'
 import { getCluster, listClusters } from '../../api/client'
 import {
   Artifacts,
+  artifactVersion,
   clusterInfo,
   getArtifacts,
   getInstall,
+  getMatrix,
   Install,
   InstallParams,
+  Manifest,
   Module,
   startInstall,
   StartInstallBody,
@@ -96,6 +99,7 @@ const Select = (props: {
   value: string
   options: string[]
   placeholder: string
+  labels?: Record<string, string>
   disabled?: boolean
   onChange: (v: string) => void
 }) => (
@@ -112,7 +116,7 @@ const Select = (props: {
       <option value="">{props.placeholder}</option>
       {props.options.map((o) => (
         <option key={o} value={o}>
-          {o}
+          {props.labels?.[o] ?? o}
         </option>
       ))}
     </select>
@@ -171,6 +175,8 @@ export function InstallModal({
   const [manifest, setManifest] = useState('')
   const [manifestOSImage, setManifestOSImage] = useState('')
   const [extpack, setExtpack] = useState('')
+  const [matrix, setMatrix] = useState<Manifest[]>([])
+  const [lab, setLab] = useState(false)
 
   const [password, setPassword] = useState('')
   // framework is the app-framework name (framework_create FRAMEWORK_NAME, and
@@ -196,6 +202,12 @@ export function InstallModal({
   const [error, setError] = useState('')
   const [starting, setStarting] = useState(false)
   const [started, setStarted] = useState<Install | null>(null)
+
+  useEffect(() => {
+    getMatrix()
+      .then((m) => setMatrix(Array.isArray(m) ? m : []))
+      .catch(() => setMatrix([]))
+  }, [])
 
   useEffect(() => {
     listClusters()
@@ -311,6 +323,19 @@ export function InstallModal({
     : artifacts.AppFW.filter((n) => n.endsWith('.raw'))
   // only .pigz packages — the CMP dir also holds .pigz.md5 and the portal scripts.
   const pigzImages = artifacts.CMP.filter((n) => n.endsWith('.pigz'))
+  // "<version> · <status>" per package, from the selected manifest's modules.
+  const pigzLabels = (mod: 'cmp' | 'advisor', files: string[]) => {
+    const entries = matrix.find((m) => m.name === manifest)?.modules?.[mod]
+    const out: Record<string, string> = {}
+    if (!entries) return out
+    for (const f of files) {
+      const v = artifactVersion(mod, f)
+      if (!v) continue
+      const hit = entries.find((e) => e.version === v)
+      out[f] = `${v} · ${hit ? hit.status : 'not in matrix'}`
+    }
+    return out
+  }
   // same filter, but for the advisor dir's .pigz package + install/uninstall scripts.
   const advisorPigzImages = artifacts.Advisor.filter((n) => n.endsWith('.pigz'))
   const fsImage = artifacts.AppFW.find((n) => /manila-.*\.qcow2$/.test(n)) ?? ''
@@ -353,6 +378,7 @@ export function InstallModal({
         simulateAirgap: airgap,
         password,
         manifest,
+        lab: lab || undefined,
         vip: tvip || undefined,
         providerKey: module === 'advisor' && providerKey ? providerKey : undefined,
       }
@@ -514,6 +540,7 @@ export function InstallModal({
                 label=".pigz package"
                 value={pigz}
                 options={pigzImages}
+                labels={pigzLabels('cmp', pigzImages)}
                 placeholder="Select the CubeCMP package…"
                 onChange={setPigz}
               />
@@ -526,6 +553,7 @@ export function InstallModal({
                 label=".pigz package"
                 value={advisorPigz}
                 options={advisorPigzImages}
+                labels={pigzLabels('advisor', advisorPigzImages)}
                 placeholder="Select the Advisor package…"
                 onChange={setAdvisorPigz}
               />
@@ -592,6 +620,17 @@ export function InstallModal({
               Advanced
             </summary>
             <div className="mt-3 flex flex-col gap-y-3">
+              <label className="flex items-start gap-x-2">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={lab}
+                  onChange={(e) => setLab(e.target.checked)}
+                />
+                <span className="primary-body4 font-semibold">
+                  Lab install (allow versions outside the matrix)
+                </span>
+              </label>
               <label className="flex items-start gap-x-2">
                 <input
                   type="checkbox"

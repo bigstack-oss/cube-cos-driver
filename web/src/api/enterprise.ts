@@ -72,6 +72,8 @@ export type StartInstallBody = {
   // The advisor's inference API key; filed on the driver for the run, never
   // stored with the run.
   providerKey?: string
+  // allow package versions outside the support matrix
+  lab?: boolean
 }
 
 const jsonOrThrow = async (resp: Response): Promise<unknown> => {
@@ -265,3 +267,33 @@ export const clusterInfo = async (
       },
     ),
   )) as ClusterInfo
+
+export type MatrixStatus = 'supported' | 'untested' | 'deprecated' | 'blocked'
+export type ModuleEntry = {
+  version: string
+  status: MatrixStatus
+  reason?: string
+  link?: string
+}
+export type Manifest = {
+  name: string
+  schema?: number
+  match: { version: string }
+  modules?: Record<string, ModuleEntry[]>
+}
+
+export const getMatrix = async (): Promise<Manifest[]> =>
+  (await jsonOrThrow(await fetch('/api/v1/enterprise/matrix'))) as Manifest[]
+
+// Same patterns as the Go side: X.Y.Z, optional +build / -build tag.
+const versionRE = {
+  cmp: /^cube-portal-(\d+\.\d+\.\d+)(?:[+-][^/]*)?\.pigz$/,
+  advisor: /^cube-advisor-(\d+\.\d+\.\d+)(?:[+-][^/]*)?\.pigz$/,
+}
+
+export function artifactVersion(
+  module: 'cmp' | 'advisor',
+  file: string,
+): string | null {
+  return versionRE[module].exec(file)?.[1] ?? null
+}

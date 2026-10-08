@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   Artifacts,
   Install,
+  artifactVersion,
   cancelInstall,
   getArtifacts,
   getInstall,
+  getMatrix,
   nextStep,
   startInstall,
 } from './enterprise'
@@ -125,5 +127,17 @@ describe('enterprise API client', () => {
     })
 
     await expect(getArtifacts()).rejects.toThrow('unknown module')
+  })
+
+  it('getMatrix hits /api/v1/enterprise/matrix', async () => {
+    fetchMock.mockResolvedValue(new Response('[]', { status: 200 }))
+    await getMatrix()
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/enterprise/matrix')
+  })
+
+  it('artifactVersion drops the build tag', () => {
+    expect(artifactVersion('cmp', 'cube-portal-2.1.1+rev4902.pigz')).toBe('2.1.1')
+    expect(artifactVersion('advisor', 'cube-advisor-0.4.25-g1a2b3c4.pigz')).toBe('0.4.25')
+    expect(artifactVersion('cmp', 'cube-portal-latest.pigz')).toBeNull()
   })
 })
