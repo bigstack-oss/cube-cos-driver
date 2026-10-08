@@ -127,3 +127,19 @@ func TestLoadManifests_IncludesEmbedded(t *testing.T) {
 		t.Fatal("generated v3.2.0 manifest is not embedded")
 	}
 }
+
+func TestLoadManifests_LowerSchemaOverrideSkipped(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "manifests")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "old.json"), []byte(`{"name":"v3.2.0","schema":1,"match":{"version":"3.2.0","build":"stale"}}`), 0o644)
+	got := mergeManifests([]Manifest{{Name: "v3.2.0", Schema: 2}}, loadDir(os.DirFS(root), "manifests"))
+	if m := FindManifest(got, "v3.2.0"); m == nil || m.Schema != 2 || m.Match.Build == "stale" {
+		t.Fatalf("lower-schema override was applied: %+v", m)
+	}
+	os.WriteFile(filepath.Join(dir, "old.json"), []byte(`{"name":"v3.2.0","schema":2,"match":{"version":"3.2.0","build":"fresh"}}`), 0o644)
+	got = mergeManifests([]Manifest{{Name: "v3.2.0", Schema: 2}}, loadDir(os.DirFS(root), "manifests"))
+	if m := FindManifest(got, "v3.2.0"); m == nil || m.Match.Build != "fresh" {
+		t.Fatalf("equal-schema override not applied: %+v", m)
+	}
+}

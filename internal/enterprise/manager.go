@@ -140,12 +140,20 @@ func (m *Manager) StepDurations() map[string]float64 {
 // Start reserves the key, builds the plan, persists the Install, and (unless manual) runs it.
 func (m *Manager) Start(clusterID, module, vip, password string, p InstallParams, manual, airgap bool, warnings []string, mf ...*Manifest) (*Install, error) {
 	var manifest *Manifest
-	var mfName string
-	if len(mf) > 0 && mf[0] != nil {
+	if len(mf) > 0 {
 		manifest = mf[0]
+	}
+	return m.StartLab(clusterID, module, vip, password, p, manual, airgap, false, warnings, manifest)
+}
+
+// StartLab is Start with the lab-install flag, which preflight honors when it
+// enforces the support matrix against the cluster's own version.
+func (m *Manager) StartLab(clusterID, module, vip, password string, p InstallParams, manual, airgap, lab bool, warnings []string, manifest *Manifest) (*Install, error) {
+	var mfName string
+	if manifest != nil {
 		mfName = manifest.Name
 	}
-	return m.launch(clusterID, module, vip, password, p, manual, airgap, warnings, mfName, "install",
+	return m.launch(clusterID, module, vip, password, p, manual, airgap, lab, warnings, mfName, "install",
 		func() []plannedStep { return BuildPlan(module, p, airgap, m.dir.Get(), manifest) })
 }
 
@@ -153,13 +161,13 @@ func (m *Manager) Start(clusterID, module, vip, password string, p InstallParams
 // framework_delete, which removes the framework and every app on it). It shares the
 // install run machinery — same key, store, progress, and (auto/manual) runner.
 func (m *Manager) StartUninstall(clusterID, module, vip, password string, p InstallParams, manual bool) (*Install, error) {
-	return m.launch(clusterID, module, vip, password, p, manual, false, nil, "", "uninstall",
+	return m.launch(clusterID, module, vip, password, p, manual, false, false, nil, "", "uninstall",
 		func() []plannedStep { return BuildUninstallPlan(module, p, m.dir.Get()) })
 }
 
 // launch reserves the (cluster, module) key, dials, builds the plan for the op, and
 // starts the runner. Shared by Start (install) and StartUninstall (uninstall).
-func (m *Manager) launch(clusterID, module, vip, password string, p InstallParams, manual, airgap bool, warnings []string, manifest, op string, buildPlan func() []plannedStep) (*Install, error) {
+func (m *Manager) launch(clusterID, module, vip, password string, p InstallParams, manual, airgap, lab bool, warnings []string, manifest, op string, buildPlan func() []plannedStep) (*Install, error) {
 	k := key(clusterID, module)
 
 	in := &Install{
@@ -170,6 +178,7 @@ func (m *Manager) launch(clusterID, module, vip, password string, p InstallParam
 		StartedAt:      time.Now().UTC().Format(time.RFC3339),
 		Manual:         manual,
 		SimulateAirgap: airgap,
+		Lab:            lab,
 		Warnings:       warnings,
 		Manifest:       manifest,
 		Params:         p,
@@ -483,22 +492,61 @@ func cliFailureMarker(output string) string {
 	return ""
 }
 
+// enforceMatrix gates a cmp/advisor install on the manifest matching the
+// cluster's own /etc/version, not the client-named one. No match, no constraints.
+func (m *Manager) enforceMatrix(client clusterssh.Client, in *Install, onLine func(string)) error {
+	var mf *Manifest
+	if ver, _ := sshList(client, "cat /etc/version"); len(ver) > 0 {
+		version, build, commit := ParseVersion(ver[0])
+		mf = MatchManifest(LoadManifests(m.dir.Get()), version, build, commit)
+	}
+	if mf == nil {
+		if in.Module == ModuleAdvisor {
+			onLine("⚠ advisor bundle signature not checked: no support-matrix manifest matches this cluster's version")
+		}
+		return nil
+	}
+	if in.Manifest != "" && in.Manifest != mf.Name {
+		msg := fmt.Sprintf("requested manifest %q differs from %q, the one matching this cluster", in.Manifest, mf.Name)
+		if !in.Lab {
+			return fmt.Errorf("%s (tick Lab install to override)", msg)
+		}
+		onLine("⚠ " + msg + " (lab install, continuing)")
+	}
+	file := in.Params.AppFile
+	if in.Module == ModuleAdvisor {
+		file = in.Params.AdvisorFile
+	}
+	warn, err := CheckModule(mf, in.Module, file, in.Lab)
+	if err != nil {
+		return err
+	}
+	if warn != "" {
+		onLine("⚠ " + warn)
+	}
+	if in.Module == ModuleAdvisor {
+		if mf.Trust == nil || mf.Trust.AdvisorReleaseKey == nil {
+			onLine("⚠ advisor bundle signature not checked: no trusted release key for manifest \"" + mf.Name + "\"")
+			return nil
+		}
+		onLine("Verifying the advisor bundle is signed with " + mf.Name + "'s release key…")
+		vs, err := VerifyAdvisorBundle(localPath(m.dir.Get(), "advisor", in.Params.AdvisorFile), mf.Trust.AdvisorReleaseKey)
+		if err != nil {
+			return err
+		}
+		onLine("  ✓ agent release(s) " + strings.Join(vs, ", ") + " verify")
+	}
+	return nil
+}
+
 // preflight verifies reachability, framework freshness, and artifact presence.
 func (m *Manager) preflight(ctx context.Context, client clusterssh.Client, in *Install, plan []plannedStep, onLine func(string)) error {
 	for _, w := range in.Warnings {
 		onLine("⚠ " + w)
 	}
-	if in.Module == ModuleAdvisor && in.Op != "uninstall" {
-		mf := FindManifest(LoadManifests(m.dir.Get()), in.Manifest)
-		if mf == nil || mf.Trust == nil || mf.Trust.AdvisorReleaseKey == nil {
-			onLine("⚠ advisor bundle signature not checked: no trusted release key for manifest \"" + in.Manifest + "\"")
-		} else {
-			onLine("Verifying the advisor bundle is signed with " + mf.Name + "'s release key…")
-			vs, err := VerifyAdvisorBundle(localPath(m.dir.Get(), "advisor", in.Params.AdvisorFile), mf.Trust.AdvisorReleaseKey)
-			if err != nil {
-				return err
-			}
-			onLine("  ✓ agent release(s) " + strings.Join(vs, ", ") + " verify")
+	if (in.Module == ModuleCMP || in.Module == ModuleAdvisor) && in.Op != "uninstall" {
+		if err := m.enforceMatrix(client, in, onLine); err != nil {
+			return err
 		}
 	}
 	onLine("Checking cluster reachability…")
