@@ -16,7 +16,7 @@ func CheckModule(mf *Manifest, module, file string, lab bool) (string, error) {
 		if lab {
 			return msg + " (lab install, continuing)", nil
 		}
-		return "", fmt.Errorf("%s", msg)
+		return "", fmt.Errorf("%s (tick Lab install to override)", msg)
 	}
 	switch e.Status {
 	case "blocked":
@@ -27,6 +27,9 @@ func CheckModule(mf *Manifest, module, file string, lab bool) (string, error) {
 			w += ": " + e.Reason
 		}
 		return w, nil
+	case "supported":
+		return "", nil
+	default:
+		return "", fmt.Errorf("%s %s has unknown status %q in %s", module, ver, e.Status, mf.Name)
 	}
-	return "", nil
 }

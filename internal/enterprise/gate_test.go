@@ -49,3 +49,13 @@ func TestCheckModule(t *testing.T) {
 		t.Errorf("no manifest must not gate: %q %v", w, err)
 	}
 }
+
+func TestCheckModule_UnknownStatusRefused(t *testing.T) {
+	mf := &Manifest{Name: "v3.2.0", Modules: map[string][]ModuleEntry{
+		ModuleCMP: {{Version: "2.1.1", Status: "suported"}},
+	}}
+	_, err := CheckModule(mf, ModuleCMP, "cube-portal-2.1.1.pigz", false)
+	if err == nil || !strings.Contains(err.Error(), `unknown status "suported"`) {
+		t.Fatalf("err = %v, want unknown status", err)
+	}
+}

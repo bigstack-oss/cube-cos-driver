@@ -962,6 +962,8 @@ func TestManager_WarningsPrintedFirstInPreflight(t *testing.T) {
 // writeAdvisorManifest drops a manifest named "t1" (optionally with a trusted key) under the data dir.
 func writeAdvisorManifest(t *testing.T, m *Manager, key *TrustKey) *Manifest {
 	mf := &Manifest{Name: "t1"}
+	mf.Match.Version = "9.9.9"
+	mf.Modules = map[string][]ModuleEntry{ModuleAdvisor: {{Version: "1.2.3", Status: "supported"}}}
 	if key != nil {
 		mf.Trust = &Trust{AdvisorReleaseKey: key}
 	}
@@ -972,13 +974,25 @@ func writeAdvisorManifest(t *testing.T, m *Manager, key *TrustKey) *Manifest {
 	return mf
 }
 
+// etcVersion wraps a script so `cat /etc/version` reports the test cluster version.
+func etcVersion(v string, next func(string) ([]string, error)) func(string) ([]string, error) {
+	return func(cmd string) ([]string, error) {
+		if strings.Contains(cmd, "cat /etc/version") {
+			return []string{v}, nil
+		}
+		return next(cmd)
+	}
+}
+
+const testClusterVersion = "CUBE_9.9.9_20260101-0000_abc123"
+
 func advisorParams() InstallParams {
 	return InstallParams{Project: "appfw", Framework: "appfw", LBIP: "10.32.36.120", OSImage: "r.raw",
 		AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9"}
 }
 
 func TestPreflight_AdvisorSignatureChecked(t *testing.T) {
-	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", nil))
+	m, _ := newTestMgr(t, etcVersion(testClusterVersion, frameworkActiveAfterCreate("appfw", nil)))
 	k := newTestKeys(t)
 	mf := writeAdvisorManifest(t, m, k.pub)
 	m.Start("cl1", "advisor", "10.32.10.140", "pw", advisorParams(), false, false, nil, mf)
@@ -990,7 +1004,7 @@ func TestPreflight_AdvisorSignatureChecked(t *testing.T) {
 }
 
 func TestPreflight_AdvisorNoKeyWarns(t *testing.T) {
-	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", nil))
+	m, _ := newTestMgr(t, etcVersion(testClusterVersion, frameworkActiveAfterCreate("appfw", nil)))
 	mf := writeAdvisorManifest(t, m, nil)
 	m.Start("cl1", "advisor", "10.32.10.140", "pw", advisorParams(), false, false, nil, mf)
 	waitState(t, m, "cl1", "advisor", "done")
@@ -1011,5 +1025,69 @@ func TestPreflight_AdvisorUninstallSkipsSignatureCheck(t *testing.T) {
 	}
 	if out := strings.Join(lines, "\n"); strings.Contains(out, "advisor bundle") {
 		t.Fatalf("uninstall must not check the bundle: %q", out)
+	}
+}
+
+func writeCmpManifest(t *testing.T, m *Manager, name, version string) {
+	mf := &Manifest{Name: name, Modules: map[string][]ModuleEntry{ModuleCMP: {{Version: "2.1.0", Status: "supported"}}}}
+	mf.Match.Version = version
+	raw, _ := json.Marshal(mf)
+	md := filepath.Join(m.dir.Get(), "manifests")
+	os.MkdirAll(md, 0o755)
+	os.WriteFile(filepath.Join(md, name+".json"), raw, 0o644)
+}
+
+func runMatrixPreflight(m *Manager, in *Install) (string, error) {
+	var lines []string
+	mc := &clusterssh.MockClient{Script: etcVersion(testClusterVersion, frameworkActiveAfterCreate("appfw", nil))}
+	err := m.preflight(context.Background(), mc, in, nil, func(l string) { lines = append(lines, l) })
+	return strings.Join(lines, "\n"), err
+}
+
+func cmpInstall(file, manifest string, lab bool) *Install {
+	p := advisorParams()
+	p.AppFile = file
+	return &Install{Module: ModuleCMP, Manifest: manifest, Lab: lab, Params: p}
+}
+
+func TestPreflight_MatchedManifestBlocksUnlistedCmpWithoutClientManifest(t *testing.T) {
+	m, _ := newTestMgr(t, nil)
+	writeCmpManifest(t, m, "vT", "9.9.9")
+	if _, err := runMatrixPreflight(m, cmpInstall("cube-portal-3.0.0.pigz", "", false)); err == nil || !strings.Contains(err.Error(), "support matrix") {
+		t.Fatalf("err = %v, want matrix refusal", err)
+	}
+	if out, err := runMatrixPreflight(m, cmpInstall("cube-portal-2.1.0.pigz", "", false)); err != nil && strings.Contains(err.Error(), "support matrix") {
+		t.Fatalf("listed version refused: %v (%s)", err, out)
+	}
+}
+
+func TestPreflight_ClientManifestDifferingFromMatchIsRefusedUnlessLab(t *testing.T) {
+	m, _ := newTestMgr(t, nil)
+	writeCmpManifest(t, m, "vT", "9.9.9")
+	writeCmpManifest(t, m, "vOther", "1.0.0")
+	if _, err := runMatrixPreflight(m, cmpInstall("cube-portal-2.1.0.pigz", "vOther", false)); err == nil || !strings.Contains(err.Error(), "differs") {
+		t.Fatalf("err = %v, want differing-manifest refusal", err)
+	}
+	if out, err := runMatrixPreflight(m, cmpInstall("cube-portal-2.1.0.pigz", "vOther", true)); (err != nil && strings.Contains(err.Error(), "differs")) || !strings.Contains(out, "lab install, continuing") {
+		t.Fatalf("lab: err = %v, out = %q", err, out)
+	}
+}
+
+func TestPreflight_AdvisorWithoutClientManifestIsSignatureChecked(t *testing.T) {
+	m, _ := newTestMgr(t, nil)
+	k := newTestKeys(t)
+	writeAdvisorManifest(t, m, k.pub)
+	in := &Install{Module: ModuleAdvisor, Params: advisorParams()}
+	out, err := runMatrixPreflight(m, in)
+	if err == nil || !strings.Contains(out, "Verifying the advisor bundle is signed with t1") {
+		t.Fatalf("err = %v, out = %q; want signature check against matched t1 key", err, out)
+	}
+}
+
+func TestPreflight_NoMatchingManifestNoConstraints(t *testing.T) {
+	m, _ := newTestMgr(t, nil)
+	writeCmpManifest(t, m, "vOther", "1.0.0")
+	if out, err := runMatrixPreflight(m, cmpInstall("cube-portal-3.0.0.pigz", "", false)); err != nil && strings.Contains(err.Error(), "support matrix") {
+		t.Fatalf("no matching manifest must not constrain: %v (%s)", err, out)
 	}
 }

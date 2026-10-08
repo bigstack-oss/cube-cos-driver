@@ -387,3 +387,33 @@ func TestMatrixEndpoint(t *testing.T) {
 		t.Fatalf("embedded v3.2.0 missing from /matrix: %v %v", err, enterprise.ManifestNames(ms))
 	}
 }
+
+func TestStart_UnknownManifestRejected(t *testing.T) {
+	srv, id, _ := enterpriseFixture(t)
+	body := `{"module":"cmp","manifest":"nope","manual":true,"params":{"Project":"appfw","Framework":"appfw","AppFile":"cube-portal-2.1.0.pigz"}}`
+	resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+id+"/enterprise/install", []byte(body))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown manifest = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestStart_MatrixGateAdvisorFile(t *testing.T) {
+	srv, id, dataDir := enterpriseFixture(t)
+	mdir := filepath.Join(dataDir, "enterprise", "manifests")
+	os.MkdirAll(mdir, 0o755)
+	os.WriteFile(filepath.Join(mdir, "t.json"), []byte(`{"schema":2,"name":"vT","match":{"version":"9.9.9"},
+	  "modules":{"advisor":[{"version":"1.2.3","status":"supported"}]}}`), 0o644)
+	post := func(file string) int {
+		body := fmt.Sprintf(`{"module":"advisor","manifest":"vT","manual":true,"params":{"Project":"appfw","Framework":"appfw","OSImage":"r.raw","AdvisorFile":%q,"AdvisorLBIP":"10.0.0.9"}}`, file)
+		resp := do(t, "POST", srv.URL+"/api/v1/clusters/"+id+"/enterprise/install", []byte(body))
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if c := post("cube-advisor-9.9.9.pigz"); c != http.StatusBadRequest {
+		t.Fatalf("unlisted advisor = %d, want 400", c)
+	}
+	if c := post("cube-advisor-1.2.3.pigz"); c == http.StatusBadRequest {
+		t.Fatalf("listed advisor refused with 400")
+	}
+}

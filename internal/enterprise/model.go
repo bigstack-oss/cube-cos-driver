@@ -93,6 +93,7 @@ type Install struct {
 	Portal         string
 	Warnings       []string
 	Manifest       string // matched manifest name
+	Lab            bool   // lab install: matrix refusals downgrade to warnings
 }
 
 // plannedStep is the executable form of a step (not persisted; rebuilt from params).

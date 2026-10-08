@@ -55,13 +55,13 @@ func (h *enterpriseHandlers) artifacts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, enterprise.DiscoverArtifacts(h.dir.Get()))
 }
 
-// getDir returns the enterprise images folder + whether it's mounted and how
-// many appfw/cmp/advisor artifacts it holds. The UI settings modal reads this.
 // matrix returns every known manifest: the support matrix.
 func (h *enterpriseHandlers) matrix(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, enterprise.LoadManifests(h.dir.Get()))
 }
 
+// getDir returns the enterprise images folder + whether it's mounted and how
+// many appfw/cmp/advisor artifacts it holds. The UI settings modal reads this.
 func (h *enterpriseHandlers) getDir(w http.ResponseWriter, r *http.Request) {
 	dir, mounted, appfw, cmp, advisor := h.dir.Status()
 	writeJSON(w, http.StatusOK, map[string]any{"imageDir": dir, "mounted": mounted, "appfwCount": appfw, "cmpCount": cmp, "advisorCount": advisor})
@@ -303,6 +303,10 @@ func (h *enterpriseHandlers) start(w http.ResponseWriter, r *http.Request) {
 		password = defaultPassword(host)
 	}
 	manifest := enterprise.FindManifest(enterprise.LoadManifests(h.dir.Get()), body.Manifest)
+	if body.Manifest != "" && manifest == nil {
+		writeError(w, http.StatusBadRequest, "unknown manifest %q", body.Manifest)
+		return
+	}
 	file := body.Params.AppFile
 	if body.Module == enterprise.ModuleAdvisor {
 		file = body.Params.AdvisorFile
@@ -324,7 +328,7 @@ func (h *enterpriseHandlers) start(w http.ResponseWriter, r *http.Request) {
 		}
 		body.Params.AdvisorProviderKeyFile = f
 	}
-	in, err := h.mgr.Start(id, body.Module, host, password, body.Params, body.Manual, body.SimulateAirgap, warnings, manifest)
+	in, err := h.mgr.StartLab(id, body.Module, host, password, body.Params, body.Manual, body.SimulateAirgap, body.Lab, warnings, manifest)
 	if err != nil {
 		if body.Params.AdvisorProviderKeyFile != "" {
 			os.Remove(body.Params.AdvisorProviderKeyFile)

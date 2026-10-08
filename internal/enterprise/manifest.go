@@ -4,6 +4,7 @@ import (
 	"embed"
 	"encoding/json"
 	"io/fs"
+	"log"
 	"os"
 	"path"
 	"sort"
@@ -57,7 +58,7 @@ type Manifest struct {
 	AirgapSupported *bool `json:"airgapSupported"`
 	// Appfw names what the release's extpack carries; OSImage is the rancher
 	// glance image framework_create uses when the images come from the extpack.
-	Appfw *Appfw `json:"appfw,omitempty"`
+	Appfw  *Appfw `json:"appfw,omitempty"`
 	Import struct {
 		Tenant         string `json:"tenant"`
 		Visibility     string `json:"visibility"`
@@ -67,6 +68,8 @@ type Manifest struct {
 	Schema  int                      `json:"schema,omitempty" yaml:"schema,omitempty"`
 	Trust   *Trust                   `json:"trust,omitempty" yaml:"trust,omitempty"`
 	Modules map[string][]ModuleEntry `json:"modules,omitempty" yaml:"modules,omitempty"`
+
+	src string // file the manifest was loaded from, for logs
 }
 
 // importOrDefault fills unset import fields with the CubeCOS conventions.
@@ -110,12 +113,20 @@ func loadDir(fsys fs.FS, dir string) []Manifest {
 		}
 		raw, err := fs.ReadFile(fsys, path.Join(dir, e.Name()))
 		if err != nil {
+			log.Printf("manifest: skipping %s: %v", e.Name(), err)
 			continue
 		}
 		var m Manifest
-		if json.Unmarshal(raw, &m) == nil && m.Name != "" {
-			out = append(out, m)
+		if err := json.Unmarshal(raw, &m); err != nil {
+			log.Printf("manifest: skipping %s: malformed: %v", e.Name(), err)
+			continue
 		}
+		if m.Name == "" {
+			log.Printf("manifest: skipping %s: no name", e.Name())
+			continue
+		}
+		m.src = e.Name()
+		out = append(out, m)
 	}
 	return out
 }
@@ -126,6 +137,11 @@ func mergeManifests(base, override []Manifest) []Manifest {
 		byName[m.Name] = m
 	}
 	for _, m := range override {
+		if b, ok := byName[m.Name]; ok && m.Schema < b.Schema {
+			log.Printf("manifest: skipping override %s: schema %d is lower than the embedded %d", m.src, m.Schema, b.Schema)
+			continue
+		}
+		log.Printf("manifest override: %s from %s", m.Name, m.src)
 		byName[m.Name] = m
 	}
 	out := make([]Manifest, 0, len(byName))
