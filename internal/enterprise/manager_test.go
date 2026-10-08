@@ -2,6 +2,7 @@ package enterprise
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -955,5 +956,60 @@ func TestManager_WarningsPrintedFirstInPreflight(t *testing.T) {
 	in, _ := m.Status("cl1", "appfw")
 	if !strings.HasPrefix(in.Steps[0].Output, "⚠ not in the matrix\n") {
 		t.Fatalf("preflight output = %q", in.Steps[0].Output)
+	}
+}
+
+// writeAdvisorManifest drops a manifest named "t1" (optionally with a trusted key) under the data dir.
+func writeAdvisorManifest(t *testing.T, m *Manager, key *TrustKey) *Manifest {
+	mf := &Manifest{Name: "t1"}
+	if key != nil {
+		mf.Trust = &Trust{AdvisorReleaseKey: key}
+	}
+	raw, _ := json.Marshal(mf)
+	md := filepath.Join(m.dir.Get(), "manifests")
+	os.MkdirAll(md, 0o755)
+	os.WriteFile(filepath.Join(md, "t1.json"), raw, 0o644)
+	return mf
+}
+
+func advisorParams() InstallParams {
+	return InstallParams{Project: "appfw", Framework: "appfw", LBIP: "10.32.36.120", OSImage: "r.raw",
+		AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9"}
+}
+
+func TestPreflight_AdvisorSignatureChecked(t *testing.T) {
+	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", nil))
+	k := newTestKeys(t)
+	mf := writeAdvisorManifest(t, m, k.pub)
+	m.Start("cl1", "advisor", "10.32.10.140", "pw", advisorParams(), false, false, nil, mf)
+	waitState(t, m, "cl1", "advisor", "error")
+	in, _ := m.Status("cl1", "advisor")
+	if !strings.Contains(in.Steps[0].Output, "Verifying the advisor bundle") {
+		t.Fatalf("preflight output = %q", in.Steps[0].Output)
+	}
+}
+
+func TestPreflight_AdvisorNoKeyWarns(t *testing.T) {
+	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", nil))
+	mf := writeAdvisorManifest(t, m, nil)
+	m.Start("cl1", "advisor", "10.32.10.140", "pw", advisorParams(), false, false, nil, mf)
+	waitState(t, m, "cl1", "advisor", "done")
+	in, _ := m.Status("cl1", "advisor")
+	if !strings.Contains(in.Steps[0].Output, `⚠ advisor bundle signature not checked: no trusted release key for manifest "t1"`) {
+		t.Fatalf("preflight output = %q", in.Steps[0].Output)
+	}
+}
+
+func TestPreflight_AdvisorUninstallSkipsSignatureCheck(t *testing.T) {
+	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", nil))
+	k := newTestKeys(t)
+	writeAdvisorManifest(t, m, k.pub)
+	in := &Install{Module: ModuleAdvisor, Op: "uninstall", Manifest: "t1", Params: advisorParams()}
+	var lines []string
+	if err := m.preflight(context.Background(), &clusterssh.MockClient{Script: frameworkActiveAfterCreate("appfw", nil)}, in, nil, func(l string) { lines = append(lines, l) }); err != nil {
+		t.Fatal(err)
+	}
+	if out := strings.Join(lines, "\n"); strings.Contains(out, "advisor bundle") {
+		t.Fatalf("uninstall must not check the bundle: %q", out)
 	}
 }

@@ -489,7 +489,10 @@ func (m *Manager) preflight(ctx context.Context, client clusterssh.Client, in *I
 		onLine("⚠ " + w)
 	}
 	if in.Module == ModuleAdvisor && in.Op != "uninstall" {
-		if mf := FindManifest(LoadManifests(m.dir.Get()), in.Manifest); mf != nil && mf.Trust != nil && mf.Trust.AdvisorReleaseKey != nil {
+		mf := FindManifest(LoadManifests(m.dir.Get()), in.Manifest)
+		if mf == nil || mf.Trust == nil || mf.Trust.AdvisorReleaseKey == nil {
+			onLine("⚠ advisor bundle signature not checked: no trusted release key for manifest \"" + in.Manifest + "\"")
+		} else {
 			onLine("Verifying the advisor bundle is signed with " + mf.Name + "'s release key…")
 			vs, err := VerifyAdvisorBundle(localPath(m.dir.Get(), "advisor", in.Params.AdvisorFile), mf.Trust.AdvisorReleaseKey)
 			if err != nil {

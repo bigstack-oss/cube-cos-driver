@@ -10,7 +10,7 @@ require (
 	golang.org/x/sys v0.47.0
 )
 
-require github.com/cloudflare/circl v1.6.5 // indirect
+require github.com/cloudflare/circl v1.6.5
 
 require (
 	github.com/fatih/color v1.15.0 // indirect

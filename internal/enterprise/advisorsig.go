@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/sha512"
 	"crypto/x509"
 	"encoding/asn1"
@@ -72,8 +73,8 @@ func parseTrustKey(k *TrustKey) (*ecdsa.PublicKey, *mldsa87.PublicKey, error) {
 		return nil, nil, err
 	}
 	ec, ok := pub.(*ecdsa.PublicKey)
-	if !ok {
-		return nil, nil, errors.New("advisor trust key: not ECDSA")
+	if !ok || ec.Curve != elliptic.P384() {
+		return nil, nil, errors.New("advisor trust key: not an ECDSA P-384 key")
 	}
 	mb, _ := pem.Decode([]byte(k.MLDSA87))
 	if mb == nil {
@@ -83,8 +84,13 @@ func parseTrustKey(k *TrustKey) (*ecdsa.PublicKey, *mldsa87.PublicKey, error) {
 		Alg struct{ OID asn1.ObjectIdentifier }
 		Key asn1.BitString
 	}
-	if _, err := asn1.Unmarshal(mb.Bytes, &spki); err != nil {
+	if rest, err := asn1.Unmarshal(mb.Bytes, &spki); err != nil {
 		return nil, nil, err
+	} else if len(rest) != 0 {
+		return nil, nil, errors.New("advisor trust key: trailing data after ML-DSA-87 key")
+	}
+	if !spki.Alg.OID.Equal(asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 3, 19}) {
+		return nil, nil, errors.New("advisor trust key: not an ML-DSA-87 key")
 	}
 	var ml mldsa87.PublicKey
 	if err := ml.UnmarshalBinary(spki.Key.Bytes); err != nil {
@@ -145,15 +151,18 @@ func scanImage(img *tar.Reader) (map[string]map[string][]byte, error) {
 			}
 			dir, file := path.Split(strings.TrimPrefix(name, releasesPrefix))
 			v := strings.TrimSuffix(dir, "/")
-			if v == "" || strings.Contains(v, "/") || !strings.HasPrefix(file, "manifest.txt") {
+			if v == "" || strings.Contains(v, "/") || file == "" || lh.Typeflag != tar.TypeReg {
+				continue
+			}
+			if out[v] == nil {
+				out[v] = map[string][]byte{}
+			}
+			if !strings.HasPrefix(file, "manifest.txt") {
 				continue
 			}
 			var b bytes.Buffer
 			if _, err := io.Copy(&b, layer); err != nil {
 				return nil, err
-			}
-			if out[v] == nil {
-				out[v] = map[string][]byte{}
 			}
 			out[v][file] = b.Bytes()
 		}
