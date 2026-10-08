@@ -23,8 +23,15 @@ const artifacts = {
 }
 
 // Shared fetch stub for clusters/cluster-detail/artifacts/install-POST.
-const stubFetch = (arts: typeof artifacts = artifacts, info: Record<string, unknown> = {}) => {
+const stubFetch = (
+  arts: typeof artifacts = artifacts,
+  info: Record<string, unknown> = {},
+  matrix: unknown[] = [],
+) => {
   fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (url === '/api/v1/enterprise/matrix') {
+      return new Response(JSON.stringify(matrix), { status: 200 })
+    }
     if (url === '/api/v1/clusters') {
       return new Response(
         JSON.stringify([{ id: 'aabbccddee01', name: 'sky-lab', nodes: [] }]),
@@ -189,6 +196,50 @@ describe('InstallModal', () => {
       const params = JSON.parse((posted![1] as RequestInit).body as string).params
       expect(params.ExtpackFile).toBe('CUBE_3.2.0_20261007-0633_.ext')
       expect(params.OSImage).toBe('rancher-cluster-image-rke2-v1.32.4')
+    })
+  })
+
+  it('labels .pigz options with version and matrix status', async () => {
+    const user = userEvent.setup()
+    stubFetch(
+      { AppFW: [], CMP: ['cube-portal-2.1.1+rev4902.pigz', 'cube-portal-9.0.0.pigz'], Advisor: [] },
+      { manifest: 'v3.2.0', manifests: ['v3.2.0'] },
+      [{ name: 'v3.2.0', match: { version: '3.2.0' }, modules: { cmp: [{ version: '2.1.1', status: 'supported' }] } }],
+    )
+    render(
+      <MemoryRouter>
+        <InstallModal module="cmp" onClose={vi.fn()} />
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(screen.getByText('sky-lab')).toBeTruthy())
+    await user.selectOptions(screen.getByLabelText('Cluster'), 'aabbccddee01')
+    await waitFor(() => expect(screen.getByText('2.1.1 · supported')).toBeTruthy())
+    expect(screen.getByText('9.0.0 · not in matrix')).toBeTruthy()
+  })
+
+  it('sends lab when the lab checkbox is ticked', async () => {
+    const user = userEvent.setup()
+    stubFetch()
+    render(
+      <MemoryRouter>
+        <InstallModal module="cmp" onClose={vi.fn()} />
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(screen.getByText('sky-lab')).toBeTruthy())
+    await user.selectOptions(screen.getByLabelText('Cluster'), 'aabbccddee01')
+    await user.type(screen.getByLabelText('LB IP'), '10.32.36.120')
+    await waitFor(() => expect(screen.getByText('rancher-cluster-image-rke2-v1.32.4.raw')).toBeTruthy())
+    await user.selectOptions(screen.getByLabelText('OS image'), 'rancher-cluster-image-rke2-v1.32.4.raw')
+    await user.selectOptions(screen.getByLabelText('.pigz package'), 'cube-portal-2.1.0.pigz')
+    await user.click(screen.getByLabelText(/Lab install/))
+    await user.click(screen.getByRole('button', { name: 'Install' }))
+    await waitFor(() => {
+      const posted = fetchMock.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).endsWith('/enterprise/install') &&
+          (c[1] as RequestInit | undefined)?.method === 'POST',
+      )
+      expect(posted).toBeTruthy()
+      expect(JSON.parse((posted![1] as RequestInit).body as string).lab).toBe(true)
     })
   })
 

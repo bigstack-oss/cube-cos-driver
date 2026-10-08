@@ -1,11 +1,19 @@
 import { CosButton, CosTag } from '@cube-frontend/ui-library'
 import { useEffect, useState } from 'react'
 import { listClusters } from '../../api/client'
-import { Install, InstallState, listInstalls, Module } from '../../api/enterprise'
+import {
+  getMatrix,
+  Install,
+  InstallState,
+  listInstalls,
+  Manifest,
+  Module,
+} from '../../api/enterprise'
 import { ClusterDigest } from '../../model/types'
 import cubeAiAdvisorLogo from '../../assets/cube-ai-advisor-logo.svg'
 import cubecmpLogo from '../../assets/cubecmp-logo.svg'
 import { InstallModal } from './InstallModal'
+import { SupportMatrix } from './SupportMatrix'
 import { UninstallModal } from './UninstallModal'
 
 // logo (when set) is shown in place of the title text on the module card.
@@ -77,7 +85,14 @@ export const EnterprisePage = () => {
   const [selected, setSelected] = useState<OpenTarget | null>(null)
   const [uninstalling, setUninstalling] = useState<OpenTarget | null>(null)
   const [installs, setInstalls] = useState<Install[]>([])
+  const [matrix, setMatrix] = useState<Manifest[]>([])
   const [clusterNames, setClusterNames] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    getMatrix()
+      .then((m) => setMatrix(Array.isArray(m) ? m : []))
+      .catch(() => setMatrix([]))
+  }, [])
 
   useEffect(() => {
     listClusters()
@@ -187,6 +202,8 @@ export const EnterprisePage = () => {
           </div>
         </div>
       )}
+
+      <SupportMatrix manifests={matrix} />
 
       {selected && (
         <InstallModal
