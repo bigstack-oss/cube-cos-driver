@@ -71,7 +71,7 @@ func newTestMgr(t *testing.T, script func(string) ([]string, error)) (*Manager, 
 func TestManager_AppFW_AutoRunsAllStepsInOrder(t *testing.T) {
 	m, mc := newTestMgr(t, frameworkActiveAfterCreate("cmp", nil))
 	in, err := m.Start("cl1", "appfw", "10.32.10.140", "pw",
-		InstallParams{Project: "cmp", PublicNet: "public", MgmtNet: "public", LBIP: "10.32.36.120", OSImage: "r.raw", FsImage: "m.qcow2", LBImage: "a.qcow2"}, false, false)
+		InstallParams{Project: "cmp", PublicNet: "public", MgmtNet: "public", LBIP: "10.32.36.120", OSImage: "r.raw", FsImage: "m.qcow2", LBImage: "a.qcow2"}, false, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestManager_AppFW_AutoRunsAllStepsInOrder(t *testing.T) {
 
 func TestManager_CMP_NoFramework_RunsAppFWThenRegister(t *testing.T) {
 	m, mc := newTestMgr(t, frameworkActiveAfterCreate("cmp", nil))
-	m.Start("cl1", "cmp", "10.32.10.140", "pw", InstallParams{Project: "cmp", LBIP: "10.32.36.120", OSImage: "r.raw", AppFile: "cube-portal-2.1.0.pigz"}, false, false)
+	m.Start("cl1", "cmp", "10.32.10.140", "pw", InstallParams{Project: "cmp", LBIP: "10.32.36.120", OSImage: "r.raw", AppFile: "cube-portal-2.1.0.pigz"}, false, false, nil)
 	waitState(t, m, "cl1", "cmp", "done")
 	if !containsCmd(mc.Runs, "framework_create") || !containsCmd(mc.Runs, "app_register /mnt/cephfs/update/cube-portal-2.1.0.pigz") {
 		t.Fatalf("runs=%v", mc.Runs)
@@ -106,7 +106,7 @@ func TestManager_CMP_ExistingActiveFramework_SkipsCreate(t *testing.T) {
 		}
 		return nil, nil
 	})
-	m.Start("cl1", "cmp", "10.32.10.140", "pw", InstallParams{Project: "cmp", Framework: "cmp", AppFile: "cube-portal-2.1.0.pigz", LBIP: "10.32.36.120"}, false, false)
+	m.Start("cl1", "cmp", "10.32.10.140", "pw", InstallParams{Project: "cmp", Framework: "cmp", AppFile: "cube-portal-2.1.0.pigz", LBIP: "10.32.36.120"}, false, false, nil)
 	waitState(t, m, "cl1", "cmp", "done")
 	if containsCmd(mc.Runs, "framework_create cmp") {
 		t.Fatalf("should not recreate an active framework: %v", mc.Runs)
@@ -139,7 +139,7 @@ func TestManager_Advisor_ExistingActiveFramework_SkipsCreate(t *testing.T) {
 		return nil, nil
 	})
 	m.Start("cl1", "advisor", "10.32.10.140", "pw", InstallParams{Project: "appfw", Framework: "appfw",
-		AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9", LBIP: "10.32.36.120"}, false, false)
+		AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9", LBIP: "10.32.36.120"}, false, false, nil)
 	waitState(t, m, "cl1", "advisor", "done")
 	if containsCmd(mc.Runs, "framework_create appfw") {
 		t.Fatalf("should not recreate an active framework: %v", mc.Runs)
@@ -165,7 +165,7 @@ func TestManager_Advisor_ExistingActiveFramework_SkipsCreate(t *testing.T) {
 func TestManager_AppFWUninstall_CascadesAdvisor(t *testing.T) {
 	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", nil))
 	m.Start("cl1", "advisor", "10.32.10.140", "pw", InstallParams{Project: "appfw", Framework: "appfw", OSImage: "r.raw",
-		AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9", LBIP: "10.32.36.120"}, false, false)
+		AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9", LBIP: "10.32.36.120"}, false, false, nil)
 	waitState(t, m, "cl1", "advisor", "done")
 
 	m.StartUninstall("cl1", "appfw", "10.32.10.140", "pw", InstallParams{Project: "appfw"}, false)
@@ -178,7 +178,7 @@ func TestManager_AppFWUninstall_CascadesAdvisor(t *testing.T) {
 
 func TestManager_Manual_NextAdvancesOneStep(t *testing.T) {
 	m, _ := newTestMgr(t, func(cmd string) ([]string, error) { return nil, nil })
-	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), true /*manual*/, false)
+	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), true /*manual*/, false, nil)
 	in, _ := m.Status("cl1", "appfw")
 	if in.Current != 0 {
 		t.Fatal("should start at 0")
@@ -197,7 +197,7 @@ func TestManager_ImportSkippedWhenImageExists(t *testing.T) {
 		} // present
 		return nil, nil
 	}))
-	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false)
+	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false, nil)
 	waitState(t, m, "cl1", "appfw", "done")
 	if len(mc.Pushes) != 0 {
 		t.Fatalf("should skip scp when image exists: %v", mc.Pushes)
@@ -210,7 +210,7 @@ func TestManager_ImportSkippedWhenImageExists(t *testing.T) {
 
 func TestManager_Airgap_AppliedBeforeInstallSteps(t *testing.T) {
 	m, mc := newTestMgr(t, frameworkActiveAfterCreate("cmp", nil))
-	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, true /*airgap*/)
+	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, true /*airgap*/, nil)
 	waitState(t, m, "cl1", "appfw", "done")
 	ai := indexOfCmd(mc.Runs, "airgap_sim_apply")
 	ii := indexOfCmd(mc.Runs, "framework_create")
@@ -226,7 +226,7 @@ func TestManager_StepFailure_StopsAndErrors(t *testing.T) {
 		}
 		return nil, nil
 	})
-	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false)
+	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false, nil)
 	waitState(t, m, "cl1", "appfw", "error")
 	in, _ := m.Status("cl1", "appfw")
 	if stepState(in, "framework_create") != "error" {
@@ -257,7 +257,7 @@ func TestPreflight_MD5Mismatch_Fails(t *testing.T) {
 	st, _ := NewStore(filepath.Join(dir, "installs"))
 	mc := &clusterssh.MockClient{Script: frameworkActiveAfterCreate("cmp", nil)}
 	m := NewManager(st, NewDir(dir, filepath.Join(dir, "enterprise")), func(h, u, p string) (clusterssh.Client, error) { return mc, nil })
-	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false)
+	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false, nil)
 	waitState(t, m, "cl1", "appfw", "error")
 	in, _ := m.Status("cl1", "appfw")
 	if stepState(in, "preflight") != "error" {
@@ -277,7 +277,7 @@ func TestPreflight_MD5Match_Passes(t *testing.T) {
 	st, _ := NewStore(filepath.Join(dir, "installs"))
 	mc := &clusterssh.MockClient{Script: frameworkActiveAfterCreate("cmp", nil)}
 	m := NewManager(st, NewDir(dir, filepath.Join(dir, "enterprise")), func(h, u, p string) (clusterssh.Client, error) { return mc, nil })
-	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false)
+	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false, nil)
 	waitState(t, m, "cl1", "appfw", "done")
 }
 
@@ -295,7 +295,7 @@ func TestManager_Framework_TagsAmphoraImage(t *testing.T) {
 		}
 		return nil, nil
 	})
-	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false)
+	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false, nil)
 	waitState(t, m, "cl1", "appfw", "done")
 	if !containsCmd(mc.Runs, "image set --tag amphora amphora-x64-haproxy") {
 		t.Fatalf("should tag the amphora image when untagged: %v", mc.Runs)
@@ -321,7 +321,7 @@ func TestManager_Framework_FailsWhenRegistryUnreachable(t *testing.T) {
 	})
 	defer func(to, iv time.Duration) { registryReadyTimeout, registryPollInterval = to, iv }(registryReadyTimeout, registryPollInterval)
 	registryReadyTimeout, registryPollInterval = 20*time.Millisecond, 2*time.Millisecond
-	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false)
+	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false, nil)
 	waitState(t, m, "cl1", "appfw", "error")
 	in, _ := m.Status("cl1", "appfw")
 	if stepState(in, "framework_create") != "error" {
@@ -342,7 +342,7 @@ func TestManager_Framework_TimeoutWarns(t *testing.T) {
 		}
 		return nil, nil
 	})
-	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false)
+	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false, nil)
 	waitState(t, m, "cl1", "appfw", "error")
 	in, _ := m.Status("cl1", "appfw")
 	if stepState(in, "framework_create") != "error" {
@@ -381,7 +381,7 @@ func TestManager_Start_ConcurrentSameKey_RejectsSecond(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		go func(i int) {
 			defer wg.Done()
-			_, err := m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false)
+			_, err := m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false, nil)
 			results[i] = err
 		}(i)
 	}
@@ -417,7 +417,7 @@ func TestManager_Start_ConcurrentSameKey_RejectsSecond(t *testing.T) {
 
 func TestManager_Cancel_ManualMarksCancelledAndRestartable(t *testing.T) {
 	m, _ := newTestMgr(t, func(cmd string) ([]string, error) { return nil, nil })
-	_, err := m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), true /*manual*/, false)
+	_, err := m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), true /*manual*/, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func TestManager_Cancel_ManualMarksCancelledAndRestartable(t *testing.T) {
 		t.Fatalf("state=%v ok=%v, want cancelled", in, ok)
 	}
 
-	if _, err := m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), true, false); err != nil {
+	if _, err := m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), true, false, nil); err != nil {
 		t.Fatalf("restart after manual cancel rejected: %v", err)
 	}
 }
@@ -470,7 +470,7 @@ func TestManager_Cancel_ManualRacesNext(t *testing.T) {
 	bc := &blockingClient{started: make(chan struct{}, 1), release: make(chan struct{})}
 	m := NewManager(st, NewDir(dir, filepath.Join(dir, "enterprise")), func(h, u, p string) (clusterssh.Client, error) { return bc, nil })
 
-	if _, err := m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), true /*manual*/, false); err != nil {
+	if _, err := m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), true /*manual*/, false, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -496,7 +496,7 @@ func TestManager_Cancel_ManualRacesNext(t *testing.T) {
 		t.Fatalf("client Close called %d times, want exactly 1", got)
 	}
 	// Key must be restartable after the race settles.
-	if _, err := m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), true, false); err != nil {
+	if _, err := m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), true, false, nil); err != nil {
 		t.Fatalf("restart after cancel/next race rejected: %v", err)
 	}
 }
@@ -667,7 +667,7 @@ func TestManager_TransportLoss_SaysTheCommandMayStillBeRunning(t *testing.T) {
 	}))
 	m.Start("cl1", "advisor", "10.32.10.140", "pw",
 		InstallParams{Project: "appfw", Framework: "appfw", LBIP: "10.32.36.120", OSImage: "r.raw",
-			AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9"}, false, false)
+			AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9"}, false, false, nil)
 	waitState(t, m, "cl1", "advisor", "error")
 
 	in, _ := m.Status("cl1", "advisor")
@@ -700,7 +700,7 @@ func TestManager_CommandFailure_StillReadsAsOne(t *testing.T) {
 	}))
 	m.Start("cl1", "advisor", "10.32.10.140", "pw",
 		InstallParams{Project: "appfw", Framework: "appfw", LBIP: "10.32.36.120", OSImage: "r.raw",
-			AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9"}, false, false)
+			AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9"}, false, false, nil)
 	waitState(t, m, "cl1", "advisor", "error")
 
 	in, _ := m.Status("cl1", "advisor")
@@ -745,7 +745,7 @@ func TestPreflightChecksEveryConsoleAddress(t *testing.T) {
 	m.Start("cl1", "advisor", "10.32.10.140", "pw",
 		InstallParams{Project: "appfw", Framework: "appfw", LBIP: "10.32.36.120", OSImage: "r.raw",
 			AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9",
-			AdvisorPool: []string{"10.0.0.10", "10.0.0.11"}}, false, false)
+			AdvisorPool: []string{"10.0.0.10", "10.0.0.11"}}, false, false, nil)
 	waitState(t, m, "cl1", "advisor", "done")
 
 	mu.Lock()
@@ -778,7 +778,7 @@ func TestPreflightRefusesATakenConsoleAddress(t *testing.T) {
 	m.Start("cl1", "advisor", "10.32.10.140", "pw",
 		InstallParams{Project: "appfw", Framework: "appfw", LBIP: "10.32.36.120", OSImage: "r.raw",
 			AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9",
-			AdvisorPool: []string{"10.0.0.10", "10.0.0.11"}}, false, false)
+			AdvisorPool: []string{"10.0.0.10", "10.0.0.11"}}, false, false, nil)
 	waitState(t, m, "cl1", "advisor", "error")
 
 	in, _ := m.Status("cl1", "advisor")
@@ -811,7 +811,7 @@ func TestPreflightSkipsConsoleAddressesTheAdvisorAlreadyOwns(t *testing.T) {
 	m.Start("cl1", "advisor", "10.32.10.140", "pw",
 		InstallParams{Project: "appfw", Framework: "appfw", LBIP: "10.32.36.120", OSImage: "r.raw",
 			AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9",
-			AdvisorPool: []string{"10.0.0.60"}}, false, false)
+			AdvisorPool: []string{"10.0.0.60"}}, false, false, nil)
 	waitState(t, m, "cl1", "advisor", "done")
 
 	mu.Lock()
@@ -841,7 +841,7 @@ func TestPreflightStillProbesAddressesNewToTheAdvisor(t *testing.T) {
 	m.Start("cl1", "advisor", "10.32.10.140", "pw",
 		InstallParams{Project: "appfw", Framework: "appfw", LBIP: "10.32.36.120", OSImage: "r.raw",
 			AdvisorFile: "cube-advisor-1.2.3.pigz", AdvisorLBIP: "10.0.0.9",
-			AdvisorPool: []string{"10.0.0.60", "10.0.0.61"}}, false, false)
+			AdvisorPool: []string{"10.0.0.60", "10.0.0.61"}}, false, false, nil)
 	waitState(t, m, "cl1", "advisor", "error")
 
 	in, _ := m.Status("cl1", "advisor")
@@ -857,7 +857,7 @@ func TestManager_AppFW_ImagesFromExtpack_NoLocalFiles(t *testing.T) {
 		os.Remove(filepath.Join(m.dir.Get(), "appfw", f))
 	}
 	m.Start("cl1", "appfw", "10.32.10.140", "pw",
-		InstallParams{Project: "cmp", PublicNet: "public", MgmtNet: "public", LBIP: "10.32.36.120", OSImage: "r.raw", FsImage: "m.qcow2", LBImage: "a.qcow2"}, false, false)
+		InstallParams{Project: "cmp", PublicNet: "public", MgmtNet: "public", LBIP: "10.32.36.120", OSImage: "r.raw", FsImage: "m.qcow2", LBImage: "a.qcow2"}, false, false, nil)
 	waitState(t, m, "cl1", "appfw", "done")
 	if containsCmd(mc.Runs, "import local r.raw") || !containsCmd(mc.Runs, "framework_create cmp public public 10.32.36.120 r") {
 		t.Fatalf("runs=%v", mc.Runs)
@@ -875,7 +875,7 @@ func TestManager_AppFW_MissingImageNotInGlance_FailsPreflight(t *testing.T) {
 	})
 	os.Remove(filepath.Join(m.dir.Get(), "appfw", "r.raw"))
 	m.Start("cl1", "appfw", "10.32.10.140", "pw",
-		InstallParams{Project: "cmp", PublicNet: "public", MgmtNet: "public", LBIP: "10.32.36.120", OSImage: "r.raw", FsImage: "m.qcow2", LBImage: "a.qcow2"}, false, false)
+		InstallParams{Project: "cmp", PublicNet: "public", MgmtNet: "public", LBIP: "10.32.36.120", OSImage: "r.raw", FsImage: "m.qcow2", LBImage: "a.qcow2"}, false, false, nil)
 	waitState(t, m, "cl1", "appfw", "error")
 	in, _ := m.Status("cl1", "appfw")
 	var msg string
@@ -946,4 +946,14 @@ func containsRun(runs []string, cmd string) bool {
 		}
 	}
 	return false
+}
+
+func TestManager_WarningsPrintedFirstInPreflight(t *testing.T) {
+	m, _ := newTestMgr(t, frameworkActiveAfterCreate("cmp", nil))
+	m.Start("cl1", "appfw", "10.32.10.140", "pw", validAppFWParams(), false, false, []string{"not in the matrix"})
+	waitState(t, m, "cl1", "appfw", "done")
+	in, _ := m.Status("cl1", "appfw")
+	if !strings.HasPrefix(in.Steps[0].Output, "⚠ not in the matrix\n") {
+		t.Fatalf("preflight output = %q", in.Steps[0].Output)
+	}
 }

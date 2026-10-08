@@ -138,12 +138,12 @@ func (m *Manager) StepDurations() map[string]float64 {
 }
 
 // Start reserves the key, builds the plan, persists the Install, and (unless manual) runs it.
-func (m *Manager) Start(clusterID, module, vip, password string, p InstallParams, manual, airgap bool, mf ...*Manifest) (*Install, error) {
+func (m *Manager) Start(clusterID, module, vip, password string, p InstallParams, manual, airgap bool, warnings []string, mf ...*Manifest) (*Install, error) {
 	var manifest *Manifest
 	if len(mf) > 0 {
 		manifest = mf[0]
 	}
-	return m.launch(clusterID, module, vip, password, p, manual, airgap, "install",
+	return m.launch(clusterID, module, vip, password, p, manual, airgap, warnings, "install",
 		func() []plannedStep { return BuildPlan(module, p, airgap, m.dir.Get(), manifest) })
 }
 
@@ -151,13 +151,13 @@ func (m *Manager) Start(clusterID, module, vip, password string, p InstallParams
 // framework_delete, which removes the framework and every app on it). It shares the
 // install run machinery — same key, store, progress, and (auto/manual) runner.
 func (m *Manager) StartUninstall(clusterID, module, vip, password string, p InstallParams, manual bool) (*Install, error) {
-	return m.launch(clusterID, module, vip, password, p, manual, false, "uninstall",
+	return m.launch(clusterID, module, vip, password, p, manual, false, nil, "uninstall",
 		func() []plannedStep { return BuildUninstallPlan(module, p, m.dir.Get()) })
 }
 
 // launch reserves the (cluster, module) key, dials, builds the plan for the op, and
 // starts the runner. Shared by Start (install) and StartUninstall (uninstall).
-func (m *Manager) launch(clusterID, module, vip, password string, p InstallParams, manual, airgap bool, op string, buildPlan func() []plannedStep) (*Install, error) {
+func (m *Manager) launch(clusterID, module, vip, password string, p InstallParams, manual, airgap bool, warnings []string, op string, buildPlan func() []plannedStep) (*Install, error) {
 	k := key(clusterID, module)
 
 	in := &Install{
@@ -168,6 +168,7 @@ func (m *Manager) launch(clusterID, module, vip, password string, p InstallParam
 		StartedAt:      time.Now().UTC().Format(time.RFC3339),
 		Manual:         manual,
 		SimulateAirgap: airgap,
+		Warnings:       warnings,
 		Params:         p,
 		Current:        0,
 		State:          "running",
@@ -481,6 +482,9 @@ func cliFailureMarker(output string) string {
 
 // preflight verifies reachability, framework freshness, and artifact presence.
 func (m *Manager) preflight(ctx context.Context, client clusterssh.Client, in *Install, plan []plannedStep, onLine func(string)) error {
+	for _, w := range in.Warnings {
+		onLine("⚠ " + w)
+	}
 	onLine("Checking cluster reachability…")
 	if err := client.Run(ctx, "cubectl node exec -p 'hostname'", onLine); err != nil {
 		return err
