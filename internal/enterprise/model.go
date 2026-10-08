@@ -92,6 +92,7 @@ type Install struct {
 	State          string // "running" | "done" | "error"
 	Portal         string
 	Warnings       []string
+	Manifest       string // matched manifest name
 }
 
 // plannedStep is the executable form of a step (not persisted; rebuilt from params).
