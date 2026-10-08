@@ -1,0 +1,61 @@
+name: Release
+
+# The ghcr image for a tag is published by cd-oci.yml; this attaches the
+# offline assets (binaries, image tarball, checksums) to a GitHub release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Check tag is on develop
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/develop
+
+      - name: Build image
+        run: |
+          docker build --build-arg VERSION="$GITHUB_REF_NAME" \
+            -t "cube-cos-driver:$GITHUB_REF_NAME" .
+
+      - name: Collect assets
+        run: |
+          T="$GITHUB_REF_NAME"
+          mkdir dist
+          cid=$(docker create "cube-cos-driver:$T")
+          docker cp "$cid:/usr/local/bin/cube-cos-driver" "dist/cube-cos-driver-$T-linux-amd64"
+          docker cp "$cid:/usr/local/bin/phone-home-agent" "dist/phone-home-agent-$T-linux-amd64"
+          docker rm "$cid"
+          docker save "cube-cos-driver:$T" | gzip > "dist/cube-cos-driver-$T.image.tar.gz"
+          (cd dist && sha256sum * > SHA256SUMS)
+
+      - name: Support matrix notes
+        run: |
+          {
+            echo "## Support matrix"
+            echo
+            echo "| CubeCOS | Module | Version | Status |"
+            echo "|---|---|---|---|"
+            jq -r '.match.version as $v | .modules | to_entries[] | .key as $m
+                   | .value[] | "| \($v) | \($m) | \(.version) | \(.status) |"' \
+              internal/enterprise/manifests/*.json
+            echo
+            echo "Image: \`ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF_NAME#v}\` (offline: \`docker load < cube-cos-driver-${GITHUB_REF_NAME}.image.tar.gz\`)"
+          } > notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pre=""
+          case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* $pre \
+            --title "$GITHUB_REF_NAME" --generate-notes --notes-file notes.md
