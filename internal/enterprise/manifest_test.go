@@ -123,4 +123,7 @@ func TestLoadManifests_IncludesEmbedded(t *testing.T) {
 	if len(got) != len(want) {
 		t.Fatalf("LoadManifests on an empty data dir = %d, want the %d embedded", len(got), len(want))
 	}
+	if FindManifest(got, "v3.2.0") == nil {
+		t.Fatal("generated v3.2.0 manifest is not embedded")
+	}
 }

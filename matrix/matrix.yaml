@@ -1,0 +1,10 @@
+# CubeCOS release -> allowed App-Framework app versions. Versions are MAJOR.MINOR.PATCH (build tag ignored).
+# status: supported | untested | deprecated | blocked  (deprecated/blocked need reason)
+# upgrade-hop releases (3.1.0 -> 3.2.0): never installed fresh, so no manifest
+intermediate: ["3.1.10", "3.1.20"]
+releases:
+  "3.2.0":
+    cmp:
+      - { version: "2.1.1", status: supported }
+    advisor:
+      - { version: "0.4.25", status: untested }
