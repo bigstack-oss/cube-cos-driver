@@ -1,6 +1,7 @@
 package enterprise
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -53,5 +54,36 @@ func TestManifest_AppfwOSImage(t *testing.T) {
 	m := FindManifest(LoadManifests(root), "v3.2.0")
 	if m == nil || m.Appfw == nil || m.Appfw.OSImage != "rancher-cluster-image-rke2-v1.32.4" {
 		t.Fatalf("appfw.osImage not decoded: %+v", m)
+	}
+}
+
+func TestManifest_V2RoundTrip(t *testing.T) {
+	raw := `{"schema":2,"name":"v3.2.0","match":{"version":"3.2.0"},
+	 "appfw":{"extpack":{"file":"CUBE_3.2.0_x_.ext"},"osImage":"rancher-cluster-image-rke2-v1.32.4"},
+	 "trust":{"advisorReleaseKey":{"p384":"-----BEGIN PUBLIC KEY-----\nX\n-----END PUBLIC KEY-----\n","mldsa87":"Y"}},
+	 "modules":{"cmp":[{"version":"2.1.1","status":"supported"}],
+	  "advisor":[{"version":"0.4.25","status":"untested"}]}}`
+	var m Manifest
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Schema != 2 || m.Appfw.Extpack.File != "CUBE_3.2.0_x_.ext" || m.Appfw.OSImage == "" {
+		t.Fatalf("appfw not decoded: %+v", m.Appfw)
+	}
+	if m.Trust.AdvisorReleaseKey.MLDSA87 != "Y" {
+		t.Fatalf("trust not decoded: %+v", m.Trust)
+	}
+	if got := m.Modules["cmp"][0]; got.Version != "2.1.1" || got.Status != "supported" {
+		t.Fatalf("cmp entry: %+v", got)
+	}
+}
+
+func TestManifest_V1HasNoModules(t *testing.T) {
+	var m Manifest
+	if err := json.Unmarshal([]byte(`{"name":"v3.1.20","match":{"version":"3.1.20"}}`), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Schema != 0 || m.Modules != nil || m.Trust != nil {
+		t.Fatalf("v1 manifest grew v2 fields: %+v", m)
 	}
 }

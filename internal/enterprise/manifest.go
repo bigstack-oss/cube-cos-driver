@@ -8,6 +8,36 @@ import (
 	"strings"
 )
 
+// ModuleEntry describes the version and status of an enterprise module.
+type ModuleEntry struct {
+	Version string `json:"version" yaml:"version"`
+	Status  string `json:"status" yaml:"status"`
+	Reason  string `json:"reason,omitempty" yaml:"reason,omitempty"`
+	Link    string `json:"link,omitempty" yaml:"link,omitempty"`
+}
+
+// Extpack describes an extpack file reference.
+type Extpack struct {
+	File string `json:"file" yaml:"file"`
+}
+
+// Appfw describes the appfw metadata including extpack and OS image.
+type Appfw struct {
+	Extpack *Extpack `json:"extpack,omitempty" yaml:"extpack,omitempty"`
+	OSImage string   `json:"osImage,omitempty" yaml:"osImage,omitempty"`
+}
+
+// TrustKey holds PEM-encoded public keys for signature verification.
+type TrustKey struct {
+	P384    string `json:"p384" yaml:"p384"`
+	MLDSA87 string `json:"mldsa87" yaml:"mldsa87"`
+}
+
+// Trust describes the trusted keys for module verification.
+type Trust struct {
+	AdvisorReleaseKey *TrustKey `json:"advisorReleaseKey,omitempty" yaml:"advisorReleaseKey,omitempty"`
+}
+
 // Manifest describes the version-specific install settings for a CubeCOS
 // release (which appctl to deploy, import args, air-gap support). Manifests
 // live as JSON under <DataDir>/enterprise/manifests/.
@@ -24,15 +54,16 @@ type Manifest struct {
 	AirgapSupported *bool `json:"airgapSupported"`
 	// Appfw names what the release's extpack carries; OSImage is the rancher
 	// glance image framework_create uses when the images come from the extpack.
-	Appfw *struct {
-		OSImage string `json:"osImage"`
-	} `json:"appfw,omitempty"`
+	Appfw *Appfw `json:"appfw,omitempty"`
 	Import struct {
 		Tenant         string `json:"tenant"`
 		Visibility     string `json:"visibility"`
 		StorageBackend string `json:"storageBackend"`
 		OS             string `json:"os"`
 	} `json:"import"`
+	Schema  int                      `json:"schema,omitempty" yaml:"schema,omitempty"`
+	Trust   *Trust                   `json:"trust,omitempty" yaml:"trust,omitempty"`
+	Modules map[string][]ModuleEntry `json:"modules,omitempty" yaml:"modules,omitempty"`
 }
 
 // importOrDefault fills unset import fields with the CubeCOS conventions.
