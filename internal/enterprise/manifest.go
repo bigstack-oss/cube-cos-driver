@@ -1,9 +1,12 @@
 package enterprise
 
 import (
+	"embed"
 	"encoding/json"
+	"io/fs"
 	"os"
-	"path/filepath"
+	"path"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -87,11 +90,16 @@ func (m *Manifest) importDefaults() (tenant, visibility, storage, osName string)
 	return
 }
 
-// LoadManifests reads every manifest JSON under <root>/manifests/. root is the
-// configurable enterprise images folder.
+//go:embed all:manifests
+var embeddedManifests embed.FS
+
+// LoadManifests returns the embedded manifests, overridden by name from <root>/manifests/.
 func LoadManifests(root string) []Manifest {
-	dir := filepath.Join(root, "manifests")
-	entries, err := os.ReadDir(dir)
+	return mergeManifests(loadDir(embeddedManifests, "manifests"), loadDir(os.DirFS(root), "manifests"))
+}
+
+func loadDir(fsys fs.FS, dir string) []Manifest {
+	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
 		return nil
 	}
@@ -100,7 +108,7 @@ func LoadManifests(root string) []Manifest {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		raw, err := fs.ReadFile(fsys, path.Join(dir, e.Name()))
 		if err != nil {
 			continue
 		}
@@ -109,6 +117,22 @@ func LoadManifests(root string) []Manifest {
 			out = append(out, m)
 		}
 	}
+	return out
+}
+
+func mergeManifests(base, override []Manifest) []Manifest {
+	byName := map[string]Manifest{}
+	for _, m := range base {
+		byName[m.Name] = m
+	}
+	for _, m := range override {
+		byName[m.Name] = m
+	}
+	out := make([]Manifest, 0, len(byName))
+	for _, m := range byName {
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
