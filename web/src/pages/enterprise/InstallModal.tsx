@@ -332,7 +332,7 @@ export function InstallModal({
       const v = artifactVersion(mod, f)
       if (!v) continue
       const hit = entries.find((e) => e.version === v)
-      out[f] = `${v} · ${hit ? hit.status : 'not in matrix'}`
+      out[f] = `${v} · ${hit ? hit.status : 'not in matrix'} — ${f}`
     }
     return out
   }

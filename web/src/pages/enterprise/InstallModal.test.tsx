@@ -213,11 +213,57 @@ describe('InstallModal', () => {
     )
     await waitFor(() => expect(screen.getByText('sky-lab')).toBeTruthy())
     await user.selectOptions(screen.getByLabelText('Cluster'), 'aabbccddee01')
-    await waitFor(() => expect(screen.getByText('2.1.1 · supported')).toBeTruthy())
-    expect(screen.getByText('9.0.0 · not in matrix')).toBeTruthy()
+    await waitFor(() => expect(screen.getByText('2.1.1 · supported — cube-portal-2.1.1+rev4902.pigz')).toBeTruthy())
+    expect(screen.getByText('9.0.0 · not in matrix — cube-portal-9.0.0.pigz')).toBeTruthy()
+  })
+
+  it('keeps two builds of one version distinguishable', async () => {
+    const user = userEvent.setup()
+    stubFetch(
+      { AppFW: [], CMP: ['cube-portal-2.1.1+rev4902.pigz', 'cube-portal-2.1.1+rev4950.pigz'], Advisor: [] },
+      { manifest: 'v3.2.0', manifests: ['v3.2.0'] },
+      [{ name: 'v3.2.0', match: { version: '3.2.0' }, modules: { cmp: [{ version: '2.1.1', status: 'supported' }] } }],
+    )
+    render(
+      <MemoryRouter>
+        <InstallModal module="cmp" onClose={vi.fn()} />
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(screen.getByText('sky-lab')).toBeTruthy())
+    await user.selectOptions(screen.getByLabelText('Cluster'), 'aabbccddee01')
+    await waitFor(() => expect(screen.getByText('2.1.1 · supported — cube-portal-2.1.1+rev4902.pigz')).toBeTruthy())
+    expect(screen.getByText('2.1.1 · supported — cube-portal-2.1.1+rev4950.pigz')).toBeTruthy()
   })
 
   it('sends lab when the lab checkbox is ticked', async () => {
+    const user = userEvent.setup()
+    stubFetch()
+    render(
+      <MemoryRouter>
+        <InstallModal module="cmp" onClose={vi.fn()} />
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(screen.getByText('sky-lab')).toBeTruthy())
+    await user.selectOptions(screen.getByLabelText('Cluster'), 'aabbccddee01')
+    await user.type(screen.getByLabelText('LB IP'), '10.32.36.120')
+    await waitFor(() => expect(screen.getByText('rancher-cluster-image-rke2-v1.32.4.raw')).toBeTruthy())
+    await user.selectOptions(screen.getByLabelText('OS image'), 'rancher-cluster-image-rke2-v1.32.4.raw')
+    await user.selectOptions(screen.getByLabelText('.pigz package'), 'cube-portal-2.1.0.pigz')
+    const postedBody = () => {
+      const posted = fetchMock.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).endsWith('/enterprise/install') &&
+          (c[1] as RequestInit | undefined)?.method === 'POST',
+      )
+      return posted ? JSON.parse((posted[1] as RequestInit).body as string) : null
+    }
+    await user.click(screen.getByLabelText(/Lab install/))
+    await user.click(screen.getByLabelText(/Lab install/))
+    await user.click(screen.getByRole('button', { name: 'Install' }))
+    await waitFor(() => expect(postedBody()).toBeTruthy())
+    expect('lab' in postedBody()).toBe(false)
+  })
+
+  it('sends lab=true when ticked', async () => {
     const user = userEvent.setup()
     stubFetch()
     render(

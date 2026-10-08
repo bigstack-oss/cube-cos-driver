@@ -27,4 +27,19 @@ describe('SupportMatrix', () => {
     expect(screen.getByText('3.1.0')).toBeTruthy()
     expect(screen.getAllByText('not constrained').length).toBeGreaterThan(0)
   })
+
+  it('shows a blocked entry reason in the chip title', () => {
+    render(
+      <SupportMatrix
+        manifests={[
+          {
+            name: 'v3.2.0',
+            match: { version: '3.2.0' },
+            modules: { cmp: [{ version: '1.0.0', status: 'blocked', reason: 'CVE-1234 breaks login' }] },
+          },
+        ]}
+      />,
+    )
+    expect(screen.getByText('blocked').closest('[title]')?.getAttribute('title')).toContain('CVE-1234 breaks login')
+  })
 })
