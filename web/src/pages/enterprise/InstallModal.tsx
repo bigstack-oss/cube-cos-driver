@@ -295,6 +295,7 @@ export function InstallModal({
         if (!info.airgapSupported) setAirgap(false)
         setSuggestedLbIp(info.suggestedLBIP)
         setSuggestedStorage(info.suggestedStorage)
+        setAdvisorLbIp(info.suggestedAdvisorLBIP ?? '')
         setAdvisorPool((info.suggestedAdvisorPool ?? []).join(','))
         setVersion(info.version)
         setManifestOpts(info.manifests)
@@ -560,7 +561,7 @@ export function InstallModal({
               <Field
                 label="Advisor LB IP"
                 value={advisorLbIp}
-                placeholder="e.g. 10.32.1.121"
+                placeholder="a free address outside the web-console addresses"
                 onChange={setAdvisorLbIp}
               />
               <Field

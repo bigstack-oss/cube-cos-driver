@@ -1175,3 +1175,200 @@ func TestPreflight_UnreadableClusterVersionFails(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckAdvisorAddrs(t *testing.T) {
+	cases := []struct {
+		name string
+		p    InstallParams
+		want string // substring of the error; "" = no error
+	}{
+		{"distinct", InstallParams{LBIP: "10.0.0.1", AdvisorLBIP: "10.0.0.9", AdvisorPool: []string{"10.0.0.10", "10.0.0.11"}}, ""},
+		{"no pool", InstallParams{AdvisorLBIP: "10.0.0.9"}, ""},
+		{"lb in pool", InstallParams{AdvisorLBIP: "10.0.0.9", AdvisorPool: []string{"10.0.0.10", "10.0.0.9"}}, "also in the web-console pool"},
+		{"pool duplicate", InstallParams{AdvisorLBIP: "10.0.0.9", AdvisorPool: []string{"10.0.0.10", "10.0.0.10"}}, "listed twice"},
+		{"lb is framework lb", InstallParams{LBIP: "10.0.0.9", AdvisorLBIP: "10.0.0.9"}, "app-framework's LB IP"},
+		{"pool has framework lb", InstallParams{LBIP: "10.0.0.1", AdvisorLBIP: "10.0.0.9", AdvisorPool: []string{"10.0.0.1"}}, "app-framework's LB IP"},
+		{"lb not an ip", InstallParams{AdvisorLBIP: "10.0.0.9; reboot"}, "not an IP address"},
+		{"pool not an ip", InstallParams{AdvisorLBIP: "10.0.0.9", AdvisorPool: []string{"x"}}, "not an IP address"},
+	}
+	for _, c := range cases {
+		err := checkAdvisorAddrs(c.p)
+		switch {
+		case c.want == "" && err != nil:
+			t.Errorf("%s: unexpected error %v", c.name, err)
+		case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
+			t.Errorf("%s: err = %v, want %q", c.name, err, c.want)
+		}
+	}
+}
+
+func TestSuggestAddrs(t *testing.T) {
+	free := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5"}
+	cases := []struct {
+		name           string
+		fwLB, ownLB    string
+		ownConsole     []string
+		wantFW, wantLB string
+		wantConsole    []string
+	}{
+		{"fresh cluster", "", "", nil, "10.0.0.1", "10.0.0.2", []string{"10.0.0.3", "10.0.0.4"}},
+		{"framework present", "10.0.0.100", "", nil, "10.0.0.100", "10.0.0.1", []string{"10.0.0.2", "10.0.0.3"}},
+		{"advisor present", "10.0.0.100", "10.0.0.50", []string{"10.0.0.51", "10.0.0.52"}, "10.0.0.100", "10.0.0.50", []string{"10.0.0.51", "10.0.0.52"}},
+		{"advisor without console", "10.0.0.100", "10.0.0.50", nil, "10.0.0.100", "10.0.0.50", []string{"10.0.0.1", "10.0.0.2"}},
+	}
+	for _, c := range cases {
+		fw, lb, con := suggestAddrs(free, c.fwLB, c.ownLB, c.ownConsole, 2)
+		if fw != c.wantFW || lb != c.wantLB || strings.Join(con, ",") != strings.Join(c.wantConsole, ",") {
+			t.Errorf("%s: got %q %q %v, want %q %q %v", c.name, fw, lb, con, c.wantFW, c.wantLB, c.wantConsole)
+		}
+		if sliceHas(con, lb) || sliceHas(con, fw) || (lb != "" && lb == fw) {
+			t.Errorf("%s: suggestions overlap: %q %q %v", c.name, fw, lb, con)
+		}
+	}
+	// Too few free addresses: the Advisor LB IP is filled before the pool.
+	fw, lb, con := suggestAddrs([]string{"10.0.0.2"}, "10.0.0.100", "", nil, 2)
+	if fw != "10.0.0.100" || lb != "10.0.0.2" || len(con) != 0 {
+		t.Errorf("short subnet: got %q %q %v", fw, lb, con)
+	}
+}
+
+func TestAdvisorLBAddrProbeScopesToTheFramework(t *testing.T) {
+	p := advisorLBAddrProbe("appfw")
+	if !strings.Contains(p, `'^kube_service_appfw_cube-advisor_cube-advisor$'`) {
+		t.Errorf("probe not scoped to the framework's advisor LB: %s", p)
+	}
+	if strings.Contains(advisorLBAddrProbe(""), "kube_service__") {
+		t.Errorf("empty framework must match any framework: %s", advisorLBAddrProbe(""))
+	}
+}
+
+// The Advisor LB IP goes through the same taken-probe as the pool.
+func TestPreflightRefusesATakenAdvisorLBIP(t *testing.T) {
+	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", func(cmd string) ([]string, error) {
+		if strings.Contains(cmd, "addr=10.0.0.9 ") {
+			return []string{"taken"}, nil
+		}
+		if strings.Contains(cmd, "addr=") {
+			return []string{"free"}, nil
+		}
+		return nil, nil
+	}))
+	m.Start("cl1", "advisor", "10.32.10.140", "pw", advisorParams(), false, false, nil)
+	waitState(t, m, "cl1", "advisor", "error")
+	in, _ := m.Status("cl1", "advisor")
+	if !strings.Contains(in.Steps[0].Err, "Advisor LB IP 10.0.0.9 is already in use") {
+		t.Fatalf("preflight Err = %q, want it to name the taken Advisor LB IP", in.Steps[0].Err)
+	}
+}
+
+// An upgrade keeps the advisor's own LB IP, which its LB already holds.
+func TestPreflightSkipsTheAdvisorsOwnLBIP(t *testing.T) {
+	var probed bool
+	var mu sync.Mutex
+	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", func(cmd string) ([]string, error) {
+		if strings.Contains(cmd, "_cube-advisor_cube-advisor") {
+			return []string{"vip 192.168.0.5", "fip 10.0.0.9"}, nil
+		}
+		if strings.Contains(cmd, "addr=10.0.0.9 ") {
+			mu.Lock()
+			probed = true
+			mu.Unlock()
+			return []string{"taken"}, nil
+		}
+		return nil, nil
+	}))
+	m.Start("cl1", "advisor", "10.32.10.140", "pw", advisorParams(), false, false, nil)
+	waitState(t, m, "cl1", "advisor", "done")
+	mu.Lock()
+	defer mu.Unlock()
+	if probed {
+		t.Fatal("preflight probed the advisor's own LB IP")
+	}
+}
+
+func TestPreflightRefusesAdvisorLBIPInThePool(t *testing.T) {
+	m, _ := newTestMgr(t, frameworkActiveAfterCreate("appfw", nil))
+	p := advisorParams()
+	p.AdvisorPool = []string{"10.0.0.10", "10.0.0.9"}
+	m.Start("cl1", "advisor", "10.32.10.140", "pw", p, false, false, nil)
+	waitState(t, m, "cl1", "advisor", "error")
+	in, _ := m.Status("cl1", "advisor")
+	if !strings.Contains(in.Steps[0].Err, "also in the web-console pool") {
+		t.Fatalf("preflight Err = %q", in.Steps[0].Err)
+	}
+}
+
+// With App-Framework present, Introspect still keeps one free address for the
+// Advisor LB IP instead of handing every one to the pool.
+func TestIntrospectSuggestsAnAdvisorLBIP(t *testing.T) {
+	m, _ := newTestMgr(t, func(cmd string) ([]string, error) {
+		switch {
+		case strings.Contains(cmd, ".registry.cubecos.com"):
+			return []string{"10.0.0.100"}, nil
+		case strings.Contains(cmd, "allocation_pools"):
+			return []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5"}, nil
+		}
+		return nil, nil
+	})
+	q, err := m.Introspect("10.32.10.140", "pw", "appfw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.SuggestedLBIP != "10.0.0.100" || q.SuggestedAdvisorLBIP != "10.0.0.1" {
+		t.Fatalf("SuggestedLBIP=%q SuggestedAdvisorLBIP=%q", q.SuggestedLBIP, q.SuggestedAdvisorLBIP)
+	}
+	if sliceHas(q.SuggestedAdvisorPool, q.SuggestedAdvisorLBIP) || len(q.SuggestedAdvisorPool) == 0 {
+		t.Fatalf("pool %v must be non-empty and exclude %q", q.SuggestedAdvisorPool, q.SuggestedAdvisorLBIP)
+	}
+}
+
+func TestParseOwnLBAddrs(t *testing.T) {
+	cases := []struct {
+		name      string
+		lines     []string
+		wantAll   string
+		wantGiven string
+	}{
+		{"vip and fip", []string{"vip 192.168.1.49", "fip 10.32.45.103"}, "192.168.1.49,10.32.45.103", "10.32.45.103"},
+		{"vip only", []string{"vip 10.32.45.103"}, "10.32.45.103", "10.32.45.103"},
+		{"none", nil, "", ""},
+	}
+	for _, c := range cases {
+		all, given := parseOwnLBAddrs(c.lines)
+		if strings.Join(all, ",") != c.wantAll || given != c.wantGiven {
+			t.Errorf("%s: got %v %q, want %q %q", c.name, all, given, c.wantAll, c.wantGiven)
+		}
+	}
+}
+
+// An installed advisor's LB has an internal VIP and the floating IP it was
+// installed on; the form keeps the floating IP, not the VIP (cube4510).
+func TestIntrospectKeepsTheAdvisorsFloatingIP(t *testing.T) {
+	m, _ := newTestMgr(t, func(cmd string) ([]string, error) {
+		switch {
+		case strings.Contains(cmd, "_cube-advisor_cube-advisor"):
+			return []string{"vip 192.168.1.49", "fip 10.32.45.103"}, nil
+		case strings.Contains(cmd, ".registry.cubecos.com"):
+			return []string{"10.32.45.102"}, nil
+		case strings.Contains(cmd, "allocation_pools"):
+			return []string{"10.32.45.104", "10.32.45.105", "10.32.45.106"}, nil
+		}
+		return nil, nil
+	})
+	q, err := m.Introspect("10.32.10.140", "pw", "appfw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.SuggestedAdvisorLBIP != "10.32.45.103" {
+		t.Fatalf("SuggestedAdvisorLBIP = %q, want the floating IP", q.SuggestedAdvisorLBIP)
+	}
+}
+
+func TestAdvisorLBAddrProbeLabelsVIPAndFIP(t *testing.T) {
+	p := advisorLBAddrProbe("appfw")
+	for _, want := range []string{`echo "vip $a"`, `--port "$p"`, `sed 's/^/fip /'`} {
+		if !strings.Contains(p, want) {
+			t.Errorf("probe lacks %s: %s", want, p)
+		}
+	}
+}
