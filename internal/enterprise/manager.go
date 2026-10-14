@@ -450,7 +450,7 @@ func (m *Manager) execStep(ctx context.Context, k string, client clusterssh.Clie
 		if in.Op != "uninstall" {
 			switch in.Module {
 			case ModuleAdvisor:
-				in.Portal = "http://" + in.Params.AdvisorLBIP + "/"
+				in.Portal = advisorBaseURL(in.Params) + "/"
 			default:
 				in.Portal = "https://" + in.Params.LBIP + "/portal"
 			}

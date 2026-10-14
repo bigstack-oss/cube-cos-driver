@@ -45,7 +45,7 @@ type InstallParams struct {
 	AdvisorPool []string
 	// AdvisorBaseURL is the origin a browser reaches the advisor on, which the
 	// service uses to build its OAuth redirect_uri. Defaults to
-	// http://<AdvisorLBIP>/ when empty.
+	// https://<AdvisorLBIP> when empty.
 	//
 	// It is a separate field from AdvisorLBIP because the two genuinely differ
 	// whenever the advisor is not reached at its LoadBalancer address directly:

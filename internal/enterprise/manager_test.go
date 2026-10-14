@@ -168,8 +168,8 @@ func TestManager_Advisor_ExistingActiveFramework_SkipsCreate(t *testing.T) {
 	if stepState(in, "install_advisor") != "done" {
 		t.Fatalf("install_advisor should be done, got %s", stepState(in, "install_advisor"))
 	}
-	if in.Portal != "http://10.0.0.9/" {
-		t.Fatalf("Portal = %q, want http://10.0.0.9/", in.Portal)
+	if in.Portal != "https://10.0.0.9/" {
+		t.Fatalf("Portal = %q, want https://10.0.0.9/", in.Portal)
 	}
 }
 
