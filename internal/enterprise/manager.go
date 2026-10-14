@@ -1356,11 +1356,11 @@ type ClusterQuery struct {
 }
 
 // advisorPoolSize is how many free addresses the advisor install is offered:
-// its own service IP, plus one per distinct upstream its web console reaches.
-// The floor is 3 (advisor + the app-framework ingress carrying CMP and its
-// Keycloak + the node's own dashboard); the rest is headroom, which is worth
-// more than it looks because every address becomes a certificate SAN.
-const advisorPoolSize = 5
+// its own service IP, plus one per web-console origin install-advisor.sh
+// wires (the app-framework ingress carrying CMP and its Keycloak, and the
+// node's own dashboard). No spares: the script wires only those origins and
+// certifies only wired addresses, so a spare would be unused.
+const advisorPoolSize = 3
 
 // lbIPPoolProbe returns up to N FREE IPs in the "public" network's allocation
 // pool, newline-separated and fewer than asked for if the pool cannot supply
