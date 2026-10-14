@@ -160,18 +160,31 @@ fi
 # reason the passwords are: rotating it would make every browser that has
 # accepted this advisor challenge it again after a routine upgrade.
 #
-# Every console origin address is a SAN too. advisor-api refuses to enable the
-# web console when its certificate does not cover an origin, naming the
-# uncovered one -- so an address left out here is a console that does not
-# start. A *reused* certificate predates any address added since it was issued,
-# which is why the pool is asked for whole up front and why a reuse that does
-# not cover it is refused below rather than quietly installed.
+# Every wired console origin address is a SAN too. advisor-api refuses to
+# enable the web console when its certificate does not cover an origin, naming
+# the uncovered one -- so an address left out here is a console that does not
+# start. Only wired ones: a SAN with no origin behind it is an address the
+# cluster still sees as free. A *reused* certificate predates any address added
+# since it was issued, so a reuse that does not cover them is refused below
+# rather than quietly installed.
+#
+# WIRED follows the origins section below: the CMP origin (when the framework
+# has an ingress) and then the CubeCOS one, from the front of the pool.
 SANS="IP:${ADVISOR_LB_IP}"
-POOL_ADDRS=()
+POOL_ADDRS=(); WIRED=(); INGRESS=""
 if [ -n "$CONSOLE_POOL" ]; then
   IFS=, read -ra POOL_ADDRS <<< "$CONSOLE_POOL"
-  for a in "${POOL_ADDRS[@]}"; do
-    [ -n "$a" ] && SANS="$SANS,IP:$a"
+fi
+if [ "${#POOL_ADDRS[@]}" -ge 2 ]; then
+  INGRESS="$($K get svc --all-namespaces --field-selector metadata.name=ingress-lb \
+             -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}' 2>/dev/null)"
+  if [ -n "$INGRESS" ]; then
+    WIRED=("${POOL_ADDRS[@]:0:2}")
+  else
+    WIRED=("${POOL_ADDRS[0]}")
+  fi
+  for a in "${WIRED[@]}"; do
+    SANS="$SANS,IP:$a"
   done
 fi
 
@@ -185,9 +198,8 @@ if [ ! -s "$TLSDIR/tls.crt" ] || [ ! -s "$TLSDIR/tls.key" ]; then
     -subj "/CN=${ADVISOR_LB_IP}" -addext "subjectAltName=${SANS}" \
     -keyout "$TLSDIR/tls.key" -out "$TLSDIR/tls.crt" 2>/dev/null \
     || fail "could not issue the advisor's TLS certificate"
-elif [ "${#POOL_ADDRS[@]}" -gt 0 ]; then
-  for a in "${POOL_ADDRS[@]}"; do
-    [ -n "$a" ] || continue
+elif [ "${#WIRED[@]}" -gt 0 ]; then
+  for a in "${WIRED[@]}"; do
     openssl x509 -in "$TLSDIR/tls.crt" -noout -text 2>/dev/null | grep -q "IP Address:$a\b" \
       || fail "the advisor's existing certificate does not cover console address $a — delete the cube-advisor-web-tls secret to reissue it (every browser that has accepted this advisor will challenge it once more)"
   done
@@ -261,8 +273,6 @@ fi
 # refuses to dial.
 WC_ARGS=()
 if [ "${#POOL_ADDRS[@]}" -ge 2 ]; then
-  INGRESS="$($K get svc --all-namespaces --field-selector metadata.name=ingress-lb \
-             -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}' 2>/dev/null)"
   WC_ARGS+=(--set webConsole.enabled=true --set webConsole.mode=address)
   n=0
   if [ -n "$INGRESS" ]; then
@@ -315,7 +325,10 @@ if [ "${#POOL_ADDRS[@]}" -ge 2 ]; then
   done
   # Nothing to tell the cluster about the origins: the Advisor reports them to
   # every agent on connect and each node applies them itself.
-  echo "web console enabled on ${#POOL_ADDRS[@]} origin address(es)."
+  if [ "${#POOL_ADDRS[@]}" -gt "${#WIRED[@]}" ]; then
+    echo "warning: console address(es) ${POOL_ADDRS[*]:${#WIRED[@]}} have no origin; left out of the certificate" >&2
+  fi
+  echo "web console enabled on ${#WIRED[@]} origin address(es): ${WIRED[*]}."
 elif [ -n "$CONSOLE_POOL" ]; then
   echo "warning: the console pool has fewer than 2 addresses; leaving the web console off" >&2
 fi

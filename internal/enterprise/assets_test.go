@@ -160,7 +160,7 @@ func TestAdvisorConsoleUsesTheNodesTargetNames(t *testing.T) {
 	}
 }
 
-// Every console origin address must be a SAN on the advisor's certificate:
+// Every wired console origin address must be a SAN on the advisor's certificate:
 // advisor-api refuses to enable the console when one is not covered, naming it.
 // Getting this wrong produces an install that succeeds and a console that never
 // starts.

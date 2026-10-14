@@ -1372,3 +1372,29 @@ func TestAdvisorLBAddrProbeLabelsVIPAndFIP(t *testing.T) {
 		}
 	}
 }
+
+// install-advisor.sh wires two console origins and certifies only those, so
+// the form offers exactly two console addresses: a spare would be unused.
+func TestIntrospectOffersOnlyTheWiredConsoleAddresses(t *testing.T) {
+	var asked string
+	m, _ := newTestMgr(t, func(cmd string) ([]string, error) {
+		switch {
+		case strings.Contains(cmd, ".registry.cubecos.com"):
+			return []string{"10.0.0.100"}, nil
+		case strings.Contains(cmd, "allocation_pools"):
+			asked = cmd
+			return []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5"}, nil
+		}
+		return nil, nil
+	})
+	q, err := m.Introspect("10.32.10.140", "pw", "appfw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(q.SuggestedAdvisorPool, ","); got != "10.0.0.2,10.0.0.3" {
+		t.Errorf("SuggestedAdvisorPool = %q, want the two wired origins", got)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(asked), `"3"`) {
+		t.Errorf("pool probe should ask for the advisor LB plus two origins: %s", asked[len(asked)-20:])
+	}
+}
