@@ -698,6 +698,12 @@ func runSetReady(ctx context.Context, srv, cluster, host string, poll time.Durat
 		cmd.Stdin = strings.NewReader("no\n")
 	}
 	out, err := cmd.CombinedOutput()
+	// hex_cli -c exits 0 even when set_ready aborts; trust the readiness markers instead.
+	if err == nil {
+		if rout, rerr := exec.CommandContext(ctx, "hex_sdk", "cube_cluster_ready").CombinedOutput(); rerr != nil {
+			err = fmt.Errorf("cluster not ready after set_ready: %v %s", rerr, strings.TrimSpace(string(rout)))
+		}
+	}
 	// Report OOB first: mgmt has left the flat L2, so the POST may not land.
 	if err != nil {
 		log.Printf("set_ready: %v: %s", err, strings.TrimSpace(string(out)))
