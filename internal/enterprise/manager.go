@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -609,6 +611,31 @@ func (m *Manager) preflight(ctx context.Context, client clusterssh.Client, in *I
 		}
 	}
 
+	// The advisor's own LB IP: well-formed, distinct from the pool, and free
+	// unless this advisor already holds it.
+	if in.Module == ModuleAdvisor && in.Op != "uninstall" {
+		if err := checkAdvisorAddrs(in.Params); err != nil {
+			return err
+		}
+		if addr := in.Params.AdvisorLBIP; addr != "" {
+			fw := in.Params.Framework
+			if fw == "" {
+				fw = in.Params.Project
+			}
+			var lines []string
+			_ = client.Run(ctx, advisorLBAddrProbe(fw), func(l string) { lines = append(lines, l) })
+			own, _ := parseOwnLBAddrs(lines)
+			if sliceHas(own, addr) {
+				onLine(fmt.Sprintf("Advisor LB IP %s is already this advisor's own — not probing it.", addr))
+			} else {
+				onLine(fmt.Sprintf("Checking Advisor LB IP %s is free…", addr))
+				if probeTaken(ctx, client, addr) {
+					return fmt.Errorf("Advisor LB IP %s is already in use (a port or floating IP on this cluster holds it, or it answers ARP on the provider network) — pick a free address in the external range", addr)
+				}
+			}
+		}
+	}
+
 	// Every console origin address, checked the same way and for the same
 	// reason as the framework's LB IP. These are worth failing on early: the
 	// addresses become SANs on a certificate issued during the install, so an
@@ -639,15 +666,8 @@ func (m *Manager) preflight(ctx context.Context, client clusterssh.Client, in *I
 			continue
 		}
 		onLine(fmt.Sprintf("Checking web-console address %s is free…", addr))
-		var taken []string
-		probe := fmt.Sprintf(lbIPTakenProbe, addr)
-		if err := client.Run(ctx, probe, func(l string) { taken = append(taken, strings.TrimSpace(l)) }); err != nil {
-			continue
-		}
-		for _, l := range taken {
-			if l == "taken" {
-				return fmt.Errorf("web-console address %s is already in use (a port or floating IP on this cluster holds it, or it answers ARP on the provider network) — pick a free address in the external range", addr)
-			}
+		if probeTaken(ctx, client, addr) {
+			return fmt.Errorf("web-console address %s is already in use (a port or floating IP on this cluster holds it, or it answers ARP on the provider network) — pick a free address in the external range", addr)
 		}
 	}
 
@@ -705,6 +725,46 @@ func (m *Manager) preflight(ctx context.Context, client clusterssh.Client, in *I
 		onLine(fmt.Sprintf("  ✓ %s (%s)", name, humanSize(fi.Size())))
 	}
 	onLine("Preflight checks passed.")
+	return nil
+}
+
+// probeTaken runs lbIPTakenProbe for addr; a failed probe counts as free.
+func probeTaken(ctx context.Context, client clusterssh.Client, addr string) bool {
+	var out []string
+	if err := client.Run(ctx, fmt.Sprintf(lbIPTakenProbe, addr), func(l string) { out = append(out, strings.TrimSpace(l)) }); err != nil {
+		return false
+	}
+	return sliceHas(out, "taken")
+}
+
+// checkAdvisorAddrs refuses malformed, duplicate or overlapping advisor
+// addresses: the Advisor LB IP, the web-console pool and the framework LB IP.
+func checkAdvisorAddrs(p InstallParams) error {
+	if p.AdvisorLBIP != "" && net.ParseIP(p.AdvisorLBIP) == nil {
+		return fmt.Errorf("Advisor LB IP %q is not an IP address", p.AdvisorLBIP)
+	}
+	seen := map[string]bool{}
+	for _, a := range p.AdvisorPool {
+		if a == "" {
+			continue
+		}
+		if net.ParseIP(a) == nil {
+			return fmt.Errorf("web-console address %q is not an IP address", a)
+		}
+		if a == p.AdvisorLBIP {
+			return fmt.Errorf("Advisor LB IP %s is also in the web-console pool — the advisor and each console origin need their own address", a)
+		}
+		if seen[a] {
+			return fmt.Errorf("web-console address %s is listed twice — each console origin needs its own address", a)
+		}
+		seen[a] = true
+	}
+	if p.LBIP != "" && p.LBIP == p.AdvisorLBIP {
+		return fmt.Errorf("Advisor LB IP %s is the app-framework's LB IP — pick a separate free address", p.LBIP)
+	}
+	if p.LBIP != "" && seen[p.LBIP] {
+		return fmt.Errorf("web-console address %s is the app-framework's LB IP — pick a separate free address", p.LBIP)
+	}
 	return nil
 }
 
@@ -1287,9 +1347,11 @@ type ClusterQuery struct {
 	Manifest         string   // auto-matched manifest name ("" if none)
 	ManifestOSImage  string   // the matched manifest's appfw.osImage, for extpack installs
 	Manifests        []string // available manifest names, for the version picker
-	// SuggestedAdvisorPool is free addresses for the advisor: its own service
-	// IP first, then one per web-console origin. Fewer than advisorPoolSize
-	// means the subnet could not supply them.
+	// SuggestedAdvisorLBIP is the advisor's own service IP: its current one
+	// on an upgrade, else a free address.
+	SuggestedAdvisorLBIP string
+	// SuggestedAdvisorPool is the web console's origin addresses, one per
+	// origin. Fewer than advisorPoolSize-1 means the subnet could not supply them.
 	SuggestedAdvisorPool []string
 }
 
@@ -1371,6 +1433,76 @@ const lbIPTakenProbe = `source /etc/admin-openrc.sh && addr=%s && { openstack po
 // Kubernetes for anything.
 const advisorConsoleAddrProbe = `source /etc/admin-openrc.sh && openstack loadbalancer list -f value -c name 2>/dev/null | sed -n 's/.*cube-advisor-web-\([0-9-]*\)$/\1/p' | tr '-' '.'`
 
+// advisorLBAddrProbe lists the addresses the advisor's own LB Service holds
+// on framework fw ("" = any framework), as "vip <addr>" for the Octavia VIP
+// and "fip <addr>" for each floating IP on the VIP port.
+func advisorLBAddrProbe(fw string) string {
+	name := ".*"
+	if fw != "" {
+		name = regexp.QuoteMeta(fw)
+	}
+	re := "^kube_service_" + name + "_cube-advisor_cube-advisor$"
+	return `source /etc/admin-openrc.sh && for v in $(openstack loadbalancer list -f json 2>/dev/null | jq -r --arg n ` + shellQuote(re) +
+		` '.[] | select(.name | test($n)) | .id'); do openstack loadbalancer show "$v" -f json 2>/dev/null | jq -r '"vip \(.vip_address) \(.vip_port_id)"' | while read -r _ a p; do echo "vip $a"; openstack floating ip list --port "$p" -f value -c "Floating IP Address" 2>/dev/null | sed 's/^/fip /'; done; done`
+}
+
+// parseOwnLBAddrs reads advisorLBAddrProbe output: every address it holds,
+// and the one the install was given (a floating IP, else the VIP).
+func parseOwnLBAddrs(lines []string) (all []string, given string) {
+	var vip string
+	for _, l := range lines {
+		f := strings.Fields(l)
+		if len(f) != 2 {
+			continue
+		}
+		all = append(all, f[1])
+		switch {
+		case f[0] == "fip" && given == "":
+			given = f[1]
+		case f[0] == "vip" && vip == "":
+			vip = f[1]
+		}
+	}
+	if given == "" {
+		given = vip
+	}
+	return all, given
+}
+
+// suggestAddrs splits free addresses into the install form's suggestions: the
+// framework LB IP (kept when the framework exists), then the Advisor LB IP
+// (kept when the advisor exists), then up to n web-console addresses (the
+// advisor's current ones when it has any).
+func suggestAddrs(free []string, fwLB, ownLB string, ownConsole []string, n int) (string, string, []string) {
+	var rest []string
+	for _, a := range free {
+		if a != fwLB && a != ownLB && !sliceHas(ownConsole, a) {
+			rest = append(rest, a)
+		}
+	}
+	take := func() string {
+		if len(rest) == 0 {
+			return ""
+		}
+		a := rest[0]
+		rest = rest[1:]
+		return a
+	}
+	if fwLB == "" {
+		fwLB = take()
+	}
+	if ownLB == "" {
+		ownLB = take()
+	}
+	if len(ownConsole) > 0 {
+		return fwLB, ownLB, ownConsole
+	}
+	if len(rest) > n {
+		rest = rest[:n]
+	}
+	return fwLB, ownLB, rest
+}
+
 // storageProbe reads the cluster's default cinder volume type (falling back to
 // the first type) — the storage_backend the image-import CLI validates against.
 const storageProbe = `source /etc/admin-openrc.sh && { openstack volume type list --default -f value -c Name 2>/dev/null; openstack volume type list -f value -c Name 2>/dev/null; } | grep -v '^$' | head -1`
@@ -1417,23 +1549,18 @@ func (m *Manager) Introspect(host, password, framework string) (ClusterQuery, er
 			q.SuggestedLBIP = ip[0]
 		}
 	}
-	// One probe for both answers. The framework's ingress may already exist (it
-	// is reused above), but the advisor's addresses never do, so the pool is
-	// asked for regardless and the suggestion falls out of its first entry.
-	pool, _ := sshList(c, fmt.Sprintf(lbIPPoolProbe, advisorPoolSize))
-	if q.SuggestedLBIP == "" && len(pool) > 0 {
-		q.SuggestedLBIP = pool[0]
+	// The advisor's current addresses are kept on an upgrade; anything missing
+	// comes from free addresses, the framework LB first, then the Advisor LB
+	// IP, then the web console's origins.
+	ownLB, _ := sshList(c, advisorLBAddrProbe(framework))
+	ownConsole, _ := sshList(c, advisorConsoleAddrProbe)
+	want := advisorPoolSize
+	if q.SuggestedLBIP == "" {
+		want++
 	}
-	// The advisor's own address plus one per upstream its console reaches.
-	// Offered whole: every address becomes a SAN on the advisor's serving
-	// certificate, so one added later means reissuing that certificate rather
-	// than editing a value.
-	if len(pool) > 0 {
-		q.SuggestedAdvisorPool = pool
-		if q.SuggestedLBIP != "" && len(pool) > 1 && pool[0] == q.SuggestedLBIP {
-			q.SuggestedAdvisorPool = pool[1:]
-		}
-	}
+	free, _ := sshList(c, fmt.Sprintf(lbIPPoolProbe, want))
+	_, own := parseOwnLBAddrs(ownLB)
+	q.SuggestedLBIP, q.SuggestedAdvisorLBIP, q.SuggestedAdvisorPool = suggestAddrs(free, q.SuggestedLBIP, own, ownConsole, advisorPoolSize-1)
 	// Default storage backend read from the cluster (not hardcoded).
 	if st, _ := sshList(c, storageProbe); len(st) > 0 {
 		q.SuggestedStorage = st[0]

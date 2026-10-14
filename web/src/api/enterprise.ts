@@ -248,6 +248,8 @@ export type ClusterInfo = {
   // the matched manifest's appfw.osImage: the rancher glance image an extpack carries
   manifestOSImage?: string
   suggestedAdvisorPool?: string[]
+  // the advisor's own LB IP: its current one, else a free address outside the pool
+  suggestedAdvisorLBIP?: string
   manifests: string[]
 }
 

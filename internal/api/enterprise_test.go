@@ -328,8 +328,10 @@ func TestClusterInfoReturnsTheAdvisorPool(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := body["suggestedAdvisorPool"]; !ok {
-		t.Fatalf("cluster-info has no suggestedAdvisorPool key; keys=%v", keysOf(body))
+	for _, k := range []string{"suggestedAdvisorPool", "suggestedAdvisorLBIP"} {
+		if _, ok := body[k]; !ok {
+			t.Fatalf("cluster-info has no %s key; keys=%v", k, keysOf(body))
+		}
 	}
 }
 
