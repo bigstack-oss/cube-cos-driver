@@ -404,4 +404,35 @@ describe('InstallModal', () => {
       expect(body.params.AppFile).toBe('')
     })
   })
+  it('disables the address fields while free addresses are detected', async () => {
+    const user = userEvent.setup()
+    stubFetch(artifacts, { suggestedAdvisorLBIP: '10.32.36.121' })
+    const stubbed = fetchMock.getMockImplementation()!
+    let release = () => {}
+    const gate = new Promise<void>((r) => (release = r))
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/enterprise/cluster-info')) await gate
+      return stubbed(url, init)
+    })
+
+    render(
+      <MemoryRouter>
+        <InstallModal module="advisor" onClose={vi.fn()} />
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(screen.getByText('sky-lab')).toBeTruthy())
+    await user.selectOptions(screen.getByLabelText('Cluster'), 'aabbccddee01')
+
+    const adv = screen.getByLabelText('Advisor LB IP') as HTMLInputElement
+    await waitFor(() => expect(adv.disabled).toBe(true))
+    expect(adv.placeholder).toBe('Detecting a free address…')
+    expect((screen.getByLabelText('LB IP') as HTMLInputElement).disabled).toBe(true)
+    expect(
+      (screen.getByLabelText('Web-console addresses') as HTMLInputElement).disabled,
+    ).toBe(true)
+
+    release()
+    await waitFor(() => expect(adv.disabled).toBe(false))
+    expect(adv.value).toBe('10.32.36.121')
+  })
 })

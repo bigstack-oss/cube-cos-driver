@@ -454,7 +454,7 @@ export function InstallModal({
           {infoLoading && (
             <span className="secondary-body5 flex items-center gap-x-2 text-functional-text-light">
               <span className="h-3 w-3 animate-spin rounded-full border-2 border-functional-border-divider border-t-primary" />
-              Reading the cluster&apos;s networks…
+              Reading the cluster&apos;s networks and detecting free addresses…
             </span>
           )}
           {manifestOpts.length > 0 && (
@@ -511,7 +511,12 @@ export function InstallModal({
           <Field
             label="LB IP"
             value={lbIp}
-            placeholder={suggestedLbIp || 'e.g. 10.32.1.120'}
+            placeholder={
+              infoLoading
+                ? 'Detecting a free address…'
+                : suggestedLbIp || 'e.g. 10.32.1.120'
+            }
+            disabled={infoLoading}
             tabFill={suggestedLbIp}
             onChange={setLbIp}
           />
@@ -561,13 +566,23 @@ export function InstallModal({
               <Field
                 label="Advisor LB IP"
                 value={advisorLbIp}
-                placeholder="a free address outside the web-console addresses"
+                placeholder={
+                  infoLoading
+                    ? 'Detecting a free address…'
+                    : 'a free address outside the web-console addresses'
+                }
+                disabled={infoLoading}
                 onChange={setAdvisorLbIp}
               />
               <Field
                 label="Web-console addresses"
                 value={advisorPool}
-                placeholder="free addresses, comma-separated — one per upstream (CMP, CubeCOS)"
+                placeholder={
+                  infoLoading
+                    ? 'Detecting free addresses…'
+                    : 'free addresses, comma-separated — one per upstream (CMP, CubeCOS)'
+                }
+                disabled={infoLoading}
                 onChange={setAdvisorPool}
               />
               <Field
