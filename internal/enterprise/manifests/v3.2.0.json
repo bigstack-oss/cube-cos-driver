@@ -29,8 +29,13 @@
   "modules": {
     "advisor": [
       {
-        "version": "0.4.26",
+        "version": "0.4.27",
         "status": "supported"
+      },
+      {
+        "version": "0.4.26",
+        "status": "deprecated",
+        "reason": "upgrading from an older agent sends tools the 0.4.26 agent no longer serves; fixed in 0.4.27"
       },
       {
         "version": "0.4.25",
