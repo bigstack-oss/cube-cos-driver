@@ -7,4 +7,5 @@ releases:
     cmp:
       - { version: "2.1.1", status: supported }
     advisor:
-      - { version: "0.4.25", status: supported }
+      - { version: "0.4.26", status: supported }
+      - { version: "0.4.25", status: deprecated, reason: "bundled agent has no read brokers; ADR 0019" }
