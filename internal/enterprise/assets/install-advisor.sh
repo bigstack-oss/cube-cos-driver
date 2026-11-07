@@ -511,4 +511,27 @@ if [ -s "$CONSOLEDIR/ca.key.pub" ]; then
   echo
 fi
 
+# --- every console origin got its load balancer ---
+# An origin whose LB never went ACTIVE (an amphora that found no host) is
+# configured but unreachable, so the install fails and names it.
+origin_lbs_pending() {
+  local a st
+  for a in "${WIRED[@]}"; do
+    st="$(openstack loadbalancer show "kube_service_${FRAMEWORK}_${NS}_cube-advisor-web-${a//[.:]/-}" \
+          -f value -c provisioning_status 2>/dev/null)"
+    [ "$st" = ACTIVE ] || echo "$a (${st:-no load balancer})"
+  done
+}
+if [ "${#WIRED[@]}" -gt 0 ]; then
+  pending=""
+  for i in $(seq 1 30); do
+    pending="$(origin_lbs_pending)"
+    [ -z "$pending" ] && break
+    [ $((i % 6)) -eq 0 ] && reap_error_lbs
+    sleep 10
+  done
+  [ -z "$pending" ] || fail "web-console origin(s) without a load balancer: $(echo $pending) — Octavia could not create the amphora (on a full cluster its worker log says 'No valid host'). The Advisor serves at https://${ADVISOR_LB_IP}/ but its console is half-configured; free compute capacity and run Install again"
+  echo "web-console origins: ${#WIRED[@]} load balancer(s) ACTIVE."
+fi
+
 echo "cube-advisor installed and verified: https://${ADVISOR_LB_IP}/"

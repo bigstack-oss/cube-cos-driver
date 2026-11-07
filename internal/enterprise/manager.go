@@ -671,6 +671,17 @@ func (m *Manager) preflight(ctx context.Context, client clusterssh.Client, in *I
 		}
 	}
 
+	if in.Module == ModuleAdvisor && in.Op != "uninstall" {
+		fw := in.Params.Framework
+		if fw == "" {
+			fw = in.Params.Project
+		}
+		onLine("Checking the cluster can host the Advisor's load balancers…")
+		if err := checkAmphoraCapacity(ctx, client, fw, in.Params, onLine); err != nil {
+			return err
+		}
+	}
+
 	// Every file the plan will push (images, appctl, the CMP .pigz) must exist
 	// and be non-empty — a 0-byte placeholder must fail here, not mid-install.
 	onLine("Verifying staged artifacts…")

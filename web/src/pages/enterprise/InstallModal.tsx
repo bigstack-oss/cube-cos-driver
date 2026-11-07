@@ -580,7 +580,7 @@ export function InstallModal({
                 placeholder={
                   infoLoading
                     ? 'Detecting free addresses…'
-                    : 'free addresses, comma-separated — one per upstream (CMP, CubeCOS)'
+                    : 'free addresses, comma-separated — one per upstream (CMP, CubeCOS); each is a load balancer, so an amphora VM'
                 }
                 disabled={infoLoading}
                 onChange={setAdvisorPool}
