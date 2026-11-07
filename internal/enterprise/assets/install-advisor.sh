@@ -155,6 +155,24 @@ else
   DBPW=$(openssl rand -hex 16); APPPW=$(openssl rand -hex 16)
 fi
 
+# The Advisor secrets key, which encrypts data it stores. Read back from
+# the live Secret (whoever minted it), minted here only when there is none, and
+# passed on every run so a re-run never rotates it.
+SKEYDIR="$(mktemp -d)"; TMPDIRS+=("$SKEYDIR")
+SKEY=""
+if $K -n "$NS" get secret cube-advisor-secrets >/dev/null 2>&1; then
+  SKEY_B64="$($K -n "$NS" get secret cube-advisor-secrets -o jsonpath='{.data.secretsKey}')" \
+    || fail "could not read secretsKey from cube-advisor-secrets — refusing to upgrade and rotate it"
+  SKEY="$(printf '%s' "$SKEY_B64" | base64 -d)"
+fi
+if [ -n "$SKEY" ]; then
+  echo "carrying the existing secrets key through the upgrade."
+else
+  SKEY="$(openssl rand -hex 32)" || fail "could not generate the secrets key"
+  echo "issued a secrets key for the Advisor."
+fi
+printf '%s' "$SKEY" > "$SKEYDIR/secrets.key"
+
 # A self-signed keypair for the LB address. SAN carries the IP: browsers
 # reject a certificate that only has a CN. Reused on re-run for the same
 # reason the passwords are: rotating it would make every browser that has
@@ -400,6 +418,7 @@ helm upgrade --install cube-advisor "oci://$RURL/$RPROJ/cube-advisor" --version 
   --set lbIP="$ADVISOR_LB_IP" \
   --set dbPassword="$DBPW" \
   --set appDbPassword="$APPPW" \
+  --set-file secretsKey="$SKEYDIR/secrets.key" \
   --set baseURL="$BASE_URL" \
   --set-file web.tls.cert="$TLSDIR/tls.crt" \
   --set-file web.tls.key="$TLSDIR/tls.key" \
