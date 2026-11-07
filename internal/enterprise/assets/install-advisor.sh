@@ -499,6 +499,42 @@ case "$code" in
 esac
 
 
+# --- wait for the web-console origins ---
+# Each wired console address is its own LoadBalancer Service, so its own
+# Octavia load balancer and amphora VM. Poll each until it answers, reaping
+# an errored LB meanwhile, and name any address that never does: the install
+# still succeeds, but that origin will not load until its LB exists.
+CONSOLE_WAIT_TRIES="${CONSOLE_WAIT_TRIES:-60}"
+CONSOLE_WAIT_SLEEP="${CONSOLE_WAIT_SLEEP:-10}"
+console_lb_status() {
+  local name="kube_service_${FRAMEWORK}_${NS}_cube-advisor-web-${1//./-}"
+  source /etc/admin-openrc.sh 2>/dev/null || return 0
+  openstack loadbalancer list -f value -c name -c provisioning_status 2>/dev/null \
+    | awk -v n="$name" '$1 == n {print $2}'
+}
+wait_console_origins() {
+  local pending=("$@") left a code i st
+  for i in $(seq 1 "$CONSOLE_WAIT_TRIES"); do
+    left=()
+    for a in "${pending[@]}"; do
+      code="$(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' "https://$a/" 2>/dev/null)"
+      case "$code" in ''|000) left+=("$a") ;; esac
+    done
+    [ "${#left[@]}" -eq 0 ] && { echo "web console origins answering: $*."; return 0; }
+    pending=("${left[@]}")
+    [ $((i % 6)) -eq 0 ] && reap_error_lbs
+    sleep "$CONSOLE_WAIT_SLEEP"
+  done
+  for a in "${pending[@]}"; do
+    st="$(console_lb_status "$a")"
+    echo "warning: web console origin $a never answered (load balancer: ${st:-not found}); that origin will not load. An LB in ERROR usually means the cluster has no room for another amphora VM: free capacity, then run Install again" >&2
+  done
+}
+if [ "${#WIRED[@]}" -gt 0 ]; then
+  echo "waiting for the web console origins: ${WIRED[*]}…"
+  wait_console_origins "${WIRED[@]}"
+fi
+
 # The node half of the console: sshd has to trust this CA before a console
 # session can authenticate, and nothing pushes it — the Advisor mints
 # certificates, the node decides whether to accept them. Print it where the
