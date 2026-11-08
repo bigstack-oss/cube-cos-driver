@@ -499,15 +499,11 @@ case "$code" in
 esac
 
 
-# The node half of the console: sshd has to trust this CA before a console
-# session can authenticate, and nothing pushes it — the Advisor mints
-# certificates, the node decides whether to accept them. Print it where the
-# operator installing this will see it.
+# Nodes get the console CA over enrolment; no per-node step is needed.
 if [ -s "$CONSOLEDIR/ca.key.pub" ]; then
   echo
-  echo "Console CA for account ${CONSOLE_ACCOUNT}. On each node, run:"
-  echo "  hex_cli -c advisor -c console_trust <file containing the line below>"
-  cat "$CONSOLEDIR/ca.key.pub"
+  echo "Console CA for account ${CONSOLE_ACCOUNT}: enrolment delivers it to each node."
+  echo "To rotate it on an enrolled cluster, re-run: hex_cli -c advisor -c enroll force"
   echo
 fi
 

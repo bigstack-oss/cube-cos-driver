@@ -219,13 +219,14 @@ func TestAdvisorInstallNamesTheConsoleAccount(t *testing.T) {
 	}
 }
 
-// Nothing pushes the CA to a node — the Advisor mints certificates, the node
-// decides whether to accept them — so the install has to end by telling the
-// operator what to install and how.
-func TestAdvisorInstallPrintsTheConsoleCAForTheNodes(t *testing.T) {
-	if !contains(installAdvisorScript, "hex_cli -c advisor -c console_trust") {
-		t.Error("the installer does not tell the operator how to make nodes trust " +
-			"the console CA, so the console cannot work end to end")
+// Enrolment delivers the console CA, so the install points at enroll force for
+// rotation and never at the removed console_trust command.
+func TestAdvisorInstallPointsAtEnrolmentForTheConsoleCA(t *testing.T) {
+	if contains(installAdvisorScript, "console_trust") {
+		t.Error("the installer names hex_cli advisor console_trust, which cubecos removed")
+	}
+	if !contains(installAdvisorScript, "hex_cli -c advisor -c enroll force") {
+		t.Error("the installer does not say how to rotate the console CA on the nodes")
 	}
 }
 
