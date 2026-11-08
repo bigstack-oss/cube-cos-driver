@@ -29,8 +29,13 @@
   "modules": {
     "advisor": [
       {
-        "version": "0.4.27",
+        "version": "0.4.28",
         "status": "supported"
+      },
+      {
+        "version": "0.4.27",
+        "status": "deprecated",
+        "reason": "bundled agent lacks peer scan reads and the multi-peer enrolment fix; fixed in 0.4.28"
       },
       {
         "version": "0.4.26",
