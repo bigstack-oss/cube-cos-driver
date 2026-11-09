@@ -2,7 +2,8 @@
 # Deploy the CubeCMP portal into an app-framework and verify it end-to-end.
 # app_register only pushes the chart + prereqs to Harbor; this installs the chart,
 # works around the post-install DB-migration race, and confirms the portal serves
-# and the admin permission was granted. Idempotent: safe to re-run.
+# and the admin permission was granted. Idempotent: safe to re-run, and a
+# re-run with a newer chart upgrades the portal in place.
 #
 # args: <framework> <lb_ip> <chart_version>
 set -uo pipefail
@@ -36,16 +37,31 @@ kubectl config set-cluster "$(kubectl config view --kubeconfig="$KC" -o jsonpath
   --server="$(echo "$SRV" | sed "s#https://[^/]*#https://${CTRL}:10443#")" --kubeconfig="$KC" >/dev/null
 K="kubectl --insecure-skip-tls-verify --kubeconfig=$KC"
 
-# --- install the chart (skip if already present) ---
-if $K -n "$NS" get deploy portal >/dev/null 2>&1; then
-  echo "cube-portal already installed — skipping helm install."
-else
+# --- install or upgrade the chart ---
+# helm upgrade --install covers both: the chart's pre/post-upgrade hooks and
+# lookup-kept secrets make an upgrade safe. On an upgrade the release's own
+# values are kept and the driver's values below are set again on top.
+CUR="$(helm list -n "$NS" --kubeconfig "$KC" --kube-insecure-skip-tls-verify -f '^cube-portal$' -o json 2>/dev/null \
+  | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r[0]["chart"][len("cube-portal-"):] if r else "")' 2>/dev/null)"
+VALUES_ARGS=()
+if [ -n "$CUR" ]; then
+  if helm upgrade --help 2>/dev/null | grep -q -- '--reset-then-reuse-values'; then
+    VALUES_ARGS=(--reset-then-reuse-values)
+  else
+    VALUES_ARGS=(--reuse-values)
+  fi
+fi
+{
   RURL="$($K -n harbor get secret registry-details -o jsonpath='{.data.registryUrl}' 2>/dev/null | base64 -d)"
   RPROJ="$($K -n harbor get secret registry-details -o jsonpath='{.data.registryExtensionProject}' 2>/dev/null | base64 -d)"
   RUSER="$($K -n harbor get secret registry-details -o jsonpath='{.data.registryServiceAccount}' 2>/dev/null | base64 -d)"
   RPASS="$($K -n harbor get secret registry-details -o jsonpath='{.data.registryServicePassword}' 2>/dev/null | base64 -d)"
   [ -n "$RURL" ] || fail "registry-details.registryUrl is empty — appctl's registry setup did not complete"
-  echo "installing cube-portal $CHART_VER from oci://$RURL/$RPROJ …"
+  if [ -n "$CUR" ]; then
+    echo "upgrading cube-portal $CUR -> $CHART_VER from oci://$RURL/$RPROJ …"
+  else
+    echo "installing cube-portal $CHART_VER from oci://$RURL/$RPROJ …"
+  fi
   grep -q "$RURL" /etc/hosts || echo "$LBIP $RURL" | sudo tee -a /etc/hosts >/dev/null
   helm registry login "$RURL" -u "$RUSER" -p "$RPASS" --insecure >/dev/null 2>&1
   # app_register can exit 0 having pushed nothing if the framework registry
@@ -67,16 +83,23 @@ else
   # post-install hook can fail on a DB-not-ready race; don't let that abort us.
   # Pin the portal URL to the LB IP; unset, the chart reads it from the ingress-lb
   # service at render time and can freeze <pending>. See cube-cos-app-framework#39.
-  helm install cube-portal "oci://$RURL/$RPROJ/cube-portal" --version "$CHART_VER" \
-    -n "$NS" --create-namespace --kubeconfig "$KC" \
+  helm upgrade --install cube-portal "oci://$RURL/$RPROJ/cube-portal" --version "$CHART_VER" \
+    -n "$NS" --create-namespace --kubeconfig "$KC" "${VALUES_ARGS[@]}" \
     --set rancherToken="$RT" \
     --set serverUrl="https://${LBIP}" \
     --set keycloakUrl="https://${LBIP}/auth/realms/master" \
     --set worker.keycloak.admin.username=admin \
     --set worker.keycloak.admin.password=admin \
-    --kube-insecure-skip-tls-verify --insecure-skip-tls-verify --timeout 25m --wait=false || true
+    --kube-insecure-skip-tls-verify --insecure-skip-tls-verify --timeout 25m --wait=false
+  rc=$?
   sed -i "/$RURL/d" /etc/hosts
-fi
+  # A failed post-install/upgrade job is the DB race handled below; any other
+  # failure on an upgrade left the release as it was.
+  if [ "$rc" -ne 0 ] && [ -n "$CUR" ] && \
+     [ "$($K -n "$NS" get job cube-portal-post-install -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null)" != "True" ]; then
+    fail "helm upgrade failed — the portal is still on $CUR; do not uninstall to retry, that deletes its data"
+  fi
+}
 
 # --- wait for the databases, then ensure the post-install hook completes ---
 echo "waiting for databases…"
@@ -128,4 +151,8 @@ $KADM config credentials --server http://localhost:8080/auth --realm master --us
 ATTR="$($KADM get users -r master -q username=admin 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin)[0].get("attributes",{}).get("ProjectRole",[""])[0])' 2>/dev/null)"
 [ "$ATTR" = "USER_DEFINED_DEFAULT-admin" ] || fail "admin ProjectRole not granted (got '$ATTR')"
 
-echo "cube-portal installed and verified: https://${LBIP}/portal (admin permission granted)"
+if [ -n "$CUR" ]; then
+  echo "cube-portal upgraded $CUR -> $CHART_VER and verified: https://${LBIP}/portal (admin permission granted)"
+else
+  echo "cube-portal installed and verified: https://${LBIP}/portal (admin permission granted)"
+fi

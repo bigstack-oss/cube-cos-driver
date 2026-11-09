@@ -56,17 +56,32 @@ func TestAdvisorInstallReusesTheWebKeypair(t *testing.T) {
 	}
 }
 
-// The two installers differ on purpose, and the difference is the helm verb.
-// Without this the asymmetry reads as an oversight and someone removes the
-// portal's guard too — which would break it, because plain helm install
-// refuses a name already in use.
-func TestPortalKeepsItsGuardBecauseItCannotUpgrade(t *testing.T) {
-	if contains(installPortalScript, "helm upgrade --install") {
-		t.Skip("the portal installer now upgrades in place; its guard can go too")
+// A re-run with a newer chart must reach a deployed portal: the guard that
+// skipped an existing release made upgrades impossible.
+func TestPortalInstallUpgradesAnExistingRelease(t *testing.T) {
+	if contains(installPortalScript, "already installed — skipping helm install") {
+		t.Error("the portal installer skips an existing release, so a new chart can never reach it")
 	}
-	if !contains(installPortalScript, "already installed — skipping helm install") {
-		t.Error("the portal installer runs plain helm install but no longer guards " +
-			"against an existing release, so a re-run fails on the name in use")
+	if !contains(installPortalScript, "helm upgrade --install cube-portal") {
+		t.Error("the portal installer must use helm upgrade --install")
+	}
+}
+
+// An upgrade must keep values set after the install (SMTP, extra domains),
+// so the release's values are reused, with a fallback for older helm.
+func TestPortalUpgradeKeepsTheReleaseValues(t *testing.T) {
+	for _, want := range []string{"--reset-then-reuse-values", "--reuse-values", `"${VALUES_ARGS[@]}"`} {
+		if !contains(installPortalScript, want) {
+			t.Errorf("the portal installer does not pass %q on an upgrade", want)
+		}
+	}
+}
+
+// A failed upgrade leaves the old release running; the script must say so and
+// stop rather than verify the old portal as the new one.
+func TestPortalUpgradeFailureStops(t *testing.T) {
+	if !contains(installPortalScript, "helm upgrade failed — the portal is still on") {
+		t.Error("the portal installer ignores a failed upgrade")
 	}
 }
 
