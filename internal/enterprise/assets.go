@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // portalInstallScriptName is the on-disk (and pushed) name of the CMP portal
@@ -30,6 +31,22 @@ var installAdvisorScript string
 
 //go:embed assets/uninstall-advisor.sh
 var uninstallAdvisorScript string
+
+// rancherKubeconfigMarker is where each script takes the shared rancher login.
+const rancherKubeconfigMarker = "# @rancher-kubeconfig@\n"
+
+//go:embed assets/rancher-kubeconfig.sh
+var rancherKubeconfigSnippet string
+
+func init() {
+	for _, s := range []*string{&installPortalScript, &uninstallPortalScript,
+		&installAdvisorScript, &uninstallAdvisorScript} {
+		if !strings.Contains(*s, rancherKubeconfigMarker) {
+			panic("enterprise: script lacks " + strings.TrimSpace(rancherKubeconfigMarker))
+		}
+		*s = strings.Replace(*s, rancherKubeconfigMarker, rancherKubeconfigSnippet, 1)
+	}
+}
 
 // materializePortalScript writes the embedded portal install + uninstall scripts
 // into the datadir so the cmp plans can push them to the cluster like any other

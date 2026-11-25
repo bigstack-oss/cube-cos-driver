@@ -22,13 +22,8 @@ if [ -z "$CTRL" ]; then
 fi
 RT="$(terraform-cube.sh state pull 2>/dev/null | sed -n '/^{/,$p' | jq -r '.resources[]|select(.type=="rancher2_bootstrap").instances[0].attributes.token')"
 [ -n "$RT" ] || fail "could not read rancher token"
-# --skip-verify suppresses the trust prompt; feed "1" for the project prompt so
-# login persists non-interactively (the picked project is irrelevant to `kf`).
-yes 1 | sudo /usr/local/bin/rancher login --skip-verify --token "$RT" "https://${CTRL}:10443" >/dev/null 2>&1
 KC="/tmp/${FRAMEWORK}-advisor.kc"
-sudo /usr/local/bin/rancher cluster kf "$FRAMEWORK" 2>/dev/null > "$KC"
-SRV="$(kubectl config view --kubeconfig="$KC" -o jsonpath='{.clusters[0].cluster.server}')"
-[ -n "$SRV" ] || fail "empty framework kubeconfig (rancher login/kf failed)"
+# @rancher-kubeconfig@
 kubectl config set-cluster "$(kubectl config view --kubeconfig="$KC" -o jsonpath='{.clusters[0].name}')" \
   --server="$(echo "$SRV" | sed "s#https://[^/]*#https://${CTRL}:10443#")" --kubeconfig="$KC" >/dev/null
 K="kubectl --insecure-skip-tls-verify --kubeconfig=$KC"
