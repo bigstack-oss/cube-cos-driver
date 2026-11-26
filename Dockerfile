@@ -4,7 +4,7 @@ WORKDIR /src
 COPY . .
 RUN corepack enable && pnpm install --frozen-lockfile && pnpm -C web build
 
-FROM golang:1.25-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY . .
 COPY --from=web /src/web/dist internal/webui/dist
